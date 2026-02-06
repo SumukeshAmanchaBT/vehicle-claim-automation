@@ -2,6 +2,7 @@ import random
 import re
 from typing import Optional, Tuple
 
+from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -131,6 +132,49 @@ def evaluate_score(confidence: int, amount: float) -> float:
     if amount > 50000:
         base *= 0.7
     return round(base, 2)
+
+
+@api_view(['GET'])
+def list_fnol(request):
+    """
+    Return a list of FNOL responses.
+    """
+    qs = FnolResponse.objects.filter(deleted_date__isnull=True).order_by(
+        "-created_date"
+    )
+    data = [
+        {
+            "id": obj.id,
+            "raw_response": obj.raw_response,
+            "created_date": obj.created_date,
+            "created_by": obj.created_by,
+            "updated_date": obj.updated_date,
+            "updated_by": obj.updated_by,
+        }
+        for obj in qs
+    ]
+    return Response(data)
+
+
+@api_view(['GET'])
+def get_fnol(request, pk: int):
+    """
+    Return a single FNOL response by ID.
+    """
+    obj = get_object_or_404(
+        FnolResponse,
+        pk=pk,
+        deleted_date__isnull=True,
+    )
+    data = {
+        "id": obj.id,
+        "raw_response": obj.raw_response,
+        "created_date": obj.created_date,
+        "created_by": obj.created_by,
+        "updated_date": obj.updated_date,
+        "updated_by": obj.updated_by,
+    }
+    return Response(data)
 
 
 @api_view(['POST'])
