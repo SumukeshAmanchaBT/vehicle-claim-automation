@@ -1,7 +1,14 @@
 import { useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { loginApi } from "@/services/authService";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -13,7 +20,7 @@ export default function Login() {
   const location = useLocation() as any;
   const from = location.state?.from?.pathname || "/";
 
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,14 +31,19 @@ export default function Login() {
     setLoading(true);
 
     try {
-      // TODO: replace with real auth API call
-      if (!email || !password) {
-        throw new Error("Email and password are required");
+      if (!username || !password) {
+        throw new Error("Username and password are required");
       }
-      login(email);
+
+      const result = await loginApi({ username, password });
+      login(result.user, result.token);
       navigate(from, { replace: true });
     } catch (err: any) {
-      setError(err.message ?? "Login failed");
+      const message =
+        err?.response?.data?.message ||
+        err?.message ||
+        "Login failed. Please check your credentials.";
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -52,21 +64,21 @@ export default function Login() {
           <CardContent>
             <form className="space-y-4" onSubmit={handleSubmit}>
               <div className="space-y-2">
-                <Label htmlFor="email" className="text-slate-100">
-                  Work Email
+                <Label htmlFor="username" className="text-slate-100">
+                  Username
                 </Label>
                 <div className="relative">
                   <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-slate-400">
                     <Mail className="h-4 w-4" />
                   </span>
                   <Input
-                    id="email"
-                    type="email"
+                    id="username"
+                    type="text"
                     autoComplete="username"
                     className="pl-9 bg-slate-950/60 border-slate-700 text-slate-50 placeholder:text-slate-500"
-                    placeholder="you@company.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Enter your username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
                   />
                 </div>
               </div>

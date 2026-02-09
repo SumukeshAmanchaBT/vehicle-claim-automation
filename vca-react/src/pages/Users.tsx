@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -35,71 +36,163 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Plus, MoreHorizontal, UserPlus } from "lucide-react";
+import { Search, UserPlus, MoreHorizontal } from "lucide-react";
+import {
+  listUsers,
+  createUser,
+  updateUser,
+  changeUserRole,
+  resetUserPassword,
+  deactivateUser,
+  type UserSummary,
+  type UserRole,
+} from "@/services/userService";
 
-const mockUsers = [
-  {
-    id: "1",
-    name: "John Doe",
-    email: "john.doe@insureco.com",
-    role: "supervisor",
-    status: "active",
-    lastLogin: "2024-02-05T10:30:00",
-    claimsHandled: 156,
-  },
-  {
-    id: "2",
-    name: "Jane Smith",
-    email: "jane.smith@insureco.com",
-    role: "adjuster",
-    status: "active",
-    lastLogin: "2024-02-05T09:15:00",
-    claimsHandled: 89,
-  },
-  {
-    id: "3",
-    name: "Mike Johnson",
-    email: "mike.johnson@insureco.com",
-    role: "adjuster",
-    status: "active",
-    lastLogin: "2024-02-04T16:45:00",
-    claimsHandled: 124,
-  },
-  {
-    id: "4",
-    name: "Sarah Williams",
-    email: "sarah.williams@insureco.com",
-    role: "admin",
-    status: "active",
-    lastLogin: "2024-02-05T11:00:00",
-    claimsHandled: 0,
-  },
-  {
-    id: "5",
-    name: "Robert Brown",
-    email: "robert.brown@insureco.com",
-    role: "adjuster",
-    status: "inactive",
-    lastLogin: "2024-01-15T14:20:00",
-    claimsHandled: 67,
-  },
-];
-
-const roleLabels = {
+const roleLabels: Record<UserRole, string> = {
   admin: "Admin",
-  supervisor: "Supervisor",
-  adjuster: "Claims Adjuster",
+  user: "User",
 };
 
-export default function Users() {
-  const [search, setSearch] = useState("");
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
+function getDisplayName(user: UserSummary) {
+  const full = `${user.first_name || ""} ${user.last_name || ""}`.trim();
+  return full || user.username;
+}
 
-  const filteredUsers = mockUsers.filter(
-    (user) =>
-      user.name.toLowerCase().includes(search.toLowerCase()) ||
-      user.email.toLowerCase().includes(search.toLowerCase())
-  );
+export default function Users() {
+  const queryClient = useQueryClient();
+  const [search, setSearch] = useState("");
+  const [isAddOpen, setIsAddOpen] = useState(false);
+
+  // Add user form state
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newFirstName, setNewFirstName] = useState("");
+  const [newLastName, setNewLastName] = useState("");
+  const [newRole, setNewRole] = useState<UserRole>("user");
+
+  const { data: users = [], isLoading, error } = useQuery({
+    queryKey: ["users"],
+    queryFn: listUsers,
+  });
+
+  const createMutation = useMutation({
+    mutationFn: createUser,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      setIsAddOpen(false);
+      setNewUsername("");
+      setNewPassword("");
+      setNewEmail("");
+      setNewFirstName("");
+      setNewLastName("");
+      setNewRole("user");
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({
+      id,
+      payload,
+    }: {
+      id: number;
+      payload: Partial<Pick<UserSummary, "email" | "first_name" | "last_name">>;
+    }) => updateUser(id, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+    },
+  });
+
+  const changeRoleMutation = useMutation({
+    mutationFn: ({ id, role }: { id: number; role: UserRole }) =>
+      changeUserRole(id, { role }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+    },
+  });
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: ({ id, newPassword }: { id: number; newPassword: string }) =>
+      resetUserPassword(id, { new_password: newPassword }),
+  });
+
+  const deactivateMutation = useMutation({
+    mutationFn: (id: number) => deactivateUser(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+    },
+  });
+
+  const filteredUsers = users.filter((user) => {
+    const term = search.toLowerCase();
+    return (
+      getDisplayName(user).toLowerCase().includes(term) ||
+      user.email.toLowerCase().includes(term)
+    );
+  });
+
+  const handleCreateUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUsername || !newPassword || !newEmail) return;
+    createMutation.mutate({
+      username: newUsername,
+      password: newPassword,
+      email: newEmail,
+      first_name: newFirstName,
+      last_name: newLastName,
+      role: newRole,
+    });
+  };
+
+  const handleEditUserInline = (user: UserSummary) => {
+    const nextEmail = window.prompt("Email", user.email);
+    if (nextEmail === null) return;
+    const nextFirst = window.prompt("First name", user.first_name || "");
+    if (nextFirst === null) return;
+    const nextLast = window.prompt("Last name", user.last_name || "");
+    if (nextLast === null) return;
+    updateMutation.mutate({
+      id: user.id,
+      payload: {
+        email: nextEmail,
+        first_name: nextFirst,
+        last_name: nextLast,
+      },
+    });
+  };
+
+  const handleChangeRole = (user: UserSummary) => {
+    const nextRole: UserRole = user.role === "admin" ? "user" : "admin";
+    if (
+      !window.confirm(
+        `Change role for ${getDisplayName(user)} to ${roleLabels[nextRole]}?`
+      )
+    ) {
+      return;
+    }
+    changeRoleMutation.mutate({ id: user.id, role: nextRole });
+  };
+
+  const handleResetPassword = (user: UserSummary) => {
+    const newPassword = window.prompt(
+      `Enter new password for ${getDisplayName(user)}`
+    );
+    if (!newPassword) return;
+    resetPasswordMutation.mutate({ id: user.id, newPassword });
+  };
+
+  const handleDeactivate = (user: UserSummary) => {
+    if (
+      !window.confirm(
+        `${user.status === "active" ? "Deactivate" : "Activate"} ${
+          getDisplayName(user)
+        }?`
+      )
+    ) {
+      return;
+    }
+    deactivateMutation.mutate(user.id);
+  };
 
   return (
     <AppLayout
@@ -107,7 +200,7 @@ export default function Users() {
       subtitle="Manage system users and permissions"
     >
       <div className="space-y-6 animate-fade-in">
-        {/* Filters */}
+        {/* Filters & Add */}
         <Card className="card-elevated">
           <CardContent className="p-4">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -120,7 +213,7 @@ export default function Users() {
                   className="pl-9"
                 />
               </div>
-              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+              <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
                 <DialogTrigger asChild>
                   <Button>
                     <UserPlus className="mr-2 h-4 w-4" />
@@ -128,53 +221,93 @@ export default function Users() {
                   </Button>
                 </DialogTrigger>
                 <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Add New User</DialogTitle>
-                    <DialogDescription>
-                      Create a new user account. They will receive an email to
-                      set their password.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4 py-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="name">Full Name</Label>
-                      <Input id="name" placeholder="John Doe" />
+                  <form onSubmit={handleCreateUser}>
+                    <DialogHeader>
+                      <DialogTitle>Add New User</DialogTitle>
+                      <DialogDescription>
+                        Create a new user account.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="username">Username</Label>
+                        <Input
+                          id="username"
+                          value={newUsername}
+                          onChange={(e) => setNewUsername(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="password">Temporary Password</Label>
+                        <Input
+                          id="password"
+                          type="password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="email">Email</Label>
+                        <Input
+                          id="email"
+                          type="email"
+                          value={newEmail}
+                          onChange={(e) => setNewEmail(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="first_name">First name</Label>
+                          <Input
+                            id="first_name"
+                            value={newFirstName}
+                            onChange={(e) => setNewFirstName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="last_name">Last name</Label>
+                          <Input
+                            id="last_name"
+                            value={newLastName}
+                            onChange={(e) => setNewLastName(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="role">Role</Label>
+                        <Select
+                          value={newRole}
+                          onValueChange={(val: UserRole) => setNewRole(val)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select role" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="admin">Admin</SelectItem>
+                            <SelectItem value="user">User</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="email">Email</Label>
-                      <Input
-                        id="email"
-                        type="email"
-                        placeholder="john@insureco.com"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="role">Role</Label>
-                      <Select>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select role" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="admin">Admin</SelectItem>
-                          <SelectItem value="supervisor">Supervisor</SelectItem>
-                          <SelectItem value="adjuster">
-                            Claims Adjuster
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <DialogFooter>
-                    <Button
-                      variant="outline"
-                      onClick={() => setIsDialogOpen(false)}
-                    >
-                      Cancel
-                    </Button>
-                    <Button onClick={() => setIsDialogOpen(false)}>
-                      Create User
-                    </Button>
-                  </DialogFooter>
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsAddOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        disabled={createMutation.isPending}
+                      >
+                        {createMutation.isPending ? "Creating..." : "Create"}
+                      </Button>
+                    </DialogFooter>
+                  </form>
                 </DialogContent>
               </Dialog>
             </div>
@@ -183,86 +316,115 @@ export default function Users() {
 
         {/* Users Table */}
         <Card className="card-elevated overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/50 hover:bg-muted/50">
-                <TableHead className="pl-6">User</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Claims Handled</TableHead>
-                <TableHead>Last Login</TableHead>
-                <TableHead className="pr-6 text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredUsers.map((user) => (
-                <TableRow key={user.id} className="group">
-                  <TableCell className="pl-6">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-sm font-medium text-primary">
-                        {user.name
-                          .split(" ")
-                          .map((n) => n[0])
-                          .join("")}
-                      </div>
-                      <div>
-                        <p className="font-medium">{user.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {user.email}
-                        </p>
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium">
-                      {roleLabels[user.role as keyof typeof roleLabels]}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge
-                      status={
-                        user.status === "active" ? "approved" : "rejected"
-                      }
-                    >
-                      {user.status.charAt(0).toUpperCase() +
-                        user.status.slice(1)}
-                    </StatusBadge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {user.claimsHandled}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(user.lastLogin).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="pr-6 text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <MoreHorizontal className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>Edit User</DropdownMenuItem>
-                        <DropdownMenuItem>Change Role</DropdownMenuItem>
-                        <DropdownMenuItem>Reset Password</DropdownMenuItem>
-                        <DropdownMenuItem className="text-destructive">
-                          {user.status === "active"
-                            ? "Deactivate"
-                            : "Activate"}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
+          {isLoading ? (
+            <div className="p-6 text-sm text-muted-foreground">
+              Loading users...
+            </div>
+          ) : error ? (
+            <div className="p-6 text-sm text-destructive">
+              Failed to load users.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/50 hover:bg-muted/50">
+                  <TableHead className="pl-6">User</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Claims Handled</TableHead>
+                  <TableHead>Last Login</TableHead>
+                  <TableHead className="pr-6 text-right">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {filteredUsers.map((user) => (
+                  <TableRow key={user.id} className="group">
+                    <TableCell className="pl-6">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-sm font-medium text-primary">
+                          {getDisplayName(user)
+                            .split(" ")
+                            .map((n) => n[0])
+                            .join("")
+                            .toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="font-medium">{getDisplayName(user)}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {user.email}
+                          </p>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium">
+                        {roleLabels[user.role]}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <StatusBadge
+                        status={
+                          user.status === "active" ? "approved" : "rejected"
+                        }
+                      >
+                        {user.status.charAt(0).toUpperCase() +
+                          user.status.slice(1)}
+                      </StatusBadge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {user.claims_handled}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {user.last_login
+                        ? new Date(user.last_login).toLocaleString()
+                        : "-"}
+                    </TableCell>
+                    <TableCell className="pr-6 text-right">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => handleEditUserInline(user)}
+                          >
+                            Edit User
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleChangeRole(user)}
+                          >
+                            Change Role
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => handleResetPassword(user)}
+                          >
+                            Reset Password
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => handleDeactivate(user)}
+                          >
+                            {user.status === "active"
+                              ? "Deactivate"
+                              : "Activate"}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </Card>
       </div>
     </AppLayout>
   );
 }
+

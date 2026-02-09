@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { LayoutDashboard, FileText, Users, Settings, ShieldCheck, BarChart3, Database, Car, LogOut, Activity } from "lucide-react";
 import {
@@ -7,6 +7,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useState } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 
 const navItems = [
   {
@@ -56,6 +57,8 @@ const adminItems = [
 
 export function AppSidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [claimsOpen, setClaimsOpen] = useState(
     location.pathname.startsWith("/claims")
   );
@@ -129,17 +132,30 @@ export function AppSidebar() {
         <div className="border-t border-sidebar-border p-4">
           <div className="flex items-center gap-3 rounded-lg px-3 py-2">
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-sidebar-accent text-sm font-medium text-sidebar-foreground">
-              JD
+              {(user?.first_name || user?.last_name || user?.username || "U")
+                .split(" ")
+                .map((n) => n[0])
+                .join("")
+                .toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-sidebar-foreground truncate">
-                John Doe
+                {user
+                  ? `${user.first_name || ""} ${user.last_name || ""}`.trim() ||
+                    user.username
+                  : "Guest"}
               </p>
               <p className="text-xs text-sidebar-muted truncate">
-                Claims Supervisor
+                {user ? (user.role === "admin" ? "Administrator" : "User") : ""}
               </p>
             </div>
-            <button className="p-1.5 rounded-md hover:bg-sidebar-accent transition-colors">
+            <button
+              className="p-1.5 rounded-md hover:bg-sidebar-accent transition-colors"
+              onClick={() => {
+                logout();
+                navigate("/login");
+              }}
+            >
               <LogOut className="h-4 w-4 text-sidebar-muted" />
             </button>
           </div>
