@@ -1,0 +1,112 @@
+# 🔥 Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 🧪 C extensions
+*.so
+
+# 📦 Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 📝 Logs
+*.log
+
+# 🧬 Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# 🌍 Environment variables
+.env
+.env.*
+*.env
+
+# 🐍 Virtual environments
+venv/
+env/
+ENV/
+.venv/
+env.bak/
+venv.bak/
+
+# 🧠 PyCharm / IntelliJ
+.idea/
+*.iml
+
+# 🧑‍💻 VS Code
+.vscode/
+
+# 🧪 mypy / type checkers
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# 🧹 Ruff / linters
+.ruff_cache/
+
+# 📚 Documentation
+docs/_build/
+
+# 🗂️ Flask stuff
+instance/
+.webassets-cache
+
+# 🔐 Secrets / keys
+*.pem
+*.key
+
+# 🧾 SQLite DB
+*.sqlite3
+*.db
+
+# 🖥️ OS files
+.DS_Store
+Thumbs.db
+
+# 🧰 Jupyter Notebook
+.ipynb_checkpoints
+
+# 🧮 PIP
+pip-log.txt
+pip-delete-this-directory.txt
+
+# 🔧 PyInstaller
+*.manifest
+*.spec
+
+# 🧬 Cython debug symbols
+cython_debug/
+
+# 🧵 Celery
+celerybeat-schedule
+celerybeat.pid
+
+# 🧱 Mac/Linux temp
+*.swp
+*~
