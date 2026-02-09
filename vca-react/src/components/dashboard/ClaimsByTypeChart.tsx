@@ -10,11 +10,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { mockClaimsByType } from "@/lib/mock-data";
 
 const COLORS = [
-  "hsl(var(--chart-1))",
-  "hsl(var(--chart-2))",
-  "hsl(var(--chart-3))",
-  "hsl(var(--chart-4))",
-  "hsl(var(--chart-5))",
+  "rgb(var(--chart-1))",
+  "rgb(var(--chart-2))",
+  "rgb(var(--chart-3))",
+  "rgb(var(--chart-4))",
+  "rgb(var(--chart-5))",
 ];
 
 export function ClaimsByTypeChart() {
@@ -49,12 +49,12 @@ export function ClaimsByTypeChart() {
               </Pie>
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
+                  backgroundColor: "rgb(var(--card))",
+                  border: `1px solid rgb(var(--border))`,
                   borderRadius: "8px",
                   boxShadow: "var(--shadow-md)",
                 }}
-                labelStyle={{ color: "hsl(var(--foreground))" }}
+                labelStyle={{ color: "rgb(var(--foreground))" }}
                 formatter={(value: number, name: string) => [
                   `${value} claims`,
                   name,

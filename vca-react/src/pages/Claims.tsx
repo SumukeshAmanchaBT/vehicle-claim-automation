@@ -107,7 +107,7 @@ export default function Claims() {
     <AppLayout title="Claims" subtitle="Manage and process insurance claims">
       <div className="space-y-6 animate-fade-in">
         {/* Filters */}
-        <Card className="card-elevated">
+        <Card className="card-elevated border-none">
           <CardContent className="p-4">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-1 items-center gap-3">
@@ -136,14 +136,14 @@ export default function Claims() {
                 </Select>
               </div>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm">
+                {/* <Button variant="outline" size="sm">
                   <Download className="mr-2 h-4 w-4" />
                   Export
-                </Button>
+                </Button> */}
                 {/* <Button size="sm" asChild>
                   <Link to="/claims/new">
                     <Plus className="mr-2 h-4 w-4" />
-                    New Claim
+                   Fletch a Claim
                   </Link>
                 </Button> */}
               </div>
@@ -221,8 +221,8 @@ export default function Claims() {
                         <StatusBadge status="pending">Pending</StatusBadge>
                       </TableCell>
                       <TableCell className="pr-6 text-right">
-                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Button variant="ghost" size="icon" asChild>
+                        <div className="flex items-center justify-end gap-1 opacity-50 group-hover:opacity-100 transition-opacity">
+                          <Button variant="default" size="icon" asChild>
                             <Link to={`/claims/${claim.id}`}>
                               <ZoomIn className="h-4 w-4" />
                             </Link>
