@@ -146,24 +146,24 @@ export default function Reports() {
                   <BarChart data={monthlyData}>
                     <CartesianGrid
                       strokeDasharray="3 3"
-                      stroke="hsl(var(--border))"
+                      stroke="rgb(var(--border))"
                       vertical={false}
                     />
                     <XAxis
                       dataKey="month"
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                      tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                       axisLine={false}
                       tickLine={false}
                     />
                     <YAxis
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                      tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                       axisLine={false}
                       tickLine={false}
                     />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
+                        backgroundColor: "rgb(var(--card))",
+                        border: `1px solid rgb(var(--border))`,
                         borderRadius: "8px",
                       }}
                     />
@@ -171,13 +171,13 @@ export default function Reports() {
                     <Bar
                       dataKey="approved"
                       name="Approved"
-                      fill="hsl(var(--chart-2))"
+                      fill="rgb(var(--chart-2))"
                       radius={[4, 4, 0, 0]}
                     />
                     <Bar
                       dataKey="rejected"
                       name="Rejected"
-                      fill="hsl(var(--chart-5))"
+                      fill="rgb(var(--chart-5))"
                       radius={[4, 4, 0, 0]}
                     />
                   </BarChart>
@@ -196,24 +196,24 @@ export default function Reports() {
                   <LineChart data={processingTimeData}>
                     <CartesianGrid
                       strokeDasharray="3 3"
-                      stroke="hsl(var(--border))"
+                      stroke="rgb(var(--border))"
                       vertical={false}
                     />
                     <XAxis
                       dataKey="week"
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                      tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                       axisLine={false}
                       tickLine={false}
                     />
                     <YAxis
-                      tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                      tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                       axisLine={false}
                       tickLine={false}
                     />
                     <Tooltip
                       contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        border: "1px solid hsl(var(--border))",
+                        backgroundColor: "rgb(var(--card))",
+                        border: `1px solid rgb(var(--border))`,
                         borderRadius: "8px",
                       }}
                     />
@@ -222,17 +222,17 @@ export default function Reports() {
                       type="monotone"
                       dataKey="manual"
                       name="Manual Processing"
-                      stroke="hsl(var(--chart-3))"
+                      stroke="rgb(var(--chart-3))"
                       strokeWidth={2}
-                      dot={{ fill: "hsl(var(--chart-3))" }}
+                      dot={{ fill: "rgb(var(--chart-3))" }}
                     />
                     <Line
                       type="monotone"
                       dataKey="automated"
                       name="Automated (STP)"
-                      stroke="hsl(var(--chart-2))"
+                      stroke="rgb(var(--chart-2))"
                       strokeWidth={2}
-                      dot={{ fill: "hsl(var(--chart-2))" }}
+                      dot={{ fill: "rgb(var(--chart-2))" }}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -252,35 +252,35 @@ export default function Reports() {
                 <BarChart data={monthlyData}>
                   <CartesianGrid
                     strokeDasharray="3 3"
-                    stroke="hsl(var(--border))"
+                    stroke="rgb(var(--border))"
                     vertical={false}
                   />
                   <XAxis
                     dataKey="month"
-                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                    tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
                   />
                   <YAxis
-                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                    tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
                     tickFormatter={(value) => `$${(value / 1000).toFixed(0)}k`}
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: "hsl(var(--card))",
-                      border: "1px solid hsl(var(--border))",
+                      backgroundColor: "rgb(var(--card))",
+                      border: `1px solid rgb(var(--border))`,
                       borderRadius: "8px",
                     }}
                     formatter={(value: number) => [`$${value.toLocaleString()}`, "Settlements"]}
                   />
-                  <Bar
-                    dataKey="settlements"
-                    name="Settlement Amount"
-                    fill="hsl(var(--chart-1))"
-                    radius={[4, 4, 0, 0]}
-                  />
+                    <Bar
+                      dataKey="settlements"
+                      name="Settlement Amount"
+                      fill="rgb(var(--chart-1))"
+                      radius={[4, 4, 0, 0]}
+                    />
                 </BarChart>
               </ResponsiveContainer>
             </div>

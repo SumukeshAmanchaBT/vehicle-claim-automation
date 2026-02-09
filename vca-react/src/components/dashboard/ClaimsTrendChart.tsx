@@ -28,59 +28,59 @@ export function ClaimsTrendChart() {
                 <linearGradient id="colorClaims" x1="0" y1="0" x2="0" y2="1">
                   <stop
                     offset="5%"
-                    stopColor="hsl(var(--chart-1))"
+                    stopColor="rgb(var(--chart-1))"
                     stopOpacity={0.3}
                   />
                   <stop
                     offset="95%"
-                    stopColor="hsl(var(--chart-1))"
+                    stopColor="rgb(var(--chart-1))"
                     stopOpacity={0}
                   />
                 </linearGradient>
                 <linearGradient id="colorApproved" x1="0" y1="0" x2="0" y2="1">
                   <stop
                     offset="5%"
-                    stopColor="hsl(var(--chart-2))"
+                    stopColor="rgb(var(--chart-2))"
                     stopOpacity={0.3}
                   />
                   <stop
                     offset="95%"
-                    stopColor="hsl(var(--chart-2))"
+                    stopColor="rgb(var(--chart-2))"
                     stopOpacity={0}
                   />
                 </linearGradient>
               </defs>
               <CartesianGrid
                 strokeDasharray="3 3"
-                stroke="hsl(var(--border))"
+                stroke="rgb(var(--border))"
                 vertical={false}
               />
               <XAxis
                 dataKey="date"
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
-                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                 axisLine={false}
                 tickLine={false}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
+                  backgroundColor: "rgb(var(--card))",
+                  border: `1px solid rgb(var(--border))`,
                   borderRadius: "8px",
                   boxShadow: "var(--shadow-md)",
                 }}
-                labelStyle={{ color: "hsl(var(--foreground))" }}
+                labelStyle={{ color: "rgb(var(--foreground))" }}
               />
               <Legend />
               <Area
                 type="monotone"
                 dataKey="claims"
                 name="Total Claims"
-                stroke="hsl(var(--chart-1))"
+                stroke="rgb(var(--chart-1))"
                 strokeWidth={2}
                 fillOpacity={1}
                 fill="url(#colorClaims)"
@@ -89,7 +89,7 @@ export function ClaimsTrendChart() {
                 type="monotone"
                 dataKey="approved"
                 name="Approved"
-                stroke="hsl(var(--chart-2))"
+                stroke="rgb(var(--chart-2))"
                 strokeWidth={2}
                 fillOpacity={1}
                 fill="url(#colorApproved)"
