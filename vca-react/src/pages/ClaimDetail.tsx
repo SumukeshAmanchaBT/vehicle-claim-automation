@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,40 +21,83 @@ import {
   DollarSign,
   Brain,
   Eye,
+  Loader2,
 } from "lucide-react";
-import { mockClaims, type Claim } from "@/lib/mock-data";
-
-const getStatusVariant = (
-  status: Claim["status"]
-): "approved" | "pending" | "rejected" | "processing" => {
-  const map = {
-    approved: "approved" as const,
-    pending: "pending" as const,
-    rejected: "rejected" as const,
-    processing: "processing" as const,
-    flagged: "rejected" as const,
-  };
-  return map[status];
-};
+import {
+  getFnolById,
+  processClaim,
+  type FnolResponse,
+  type ProcessClaimResponse,
+} from "@/lib/api";
 
 const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("en-IN", {
     style: "currency",
-    currency: "USD",
+    currency: "INR",
     minimumFractionDigits: 0,
   }).format(amount);
 };
 
-export default function ClaimDetail() {
-  const { id } = useParams();
-  const claim = mockClaims.find((c) => c.id === id);
+function fraudBandToNumeric(band: string): number {
+  switch (band) {
+    case "Low":
+      return 10;
+    case "Medium":
+      return 50;
+    case "High":
+      return 90;
+    default:
+      return 0;
+  }
+}
 
-  if (!claim) {
+export default function ClaimDetail() {
+  const { id } = useParams<{ id: string }>();
+  const [fnol, setFnol] = useState<FnolResponse | null>(null);
+  const [assessment, setAssessment] = useState<ProcessClaimResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getFnolById(id)
+      .then((data) => {
+        if (cancelled) return;
+        setFnol(data);
+        return processClaim(data.raw_response);
+      })
+      .then((result) => {
+        if (!cancelled && result) setAssessment(result);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load claim");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  if (loading) {
+    return (
+      <AppLayout title="Claim Details">
+        <div className="flex flex-col items-center justify-center py-16">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          <p className="mt-4 text-sm text-muted-foreground">Loading claim...</p>
+        </div>
+      </AppLayout>
+    );
+  }
+
+  if (error || !fnol) {
     return (
       <AppLayout title="Claim Not Found">
         <div className="flex flex-col items-center justify-center py-12">
           <p className="text-lg text-muted-foreground">
-            The claim you're looking for doesn't exist.
+            {error || "The claim you're looking for doesn't exist."}
           </p>
           <Button asChild className="mt-4">
             <Link to="/claims">Back to Claims</Link>
@@ -63,10 +107,33 @@ export default function ClaimDetail() {
     );
   }
 
+  const r = fnol.raw_response;
+  const incident = r.incident || {};
+  const policy = r.policy || {};
+  const vehicle = r.vehicle || {};
+  const claimant = r.claimant || {};
+  const documents = r.documents || {};
+  const aiConfidence = assessment?.damage_confidence ?? 0;
+  const fraudBand = assessment?.fraud_score ?? "—";
+  const fraudScore = fraudBandToNumeric(fraudBand);
+  const decision = assessment?.decision ?? "Pending";
+  const claimStatus = assessment?.claim_status ?? "Open";
+  const damageTypes = incident.loss_description
+    ? incident.loss_description.split(/[,&]|\band\b/i).map((s: string) => s.trim()).filter(Boolean)
+    : [];
+
+  const getStatusVariant = (
+    s: string
+  ): "approved" | "pending" | "rejected" | "processing" => {
+    if (s === "Auto Approve" || s === "Closed") return "approved";
+    if (s === "Reject") return "rejected";
+    return "pending";
+  };
+
   return (
     <AppLayout
-      title={claim.claimNumber}
-      subtitle={`${claim.claimType} claim - ${claim.customerName}`}
+      title={r.claim_id || `FNOL-${fnol.id}`}
+      subtitle={`${incident.claim_type || "Claim"} - ${claimant.driver_name || "—"}`}
     >
       <div className="space-y-6 animate-fade-in">
         {/* Header Actions */}
@@ -79,11 +146,11 @@ export default function ClaimDetail() {
           </Button>
           <div className="flex items-center gap-2">
             <StatusBadge
-              status={getStatusVariant(claim.status)}
-              pulse={claim.status === "processing"}
+              status={getStatusVariant(decision)}
+              pulse={claimStatus === "Open"}
               className="text-sm px-3 py-1"
             >
-              {claim.status.charAt(0).toUpperCase() + claim.status.slice(1)}
+              {decision}
             </StatusBadge>
             <Button variant="outline">Request Documents</Button>
             <Button variant="destructive">Reject</Button>
@@ -103,11 +170,9 @@ export default function ClaimDetail() {
                       <DollarSign className="h-5 w-5 text-primary" />
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">
-                        Estimated
-                      </p>
+                      <p className="text-xs text-muted-foreground">Estimated</p>
                       <p className="text-xl font-bold">
-                        {formatCurrency(claim.estimatedAmount)}
+                        {formatCurrency(incident.estimated_amount ?? 0)}
                       </p>
                     </div>
                   </div>
@@ -120,42 +185,28 @@ export default function ClaimDetail() {
                       <Brain className="h-5 w-5 text-success" />
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">
-                        AI Confidence
-                      </p>
-                      <p className="text-xl font-bold">{claim.aiConfidence}%</p>
+                      <p className="text-xs text-muted-foreground">AI Confidence</p>
+                      <p className="text-xl font-bold">{aiConfidence}%</p>
                     </div>
                   </div>
                 </CardContent>
               </Card>
               <Card className="card-elevated">
                 <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`flex h-10 w-10 items-center justify-center rounded-lg ${
-                        claim.fraudScore >= 50
-                          ? "bg-destructive/10"
-                          : claim.fraudScore >= 30
-                          ? "bg-warning/10"
-                          : "bg-success/10"
+                  <div
+                    className={`flex h-10 w-10 items-center justify-center rounded-lg ${
+                      fraudScore >= 50 ? "bg-destructive/10" : fraudScore >= 30 ? "bg-warning/10" : "bg-success/10"
+                    }`}
+                  >
+                    <Shield
+                      className={`h-5 w-5 ${
+                        fraudScore >= 50 ? "text-destructive" : fraudScore >= 30 ? "text-warning" : "text-success"
                       }`}
-                    >
-                      <Shield
-                        className={`h-5 w-5 ${
-                          claim.fraudScore >= 50
-                            ? "text-destructive"
-                            : claim.fraudScore >= 30
-                            ? "text-warning"
-                            : "text-success"
-                        }`}
-                      />
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">
-                        Fraud Risk
-                      </p>
-                      <p className="text-xl font-bold">{claim.fraudScore}%</p>
-                    </div>
+                    />
+                  </div>
+                  <div className="mt-2">
+                    <p className="text-xs text-muted-foreground">Fraud Risk</p>
+                    <p className="text-xl font-bold">{fraudBand} ({fraudScore}%)</p>
                   </div>
                 </CardContent>
               </Card>
@@ -173,9 +224,7 @@ export default function ClaimDetail() {
               <TabsContent value="details">
                 <Card className="card-elevated">
                   <CardHeader>
-                    <CardTitle className="text-base">
-                      Incident Information
-                    </CardTitle>
+                    <CardTitle className="text-base">Incident Information</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-6">
                     <div className="grid gap-6 sm:grid-cols-2">
@@ -185,9 +234,9 @@ export default function ClaimDetail() {
                           <div>
                             <p className="text-sm font-medium">Incident Date</p>
                             <p className="text-sm text-muted-foreground">
-                              {new Date(
-                                claim.incidentDate
-                              ).toLocaleDateString()}
+                              {incident.date_time_of_loss
+                                ? new Date(incident.date_time_of_loss).toLocaleDateString()
+                                : "—"}
                             </p>
                           </div>
                         </div>
@@ -196,7 +245,7 @@ export default function ClaimDetail() {
                           <div>
                             <p className="text-sm font-medium">Location</p>
                             <p className="text-sm text-muted-foreground">
-                              123 Main Street, Los Angeles, CA
+                              {incident.location || "—"}
                             </p>
                           </div>
                         </div>
@@ -207,18 +256,18 @@ export default function ClaimDetail() {
                           <div>
                             <p className="text-sm font-medium">Submitted</p>
                             <p className="text-sm text-muted-foreground">
-                              {new Date(
-                                claim.submittedDate
-                              ).toLocaleDateString()}
+                              {fnol.created_date
+                                ? new Date(fnol.created_date).toLocaleString()
+                                : "—"}
                             </p>
                           </div>
                         </div>
                         <div className="flex items-start gap-3">
                           <User className="h-4 w-4 mt-1 text-muted-foreground" />
                           <div>
-                            <p className="text-sm font-medium">Assigned To</p>
+                            <p className="text-sm font-medium">Created By</p>
                             <p className="text-sm text-muted-foreground">
-                              {claim.assignedTo || "Unassigned"}
+                              {fnol.created_by || "—"}
                             </p>
                           </div>
                         </div>
@@ -228,17 +277,25 @@ export default function ClaimDetail() {
                     <Separator />
 
                     <div>
-                      <h4 className="text-sm font-medium mb-3">Damage Types</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {claim.damageType.map((type) => (
-                          <span
-                            key={type}
-                            className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
-                          >
-                            {type}
-                          </span>
-                        ))}
-                      </div>
+                      <h4 className="text-sm font-medium mb-3">Loss Description</h4>
+                      <p className="text-sm text-muted-foreground mb-3">
+                        {incident.loss_description || "—"}
+                      </p>
+                      {damageTypes.length > 0 && (
+                        <>
+                          <h4 className="text-sm font-medium mb-2">Damage Types</h4>
+                          <div className="flex flex-wrap gap-2">
+                            {damageTypes.map((type) => (
+                              <span
+                                key={type}
+                                className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
+                              >
+                                {type}
+                              </span>
+                            ))}
+                          </div>
+                        </>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -256,48 +313,43 @@ export default function ClaimDetail() {
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-sm">Overall Confidence</span>
-                        <span className="text-sm font-medium">
-                          {claim.aiConfidence}%
-                        </span>
+                        <span className="text-sm font-medium">{aiConfidence}%</span>
                       </div>
-                      <Progress
-                        value={claim.aiConfidence}
-                        className="h-2"
-                      />
+                      <Progress value={aiConfidence} className="h-2" />
                     </div>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div className="rounded-lg border p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <CheckCircle2 className="h-4 w-4 text-success" />
-                          <span className="text-sm font-medium">
-                            Validations Passed
-                          </span>
+                    {assessment && (
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <div className="rounded-lg border p-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <CheckCircle2 className="h-4 w-4 text-success" />
+                            <span className="text-sm font-medium">Assessment Result</span>
+                          </div>
+                          <ul className="space-y-1 text-sm text-muted-foreground">
+                            <li>• Claim Type: {assessment.claim_type ?? "—"}</li>
+                            <li>• Decision: {assessment.decision ?? "—"}</li>
+                            <li>• Status: {assessment.claim_status ?? "—"}</li>
+                            <li>• Evaluation Score: {assessment.evaluation_score ?? "—"}</li>
+                            {assessment.reason && <li>• Reason: {assessment.reason}</li>}
+                          </ul>
                         </div>
-                        <ul className="space-y-1 text-sm text-muted-foreground">
-                          <li>• Policy active & premium paid</li>
-                          <li>• Vehicle-policy match confirmed</li>
-                          <li>• Coverage eligibility verified</li>
-                          <li>• Number plate match verified</li>
-                        </ul>
-                      </div>
-                      <div className="rounded-lg border p-4">
-                        <div className="flex items-center gap-2 mb-2">
-                          <Eye className="h-4 w-4 text-primary" />
-                          <span className="text-sm font-medium">
-                            Damage Detection
-                          </span>
+                        <div className="rounded-lg border p-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Eye className="h-4 w-4 text-primary" />
+                            <span className="text-sm font-medium">Damage Detection</span>
+                          </div>
+                          <ul className="space-y-1 text-sm text-muted-foreground">
+                            {damageTypes.map((type) => (
+                              <li key={type}>• {type} detected</li>
+                            ))}
+                            <li>• Policy: {policy.policy_status ?? "—"}</li>
+                            <li>• Coverage: {policy.coverage_type ?? "—"}</li>
+                          </ul>
                         </div>
-                        <ul className="space-y-1 text-sm text-muted-foreground">
-                          {claim.damageType.map((type) => (
-                            <li key={type}>• {type} detected</li>
-                          ))}
-                          <li>• No pre-existing damage found</li>
-                        </ul>
                       </div>
-                    </div>
+                    )}
 
-                    {claim.aiConfidence >= 85 && claim.fraudScore < 30 && (
+                    {decision === "Auto Approve" && fraudScore < 30 && (
                       <div className="flex items-center gap-2 rounded-lg bg-success/10 p-4">
                         <CheckCircle2 className="h-5 w-5 text-success" />
                         <div>
@@ -311,7 +363,7 @@ export default function ClaimDetail() {
                       </div>
                     )}
 
-                    {claim.fraudScore >= 50 && (
+                    {fraudScore >= 50 && (
                       <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-4">
                         <AlertTriangle className="h-5 w-5 text-destructive" />
                         <div>
@@ -331,25 +383,34 @@ export default function ClaimDetail() {
               <TabsContent value="documents">
                 <Card className="card-elevated">
                   <CardHeader>
-                    <CardTitle className="text-base">
-                      Uploaded Documents
-                    </CardTitle>
+                    <CardTitle className="text-base">Uploaded Documents</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid gap-4 sm:grid-cols-4">
-                      {[1, 2, 3, 4].map((i) => (
-                        <div
-                          key={i}
-                          className="aspect-square rounded-lg border bg-muted flex items-center justify-center group cursor-pointer hover:border-primary transition-colors"
-                        >
-                          <div className="text-center">
-                            <FileImage className="h-8 w-8 mx-auto text-muted-foreground group-hover:text-primary transition-colors" />
-                            <p className="text-xs text-muted-foreground mt-2">
-                              damage_{i}.jpg
-                            </p>
-                          </div>
-                        </div>
-                      ))}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="flex items-center justify-between rounded-lg border p-4">
+                        <span className="text-sm font-medium">RC Copy</span>
+                        <StatusBadge status={documents.rc_copy_uploaded ? "approved" : "pending"}>
+                          {documents.rc_copy_uploaded ? "Uploaded" : "Missing"}
+                        </StatusBadge>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border p-4">
+                        <span className="text-sm font-medium">DL Copy</span>
+                        <StatusBadge status={documents.dl_copy_uploaded ? "approved" : "pending"}>
+                          {documents.dl_copy_uploaded ? "Uploaded" : "Missing"}
+                        </StatusBadge>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border p-4">
+                        <span className="text-sm font-medium">Photos</span>
+                        <StatusBadge status={documents.photos_uploaded ? "approved" : "pending"}>
+                          {documents.photos_uploaded ? "Uploaded" : "Missing"}
+                        </StatusBadge>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border p-4">
+                        <span className="text-sm font-medium">FIR</span>
+                        <StatusBadge status={documents.fir_uploaded ? "approved" : "pending"}>
+                          {documents.fir_uploaded ? "Uploaded" : "Missing"}
+                        </StatusBadge>
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -364,25 +425,19 @@ export default function ClaimDetail() {
                     <div className="space-y-4">
                       {[
                         {
-                          date: claim.submittedDate,
+                          date: fnol.created_date,
                           title: "Claim Submitted",
-                          description: "FNOL received from Guidewire",
+                          description: "FNOL received",
                         },
                         {
-                          date: claim.submittedDate,
-                          title: "AI Assessment Started",
-                          description:
-                            "Automated damage detection initiated",
+                          date: fnol.created_date,
+                          title: "AI Assessment",
+                          description: `Damage confidence: ${aiConfidence}%, Fraud: ${fraudBand}`,
                         },
                         {
-                          date: claim.submittedDate,
-                          title: "Validation Complete",
-                          description: "Policy and coverage validated",
-                        },
-                        {
-                          date: claim.submittedDate,
-                          title: "Fraud Check Complete",
-                          description: `Risk score: ${claim.fraudScore}%`,
+                          date: fnol.created_date,
+                          title: "Decision",
+                          description: decision,
                         },
                       ].map((event, i) => (
                         <div key={i} className="flex gap-4">
@@ -390,9 +445,7 @@ export default function ClaimDetail() {
                             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
                               <div className="h-2 w-2 rounded-full bg-primary" />
                             </div>
-                            {i < 3 && (
-                              <div className="w-px flex-1 bg-border" />
-                            )}
+                            {i < 2 && <div className="w-px flex-1 bg-border" />}
                           </div>
                           <div className="pb-4">
                             <p className="text-sm font-medium">{event.title}</p>
@@ -400,7 +453,7 @@ export default function ClaimDetail() {
                               {event.description}
                             </p>
                             <p className="text-xs text-muted-foreground mt-1">
-                              {new Date(event.date).toLocaleString()}
+                              {event.date ? new Date(event.date).toLocaleString() : "—"}
                             </p>
                           </div>
                         </div>
@@ -414,7 +467,6 @@ export default function ClaimDetail() {
 
           {/* Sidebar */}
           <div className="space-y-6">
-            {/* Customer Info */}
             <Card className="card-elevated">
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
@@ -424,26 +476,25 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <p className="text-sm font-medium">{claim.customerName}</p>
+                  <p className="text-sm font-medium">{claimant.driver_name || "—"}</p>
                   <p className="text-xs text-muted-foreground">
-                    Policy: {claim.policyNumber}
+                    Policy: {policy.policy_number || "—"}
                   </p>
                 </div>
                 <Separator />
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Email</span>
-                    <span>customer@email.com</span>
+                    <span className="text-muted-foreground">License</span>
+                    <span className="font-mono text-xs">{claimant.driving_license_number || "—"}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Phone</span>
-                    <span>+1 (555) 123-4567</span>
+                    <span className="text-muted-foreground">Valid Till</span>
+                    <span>{claimant.license_valid_till || "—"}</span>
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Vehicle Info */}
             <Card className="card-elevated">
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
@@ -454,24 +505,21 @@ export default function ClaimDetail() {
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Vehicle</span>
-                  <span>{claim.vehicleInfo}</span>
+                  <span>
+                    {vehicle.year} {vehicle.make} {vehicle.model}
+                  </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">VIN</span>
-                  <span className="font-mono">1HGBH41JXMN109186</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Plate</span>
-                  <span>ABC-1234</span>
+                  <span className="text-muted-foreground">Registration</span>
+                  <span className="font-mono">{vehicle.registration_number || "—"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Coverage</span>
-                  <span>Comprehensive</span>
+                  <span>{policy.coverage_type || "—"}</span>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Settlement Info */}
             <Card className="card-elevated">
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
@@ -481,11 +529,9 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">
-                    Estimated Damage
-                  </span>
+                  <span className="text-muted-foreground">Estimated Damage</span>
                   <span className="font-medium">
-                    {formatCurrency(claim.estimatedAmount)}
+                    {formatCurrency(incident.estimated_amount ?? 0)}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -496,7 +542,7 @@ export default function ClaimDetail() {
                 <div className="flex justify-between font-medium">
                   <span>Payout Amount</span>
                   <span className="text-primary">
-                    {formatCurrency(claim.estimatedAmount - 500)}
+                    {formatCurrency(Math.max(0, (incident.estimated_amount ?? 0) - 500))}
                   </span>
                 </div>
               </CardContent>
