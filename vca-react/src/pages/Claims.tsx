@@ -34,6 +34,7 @@ import {
   Download,
   Plus,
   Loader2,
+  ZoomIn,
 } from "lucide-react";
 import { getFnolList, type FnolResponse } from "@/lib/api";
 
@@ -72,6 +73,7 @@ export default function Claims() {
     let cancelled = false;
     getFnolList()
       .then((data) => {
+        console.log("Fetched claims:", data);
         if (!cancelled) setClaims(data);
       })
       .catch((err) => {
@@ -138,12 +140,12 @@ export default function Claims() {
                   <Download className="mr-2 h-4 w-4" />
                   Export
                 </Button>
-                <Button size="sm" asChild>
+                {/* <Button size="sm" asChild>
                   <Link to="/claims/new">
                     <Plus className="mr-2 h-4 w-4" />
                     New Claim
                   </Link>
-                </Button>
+                </Button> */}
               </div>
             </div>
           </CardContent>
@@ -222,10 +224,10 @@ export default function Claims() {
                         <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <Button variant="ghost" size="icon" asChild>
                             <Link to={`/claims/${claim.id}`}>
-                              <Eye className="h-4 w-4" />
+                              <ZoomIn className="h-4 w-4" />
                             </Link>
                           </Button>
-                          <DropdownMenu>
+                          {/* <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button variant="ghost" size="icon">
                                 <MoreHorizontal className="h-4 w-4" />
@@ -239,7 +241,7 @@ export default function Claims() {
                                 Reject Claim
                               </DropdownMenuItem>
                             </DropdownMenuContent>
-                          </DropdownMenu>
+                          </DropdownMenu> */}
                         </div>
                       </TableCell>
                     </TableRow>

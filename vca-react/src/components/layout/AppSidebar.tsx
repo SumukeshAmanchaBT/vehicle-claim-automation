@@ -30,13 +30,8 @@ const navItems = [
   },
   {
     title: "Claims",
+    href: "/claims",
     icon: FileText,
-    children: [
-      { title: "All Claims", href: "/claims", icon: FileText },
-      { title: "Pending Review", href: "/claims?status=pending", icon: Clock },
-      { title: "Approved", href: "/claims?status=approved", icon: CheckCircle2 },
-      { title: "Flagged", href: "/claims?status=flagged", icon: AlertTriangle },
-    ],
   },
   {
     title: "Fraud Detection",
@@ -94,64 +89,25 @@ export function AppSidebar() {
         <nav className="flex-1 space-y-1 overflow-y-auto p-4 custom-scrollbar">
           <div className="space-y-1">
             {navItems.map((item) =>
-              item.children ? (
-                <Collapsible
-                  key={item.title}
-                  open={claimsOpen}
-                  onOpenChange={setClaimsOpen}
-                >
-                  <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium text-sidebar-foreground hover:bg-sidebar-accent transition-colors">
-                    <div className="flex items-center gap-3">
-                      <item.icon className="h-4 w-4 text-sidebar-muted" />
-                      {item.title}
-                    </div>
-                    <ChevronDown
-                      className={cn(
-                        "h-4 w-4 text-sidebar-muted transition-transform",
-                        claimsOpen && "rotate-180"
-                      )}
-                    />
-                  </CollapsibleTrigger>
-                  <CollapsibleContent className="space-y-1 pl-4 pt-1">
-                    {item.children.map((child) => (
-                      <NavLink
-                        key={child.href}
-                        to={child.href}
-                        className={({ isActive }) =>
-                          cn(
-                            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                            isActive
-                              ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                              : "text-sidebar-foreground hover:bg-sidebar-accent"
-                          )
-                        }
-                      >
-                        <child.icon className="h-4 w-4" />
-                        {child.title}
-                      </NavLink>
-                    ))}
-                  </CollapsibleContent>
-                </Collapsible>
-              ) : (
-                <NavLink
-                  key={item.href}
-                  to={item.href}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                      isActive
-                        ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                        : "text-sidebar-foreground hover:bg-sidebar-accent"
-                    )
-                  }
-                >
-                  <item.icon className="h-4 w-4" />
-                  {item.title}
-                </NavLink>
-              )
+              <NavLink
+                key={item.href}
+                to={item.href}
+                className={({ isActive }) =>
+                  cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent"
+                  )
+                }
+              >
+                <item.icon className="h-4 w-4" />
+                {item.title}
+              </NavLink>
             )}
           </div>
 
+          {/* Administration section */}
           <div className="pt-6">
             <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-sidebar-muted">
               Administration
