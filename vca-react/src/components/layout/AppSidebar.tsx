@@ -1,20 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import {
-  LayoutDashboard,
-  FileText,
-  Users,
-  Settings,
-  ShieldCheck,
-  BarChart3,
-  Database,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  Car,
-  LogOut,
-  ChevronDown,
-} from "lucide-react";
+import { LayoutDashboard, FileText, Users, Settings, ShieldCheck, BarChart3, Database, Car, LogOut, Activity } from "lucide-react";
 import {
   Collapsible,
   CollapsibleContent,
@@ -37,6 +23,11 @@ const navItems = [
     title: "Fraud Detection",
     href: "/fraud",
     icon: ShieldCheck,
+  },
+  {
+    title: "Damage Detection",
+    href: "/damage-detection",
+    icon: Activity,
   },
   {
     title: "Reports",
