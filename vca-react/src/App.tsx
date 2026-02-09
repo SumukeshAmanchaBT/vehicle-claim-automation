@@ -11,8 +11,14 @@ import Users from "./pages/Users";
 import MasterData from "./pages/MasterData";
 import Reports from "./pages/Reports";
 import Fraud from "./pages/Fraud";
+import DamageDetection from "./pages/DamageDetection";
 import Settings from "./pages/Settings";
+import Login from "./pages/Login";
+import ForgotPassword from "./pages/ForgotPassword";
+import ChangePassword from "./pages/ChangePassword";
 import NotFound from "./pages/NotFound";
+import { AuthProvider } from "./contexts/AuthContext";
+import { RequireAuth } from "./components/auth/RequireAuth";
 
 const queryClient = new QueryClient();
 
@@ -22,19 +28,99 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Index />} />
-          <Route path="/claims" element={<Claims />} />
-          <Route path="/claims/new" element={<ClaimIntake />} />
-          <Route path="/claims/:id" element={<ClaimDetail />} />
-          <Route path="/users" element={<Users />} />
-          <Route path="/master-data" element={<MasterData />} />
-          <Route path="/reports" element={<Reports />} />
-          <Route path="/fraud" element={<Fraud />} />
-          <Route path="/settings" element={<Settings />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <AuthProvider>
+          <Routes>
+            {/* Public auth routes */}
+            <Route path="/login" element={<Login />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/change-password" element={<ChangePassword />} />
+
+            {/* Protected application routes */}
+            <Route
+              path="/"
+              element={
+                <RequireAuth>
+                  <Index />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/claims"
+              element={
+                <RequireAuth>
+                  <Claims />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/claims/new"
+              element={
+                <RequireAuth>
+                  <ClaimIntake />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/claims/:id"
+              element={
+                <RequireAuth>
+                  <ClaimDetail />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/users"
+              element={
+                <RequireAuth>
+                  <Users />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/master-data"
+              element={
+                <RequireAuth>
+                  <MasterData />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/reports"
+              element={
+                <RequireAuth>
+                  <Reports />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/fraud"
+              element={
+                <RequireAuth>
+                  <Fraud />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/damage-detection"
+              element={
+                <RequireAuth>
+                  <DamageDetection />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                <RequireAuth>
+                  <Settings />
+                </RequireAuth>
+              }
+            />
+
+            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>
