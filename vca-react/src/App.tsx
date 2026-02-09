@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import Claims from "./pages/Claims";
 import ClaimDetail from "./pages/ClaimDetail";
+import ClaimIntake from "./pages/ClaimIntake";
 import Users from "./pages/Users";
 import MasterData from "./pages/MasterData";
 import Reports from "./pages/Reports";
@@ -24,6 +25,7 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/claims" element={<Claims />} />
+          <Route path="/claims/new" element={<ClaimIntake />} />
           <Route path="/claims/:id" element={<ClaimDetail />} />
           <Route path="/users" element={<Users />} />
           <Route path="/master-data" element={<MasterData />} />
