@@ -84,3 +84,137 @@ class ClaimTypeMaster(models.Model):
 
     def __str__(self) -> str:
         return f"ClaimType {self.claim_type_id} - {self.claim_type_name}"
+
+
+class Claim(models.Model):
+    """
+    Stores the evaluated claim record after the rules engine has run.
+    This is the main entity exposed to the frontend for list/detail views.
+    """
+
+    SIMPLE = "SIMPLE"
+    MEDIUM = "MEDIUM"
+    COMPLEX = "COMPLEX"
+
+    CLAIM_TYPE_CHOICES = [
+        (SIMPLE, "Simple"),
+        (MEDIUM, "Medium"),
+        (COMPLEX, "Complex"),
+    ]
+
+    AUTOMATION_SIMPLE = "Simple"
+    AUTOMATION_COMPLEX = "Complex"
+
+    AUTOMATION_FLAG_CHOICES = [
+        (AUTOMATION_SIMPLE, "Simple"),
+        (AUTOMATION_COMPLEX, "Complex"),
+    ]
+
+    DECISION_AUTO_APPROVE = "Auto Approve"
+    DECISION_MANUAL_REVIEW = "Manual Review"
+    DECISION_REJECT = "Reject"
+
+    DECISION_CHOICES = [
+        (DECISION_AUTO_APPROVE, "Auto Approve"),
+        (DECISION_MANUAL_REVIEW, "Manual Review"),
+        (DECISION_REJECT, "Reject"),
+    ]
+
+    STATUS_OPEN = "Open"
+    STATUS_CLOSED = "Closed"
+    STATUS_REJECTED = "Rejected"
+    STATUS_PROCESSING = "Processing"
+
+    STATUS_CHOICES = [
+        (STATUS_OPEN, "Open"),
+        (STATUS_CLOSED, "Closed"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_PROCESSING, "Processing"),
+    ]
+
+    claim_id = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="External/business claim identifier coming from FNOL/core system.",
+    )
+    fnol = models.ForeignKey(
+        FnolResponse,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claims",
+    )
+
+    policy_number = models.CharField(max_length=100)
+    insured_name = models.CharField(max_length=150, null=True, blank=True)
+
+    incident_date = models.DateField(null=True, blank=True)
+    loss_description = models.TextField(blank=True)
+    estimated_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Estimated claim amount in policy currency.",
+    )
+
+    claim_type = models.CharField(
+        max_length=20,
+        choices=CLAIM_TYPE_CHOICES,
+        null=True,
+        blank=True,
+    )
+    automation_flag = models.CharField(
+        max_length=20,
+        choices=AUTOMATION_FLAG_CHOICES,
+        default=AUTOMATION_COMPLEX,
+        help_text="Simple vs Complex, based on rules-engine decision.",
+    )
+    decision = models.CharField(
+        max_length=50,
+        choices=DECISION_CHOICES,
+        default=DECISION_MANUAL_REVIEW,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_OPEN,
+    )
+
+    damage_confidence = models.IntegerField(
+        default=0,
+        help_text="Damage detection confidence (0-100).",
+    )
+    fraud_score_numeric = models.IntegerField(
+        default=0,
+        help_text="Numeric fraud score (0-100) derived from fraud band.",
+    )
+    fraud_risk_band = models.CharField(
+        max_length=20,
+        help_text="Low / Medium / High fraud risk band.",
+    )
+    evaluation_score = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Normalized evaluation score used for threshold comparison.",
+    )
+    pre_existing_damage_flag = models.BooleanField(
+        default=False,
+        help_text="True when pre-existing damage is suspected.",
+    )
+    decision_reasons = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Optional human-readable explanation of decision and flags.",
+    )
+
+    created_date = models.DateTimeField(auto_now_add=True)
+    created_by = models.CharField(max_length=150, null=True, blank=True)
+    updated_date = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, null=True, blank=True)
+
+    class Meta:
+        db_table = "claim"
+
+    def __str__(self) -> str:
+        return f"Claim(id={self.id}, claim_id={self.claim_id})"
