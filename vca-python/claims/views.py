@@ -2,17 +2,206 @@ import random
 import re
 from typing import Optional, Tuple
 
+from django.contrib.auth import authenticate
+from django.contrib.auth.models import User, Group
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
-from rest_framework.decorators import api_view
+from rest_framework.authtoken.models import Token
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework import status
 
 from .models import (
     ClaimRuleMaster,
     ClaimTypeMaster,
     DamageCodeMaster,
     FnolResponse,
+    Claim,
 )
+from .serializers import (
+    LoginSerializer,
+    UserSerializer,
+    UserCreateSerializer,
+    UserUpdateSerializer,
+    ChangeRoleSerializer,
+    ResetPasswordSerializer,
+)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_user(request):
+    if not request.user.is_staff:
+        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = UserCreateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = serializer.save()
+    return Response({"user": UserSerializer(user).data, "message": "User created."}, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_users(request):
+    # Any authenticated user can view all users
+    users = User.objects.all()
+    payload = []
+    for u in users:
+        role = u.groups.first().name if u.groups.exists() else 'User'
+        status_text = 'Active' if u.is_active else 'Inactive'
+        
+        # Try to get claims count, gracefully handle if table doesn't exist
+        try:
+            claims_handled = Claim.objects.filter(created_by=u.username).count()
+        except Exception:
+            claims_handled = 0
+            
+        payload.append({
+            'id': u.id,
+            'username': u.username,
+            'email': u.email,
+            'first_name': u.first_name,
+            'last_name': u.last_name,
+            'role': role,
+            'status': status_text,
+            'claims_handled': claims_handled,
+            'last_login': u.last_login,
+        })
+
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(['PATCH', 'PUT'])
+@permission_classes([IsAuthenticated])
+def edit_user(request, pk):
+    # Users can edit their own profile, staff can edit anyone
+    user = get_object_or_404(User, pk=pk)
+    
+    if user.id != request.user.id and not request.user.is_staff:
+        return Response({"error": "Forbidden - can only edit your own profile"}, status=status.HTTP_403_FORBIDDEN)
+    
+    serializer = UserUpdateSerializer(user, data=request.data, partial=True)
+    if not serializer.is_valid():
+        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    serializer.save()
+    return Response({"user": UserSerializer(user).data, "message": "User updated."}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_role(request, pk):
+    if not request.user.is_staff:
+        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    user = get_object_or_404(User, pk=pk)
+    serializer = ChangeRoleSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    role = serializer.validated_data.get('role')
+    grp, _ = Group.objects.get_or_create(name=role)
+    user.groups.clear()
+    user.groups.add(grp)
+    return Response({"message": "Role updated.", "role": role}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def reset_password(request, pk):
+    if not request.user.is_staff:
+        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    user = get_object_or_404(User, pk=pk)
+    serializer = ResetPasswordSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+    new_password = serializer.validated_data.get('new_password')
+    user.set_password(new_password)
+    user.save()
+    return Response({"message": "Password reset."}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def deactivate_user(request, pk):
+    if not request.user.is_staff:
+        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+    user = get_object_or_404(User, pk=pk)
+    user.is_active = False
+    user.save()
+    return Response({"message": "User deactivated."}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def login(request):
+    """
+    User login endpoint.
+    
+    Accepts POST request with username and password.
+    Returns authentication token and user information.
+    
+    Request body:
+    {
+        "username": "string",
+        "password": "string"
+    }
+    
+    Response:
+    {
+        "token": "string",
+        "user": {
+            "id": "int",
+            "username": "string",
+            "email": "string",
+            "first_name": "string",
+            "last_name": "string"
+        },
+        "message": "string"
+    }
+    """
+    serializer = LoginSerializer(data=request.data)
+    
+    if not serializer.is_valid():
+        return Response(
+            {
+                "error": serializer.errors,
+                "message": "Invalid credentials provided."
+            },
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    username = serializer.validated_data.get('username')
+    password = serializer.validated_data.get('password')
+    
+    # Authenticate user
+    user = authenticate(username=username, password=password)
+    
+    if user is None:
+        return Response(
+            {
+                "error": "Invalid username or password.",
+                "message": "Authentication failed."
+            },
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+    
+    # Get or create token for user
+    token, created = Token.objects.get_or_create(user=user)
+    
+    user_serializer = UserSerializer(user)
+    
+    return Response(
+        {
+            "token": token.key,
+            "user": user_serializer.data,
+            "message": "Login successful."
+        },
+        status=status.HTTP_200_OK
+    )
 
 
 def product_rule(policy: dict) -> bool:
@@ -135,6 +324,7 @@ def evaluate_score(confidence: int, amount: float) -> float:
 
 
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def list_fnol(request):
     """
     Return a list of FNOL responses.
