@@ -343,6 +343,8 @@ def list_fnol(request):
             "created_by": obj.created_by,
             "updated_date": obj.updated_date,
             "updated_by": obj.updated_by,
+            # claim_status is an FK to ClaimStatus; expose the name (not the ID)
+            "status": obj.claim_status.status_name if obj.claim_status else None,
         }
         for obj in qs
     ]
