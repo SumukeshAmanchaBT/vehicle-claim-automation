@@ -22,6 +22,7 @@ import {
   Brain,
   Eye,
   Loader2,
+  FileText,
 } from "lucide-react";
 import {
   getFnolById,
@@ -144,7 +145,7 @@ export default function ClaimDetail() {
               Back to Claims
             </Link>
           </Button>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-end items-center gap-2">
             {/* <StatusBadge
               status={getStatusVariant(decision)}
               pulse={claimStatus === "Open"}
@@ -152,9 +153,11 @@ export default function ClaimDetail() {
             >
               {decision}
             </StatusBadge> */}
-             {/* <Button variant="outline">Request Documents</Button>
-           <Button variant="destructive">Reject</Button> */}
-            <Button>Evaluate Claim</Button>
+             {/* <Button variant="outline">Request Documents</Button> */}
+           
+            <Button>Fraud Detection</Button>
+
+            <Button variant="destructive" disabled>Damage Detection</Button>
           </div>
         </div>
 
@@ -185,7 +188,7 @@ export default function ClaimDetail() {
                       <Brain className="h-5 w-5 text-success" />
                     </div>
                     <div>
-                      <p className="text-xs text-muted-foreground">AI Confidence</p>
+                      <p className="text-xs text-muted-foreground">AI Damage Assessment %</p>
                       <p className="text-xl font-bold">{aiConfidence}%</p>
                     </div>
                   </div>
@@ -205,7 +208,7 @@ export default function ClaimDetail() {
                     />
                   </div>
                   <div className="mt-2">
-                    <p className="text-xs text-muted-foreground">Fraud Risk</p>
+                    <p className="text-xs text-muted-foreground">Fraud Evaluation</p>
                     <p className="text-xl font-bold">{fraudBand} ({fraudScore}%)</p>
                   </div>
                 </CardContent>
@@ -213,12 +216,12 @@ export default function ClaimDetail() {
             </div>
 
             {/* Tabs */}
-            <Tabs defaultValue="details" className="space-y-4">
+            <Tabs defaultValue="details" className="space-y-4 p-4 w-full">
               <TabsList>
                 <TabsTrigger value="details">Claim Details</TabsTrigger>
                 <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
                 <TabsTrigger value="documents">Documents</TabsTrigger>
-                <TabsTrigger value="timeline">Timeline</TabsTrigger>
+                {/* <TabsTrigger value="timeline">Timeline</TabsTrigger> */}
               </TabsList>
 
               <TabsContent value="details">
@@ -312,15 +315,15 @@ export default function ClaimDetail() {
                   <CardContent className="space-y-6">
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-sm">Overall Confidence</span>
+                        <span className="text-sm">Damage Evaluation %</span>
                         <span className="text-sm font-medium">{aiConfidence}%</span>
                       </div>
                       <Progress value={aiConfidence} className="h-2" />
                     </div>
 
                     {assessment && (
-                      <div className="grid gap-4 sm:grid-cols-2">
-                        <div className="rounded-lg border p-4">
+                      <div className="grid gap-4">
+                        {/* <div className="rounded-lg border p-4">
                           <div className="flex items-center gap-2 mb-2">
                             <CheckCircle2 className="h-4 w-4 text-success" />
                             <span className="text-sm font-medium">Assessment Result</span>
@@ -332,7 +335,7 @@ export default function ClaimDetail() {
                             <li>• Evaluation Score: {assessment.evaluation_score ?? "—"}</li>
                             {assessment.reason && <li>• Reason: {assessment.reason}</li>}
                           </ul>
-                        </div>
+                        </div> */}
                         <div className="rounded-lg border p-4">
                           <div className="flex items-center gap-2 mb-2">
                             <Eye className="h-4 w-4 text-primary" />
@@ -386,37 +389,37 @@ export default function ClaimDetail() {
                     <CardTitle className="text-base">Uploaded Documents</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="grid gap-4 sm:grid-cols-1">
                       <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">RC Copy</span>
-                        <StatusBadge status={documents.rc_copy_uploaded ? "approved" : "pending"}>
+                        {/* <StatusBadge status={documents.rc_copy_uploaded ? "approved" : "pending"}>
                           {documents.rc_copy_uploaded ? "Uploaded" : "Missing"}
-                        </StatusBadge>
+                        </StatusBadge> */}
                       </div>
-                      <div className="flex items-center justify-between rounded-lg border p-4">
+                      {/* <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">DL Copy</span>
                         <StatusBadge status={documents.dl_copy_uploaded ? "approved" : "pending"}>
                           {documents.dl_copy_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
-                      </div>
+                      </div> */}
                       <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">Photos</span>
                         <StatusBadge status={documents.photos_uploaded ? "approved" : "pending"}>
                           {documents.photos_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
                       </div>
-                      <div className="flex items-center justify-between rounded-lg border p-4">
+                      {/* <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">FIR</span>
                         <StatusBadge status={documents.fir_uploaded ? "approved" : "pending"}>
                           {documents.fir_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
-                      </div>
+                      </div> */}
                     </div>
                   </CardContent>
                 </Card>
               </TabsContent>
 
-              <TabsContent value="timeline">
+              {/* <TabsContent value="timeline">
                 <Card className="card-elevated">
                   <CardHeader>
                     <CardTitle className="text-base">Claim Timeline</CardTitle>
@@ -461,7 +464,7 @@ export default function ClaimDetail() {
                     </div>
                   </CardContent>
                 </Card>
-              </TabsContent>
+              </TabsContent> */}
             </Tabs>
           </div>
 
@@ -498,33 +501,8 @@ export default function ClaimDetail() {
             <Card className="card-elevated">
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
-                  <Car className="h-4 w-4" />
-                  Vehicle Information
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Vehicle</span>
-                  <span>
-                    {vehicle.year} {vehicle.make} {vehicle.model}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Registration</span>
-                  <span className="font-mono">{vehicle.registration_number || "—"}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Coverage</span>
-                  <span>{policy.coverage_type || "—"}</span>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="card-elevated">
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <DollarSign className="h-4 w-4" />
-                  Settlement Details
+                  <FileText className="h-4 w-4" />
+                  Policy Details
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
@@ -547,6 +525,33 @@ export default function ClaimDetail() {
                 </div>
               </CardContent>
             </Card>
+
+            <Card className="card-elevated">
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Car className="h-4 w-4" />
+                  Vehicle Information
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Vehicle</span>
+                  <span>
+                    {vehicle.year} {vehicle.make} {vehicle.model}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Registration</span>
+                  <span className="font-mono">{vehicle.registration_number || "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Coverage</span>
+                  <span>{policy.coverage_type || "—"}</span>
+                </div>
+              </CardContent>
+            </Card>
+
+            
           </div>
         </div>
       </div>
