@@ -124,8 +124,29 @@ export async function getClaimTypes(): Promise<ClaimTypeMaster[]> {
   return fetchApi<ClaimTypeMaster[]>("/masters/claim-types");
 }
 
+export async function createClaimType(
+  payload: Pick<ClaimTypeMaster, "claim_type_name" | "risk_percentage" | "is_active">
+): Promise<ClaimTypeMaster> {
+  return fetchApi<ClaimTypeMaster>("/masters/claim-types", {
+    method: "POST",
+    data: payload,
+  });
+}
+
 // Claim rules (for fraud rules tab)
 export async function getClaimRules(): Promise<ClaimRuleMaster[]> {
   return fetchApi<ClaimRuleMaster[]>("/masters/claim-rules");
+}
+
+export async function createClaimRule(
+  payload: Pick<
+    ClaimRuleMaster,
+    "rule_type" | "rule_group" | "rule_description" | "rule_expression" | "is_active"
+  >
+): Promise<ClaimRuleMaster> {
+  return fetchApi<ClaimRuleMaster>("/masters/claim-rules", {
+    method: "POST",
+    data: payload,
+  });
 }
 

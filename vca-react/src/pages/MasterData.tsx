@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -16,8 +17,18 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { Plus, Edit2, Trash2, Settings2 } from "lucide-react";
 import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
   createDamageCode,
   deleteDamageCode,
+  createClaimType,
+  createClaimRule,
   getClaimRules,
   getClaimTypes,
   getDamageCodes,
@@ -33,6 +44,20 @@ export default function MasterData() {
   const [claimTypes, setClaimTypes] = useState<ClaimTypeMaster[]>([]);
   const [claimRules, setClaimRules] = useState<ClaimRuleMaster[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [damageDialogOpen, setDamageDialogOpen] = useState(false);
+  const [newDamageName, setNewDamageName] = useState("");
+  const [newDamageSeverity, setNewDamageSeverity] = useState("");
+
+  const [claimTypeDialogOpen, setClaimTypeDialogOpen] = useState(false);
+  const [newClaimTypeName, setNewClaimTypeName] = useState("");
+  const [newClaimTypeRisk, setNewClaimTypeRisk] = useState("");
+
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
+  const [newRuleType, setNewRuleType] = useState("");
+  const [newRuleGroup, setNewRuleGroup] = useState("");
+  const [newRuleDescription, setNewRuleDescription] = useState("");
+  const [newRuleExpression, setNewRuleExpression] = useState("");
 
   useEffect(() => {
     async function loadMasterData() {
@@ -60,14 +85,9 @@ export default function MasterData() {
     loadMasterData();
   }, [toast]);
 
-  const handleAddDamageType = async () => {
-    const name = window.prompt("Damage type name (e.g. bumper):");
-    if (!name) return;
-    const severityStr = window.prompt(
-      "Severity percentage (0-100, e.g. 20):",
-      "20",
-    );
-    const severity = severityStr ? Number(severityStr) : NaN;
+  const handleCreateDamageType = async () => {
+    const name = newDamageName.trim();
+    const severity = Number(newDamageSeverity);
     if (Number.isNaN(severity)) {
       toast({
         title: "Invalid severity",
@@ -85,6 +105,9 @@ export default function MasterData() {
       });
       setDamageTypes((prev) => [...prev, created]);
       toast({ title: "Damage type created" });
+      setDamageDialogOpen(false);
+      setNewDamageName("");
+      setNewDamageSeverity("");
     } catch (error) {
       console.error(error);
       toast({
@@ -109,6 +132,70 @@ export default function MasterData() {
     }
   };
 
+  const handleCreateClaimType = async () => {
+    const name = newClaimTypeName.trim();
+    const risk = Number(newClaimTypeRisk);
+    if (!name || Number.isNaN(risk)) {
+      toast({
+        title: "Invalid claim type",
+        description: "Please provide a name and numeric risk percentage.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const created = await createClaimType({
+        claim_type_name: name,
+        risk_percentage: risk,
+        is_active: true,
+      });
+      setClaimTypes((prev) => [...prev, created]);
+      toast({ title: "Claim type created" });
+      setClaimTypeDialogOpen(false);
+      setNewClaimTypeName("");
+      setNewClaimTypeRisk("");
+    } catch (error) {
+      console.error(error);
+      toast({
+        title: "Failed to create claim type",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleCreateRule = async () => {
+    if (!newRuleType.trim() || !newRuleGroup.trim() || !newRuleExpression.trim()) {
+      toast({
+        title: "Missing fields",
+        description: "Rule type, group and expression are required.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const created = await createClaimRule({
+        rule_type: newRuleType.trim(),
+        rule_group: newRuleGroup.trim(),
+        rule_description: newRuleDescription.trim(),
+        rule_expression: newRuleExpression.trim(),
+        is_active: true,
+      });
+      setClaimRules((prev) => [...prev, created]);
+      toast({ title: "Rule created" });
+      setRuleDialogOpen(false);
+      setNewRuleType("");
+      setNewRuleGroup("");
+      setNewRuleDescription("");
+      setNewRuleExpression("");
+    } catch (error) {
+      console.error(error);
+      toast({
+        title: "Failed to create rule",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <AppLayout
       title="Master Data"
@@ -127,10 +214,52 @@ export default function MasterData() {
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Damage Type Configuration</CardTitle>
-                <Button size="sm" onClick={handleAddDamageType}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Add Damage Type
-                </Button>
+                <Dialog open={damageDialogOpen} onOpenChange={setDamageDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm">
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Damage Type
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Damage Type</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="damage-name">Damage Type Name</Label>
+                        <Input
+                          id="damage-name"
+                          value={newDamageName}
+                          onChange={(e) => setNewDamageName(e.target.value)}
+                          placeholder="e.g. bumper"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="damage-severity">Severity Percentage</Label>
+                        <Input
+                          id="damage-severity"
+                          type="number"
+                          value={newDamageSeverity}
+                          onChange={(e) => setNewDamageSeverity(e.target.value)}
+                          placeholder="e.g. 20"
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter className="mt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setDamageDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="button" onClick={handleCreateDamageType}>
+                        Save
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -194,8 +323,54 @@ export default function MasterData() {
 
           <TabsContent value="thresholds">
             <Card className="card-elevated">
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Claim Type Thresholds</CardTitle>
+                <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm">
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Claim Type
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Claim Type</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="claim-type-name">Claim Type Name</Label>
+                        <Input
+                          id="claim-type-name"
+                          value={newClaimTypeName}
+                          onChange={(e) => setNewClaimTypeName(e.target.value)}
+                          placeholder="e.g. SIMPLE"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="claim-type-risk">Risk Percentage</Label>
+                        <Input
+                          id="claim-type-risk"
+                          type="number"
+                          value={newClaimTypeRisk}
+                          onChange={(e) => setNewClaimTypeRisk(e.target.value)}
+                          placeholder="e.g. 25"
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter className="mt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setClaimTypeDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="button" onClick={handleCreateClaimType}>
+                        Save
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -244,8 +419,71 @@ export default function MasterData() {
 
           <TabsContent value="fraud-rules">
             <Card className="card-elevated">
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Fraud Rules</CardTitle>
+                <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm">
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Rule
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Fraud Rule</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="rule-type">Rule Type</Label>
+                        <Input
+                          id="rule-type"
+                          value={newRuleType}
+                          onChange={(e) => setNewRuleType(e.target.value)}
+                          placeholder="e.g. Early Claim"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="rule-group">Rule Group</Label>
+                        <Input
+                          id="rule-group"
+                          value={newRuleGroup}
+                          onChange={(e) => setNewRuleGroup(e.target.value)}
+                          placeholder="e.g. Fraud Check"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="rule-description">Description</Label>
+                        <Input
+                          id="rule-description"
+                          value={newRuleDescription}
+                          onChange={(e) => setNewRuleDescription(e.target.value)}
+                          placeholder="Optional description"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="rule-expression">Expression</Label>
+                        <Input
+                          id="rule-expression"
+                          value={newRuleExpression}
+                          onChange={(e) => setNewRuleExpression(e.target.value)}
+                          placeholder='e.g. "Claim < 30 days"'
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter className="mt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setRuleDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="button" onClick={handleCreateRule}>
+                        Save
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
