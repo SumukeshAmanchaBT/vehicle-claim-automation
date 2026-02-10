@@ -153,8 +153,8 @@ export default function ClaimDetail() {
             >
               {decision}
             </StatusBadge> */}
-             {/* <Button variant="outline">Request Documents</Button> */}
-           
+            {/* <Button variant="outline">Request Documents</Button> */}
+
             <Button>Fraud Detection</Button>
 
             <Button variant="destructive" disabled>Damage Detection</Button>
@@ -197,14 +197,12 @@ export default function ClaimDetail() {
               <Card className="card-elevated">
                 <CardContent className="p-4">
                   <div
-                    className={`flex h-10 w-10 items-center justify-center rounded-lg ${
-                      fraudScore >= 50 ? "bg-destructive/10" : fraudScore >= 30 ? "bg-warning/10" : "bg-success/10"
-                    }`}
+                    className={`flex h-10 w-10 items-center justify-center rounded-lg ${fraudScore >= 50 ? "bg-destructive/10" : fraudScore >= 30 ? "bg-warning/10" : "bg-success/10"
+                      }`}
                   >
                     <Shield
-                      className={`h-5 w-5 ${
-                        fraudScore >= 50 ? "text-destructive" : fraudScore >= 30 ? "text-warning" : "text-success"
-                      }`}
+                      className={`h-5 w-5 ${fraudScore >= 50 ? "text-destructive" : fraudScore >= 30 ? "text-warning" : "text-success"
+                        }`}
                     />
                   </div>
                   <div className="mt-2">
@@ -390,31 +388,73 @@ export default function ClaimDetail() {
                   </CardHeader>
                   <CardContent>
                     <div className="grid gap-4 sm:grid-cols-1">
-                      <div className="flex items-center justify-between rounded-lg border p-4">
-                        <span className="text-sm font-medium">RC Copy</span>
-                        {/* <StatusBadge status={documents.rc_copy_uploaded ? "approved" : "pending"}>
-                          {documents.rc_copy_uploaded ? "Uploaded" : "Missing"}
-                        </StatusBadge> */}
-                      </div>
                       {/* <div className="flex items-center justify-between rounded-lg border p-4">
+                        <span className="text-sm font-medium">RC Copy</span>
+                        <StatusBadge status={documents.rc_copy_uploaded ? "approved" : "pending"}>
+                          {documents.rc_copy_uploaded ? "Uploaded" : "Missing"}
+                        </StatusBadge>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">DL Copy</span>
                         <StatusBadge status={documents.dl_copy_uploaded ? "approved" : "pending"}>
                           {documents.dl_copy_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
                       </div> */}
-                      <div className="flex items-center justify-between rounded-lg border p-4">
+                      {/* <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">Photos</span>
                         <StatusBadge status={documents.photos_uploaded ? "approved" : "pending"}>
                           {documents.photos_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
-                      </div>
+                      </div> */}
                       {/* <div className="flex items-center justify-between rounded-lg border p-4">
                         <span className="text-sm font-medium">FIR</span>
                         <StatusBadge status={documents.fir_uploaded ? "approved" : "pending"}>
                           {documents.fir_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
                       </div> */}
+
+
+                      <div className="rounded-lg border p-4 space-y-3">
+                        {/* Header */}
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium">Photos</span>
+
+                          <StatusBadge status={documents?.photos?.length >= 1 ? "approved" : "pending"}>
+                            {documents?.photos?.length >= 1 ? "Available" : "Not Available"}
+                          </StatusBadge>
+                        </div>
+
+                        {/* 4 Image Grid */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {[0, 1, 2, 3].map((index) => {
+                            const imageUrl = documents?.photos?.[index];
+
+                            return imageUrl ? (
+                              <img
+                                key={index}
+                                src={imageUrl}
+                                alt={`Photo ${index + 1}`}
+                                className="h-28 w-full rounded-md border object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div
+                                key={index}
+                                className="h-28 w-full rounded-md border bg-gray-100 flex items-center justify-center text-xs text-gray-500"
+                              >
+                                No Image
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+
                     </div>
+
+
+
+
                   </CardContent>
                 </Card>
               </TabsContent>
@@ -551,7 +591,7 @@ export default function ClaimDetail() {
               </CardContent>
             </Card>
 
-            
+
           </div>
         </div>
       </div>
