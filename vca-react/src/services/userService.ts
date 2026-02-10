@@ -46,7 +46,7 @@ export async function listUsers(): Promise<UserSummary[]> {
 }
 
 export async function createUser(payload: CreateUserRequest): Promise<UserSummary> {
-  const res = await httpClient.post<UserSummary>("/users/create/", payload);
+  const res = await httpClient.post<UserSummary>("/users/create", payload);
   return res.data;
 }
 
