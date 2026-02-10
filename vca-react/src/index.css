@@ -57,7 +57,7 @@
     --radius: 0.625rem;
 
     /* Sidebar - Professional Dark (RGB) */
-    --sidebar-background: 15 23 42;      /* #0F172A */
+    --sidebar-background: 0 0 142;      /* ##00008f */
     --sidebar-foreground: 226 232 240;   /* #E2E8F0 */
     --sidebar-primary: 59 130 246;       /* #3B82F6 */
     --sidebar-primary-foreground: 255 255 255;
@@ -122,7 +122,7 @@
     --secondary-foreground: 226 232 240;
 
     --muted: 30 64 98;
-    --muted-foreground: 148 163 184;
+    --muted-foreground: 239 239 248;
 
     --accent: 59 130 246;
     --accent-foreground: 15 23 42;
@@ -291,4 +291,9 @@
   .glass {
     @apply bg-background/80 backdrop-blur-md;
   }
+}
+
+
+.table-header-bg th {
+  background-color: rgb(209, 226, 255) !important;
 }
