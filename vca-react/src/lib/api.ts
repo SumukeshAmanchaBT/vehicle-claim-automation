@@ -19,6 +19,10 @@ async function fetchApi<T>(
   return response.data;
 }
 
+/** ****************************
+ * FNOL / Claim processing APIs
+ * **************************** */
+
 /** GET /api/fnol/ - List all FNOL responses */
 export async function getFnolList(): Promise<FnolResponse[]> {
   return fetchApi<FnolResponse[]>("/fnol");
@@ -30,7 +34,9 @@ export async function getFnolById(id: string | number): Promise<FnolResponse> {
 }
 
 /** POST /api/save-fnol/ - Save FNOL payload */
-export async function saveFnol(fnol: FnolPayload): Promise<{ message: string; id: number }> {
+export async function saveFnol(
+  fnol: FnolPayload
+): Promise<{ message: string; id: number }> {
   return fetchApi<{ message: string; id: number }>("/save-fnol", {
     method: "POST",
     data: { fnol },
@@ -38,10 +44,88 @@ export async function saveFnol(fnol: FnolPayload): Promise<{ message: string; id
 }
 
 /** POST /api/process-claim/ - Process claim and get assessment */
-export async function processClaim(fnol: FnolPayload): Promise<ProcessClaimResponse> {
+export async function processClaim(
+  fnol: FnolPayload
+): Promise<ProcessClaimResponse> {
   return fetchApi<ProcessClaimResponse>("/process-claim", {
     method: "POST",
     data: { fnol },
   });
+}
+
+/** ****************************
+ * Master data APIs
+ * **************************** */
+
+export interface DamageCodeMaster {
+  damage_id: number;
+  damage_type: string;
+  severity_percentage: number;
+  is_active: boolean;
+  created_date: string;
+  created_by: string | null;
+}
+
+export interface ClaimTypeMaster {
+  claim_type_id: number;
+  claim_type_name: string;
+  risk_percentage: number;
+  is_active: boolean;
+  created_date: string;
+  created_by: string | null;
+}
+
+export interface ClaimRuleMaster {
+  rule_id: number;
+  rule_type: string;
+  rule_group: string;
+  rule_description: string;
+  rule_expression: string;
+  is_active: boolean;
+  created_date: string;
+  created_by: string | null;
+}
+
+// Damage codes
+export async function getDamageCodes(): Promise<DamageCodeMaster[]> {
+  return fetchApi<DamageCodeMaster[]>("/masters/damage-codes");
+}
+
+export async function updateDamageCode(
+  id: number,
+  payload: Partial<
+    Pick<DamageCodeMaster, "damage_type" | "severity_percentage" | "is_active">
+  >
+): Promise<DamageCodeMaster> {
+  return fetchApi<DamageCodeMaster>(`/masters/damage-codes/${id}`, {
+    method: "PATCH",
+    data: payload,
+  });
+}
+
+export async function createDamageCode(
+  payload: Pick<
+    DamageCodeMaster,
+    "damage_type" | "severity_percentage" | "is_active"
+  >
+): Promise<DamageCodeMaster> {
+  return fetchApi<DamageCodeMaster>("/masters/damage-codes", {
+    method: "POST",
+    data: payload,
+  });
+}
+
+export async function deleteDamageCode(id: number): Promise<void> {
+  await fetchApi<void>(`/masters/damage-codes/${id}`, { method: "DELETE" });
+}
+
+// Claim types (for thresholds tab)
+export async function getClaimTypes(): Promise<ClaimTypeMaster[]> {
+  return fetchApi<ClaimTypeMaster[]>("/masters/claim-types");
+}
+
+// Claim rules (for fraud rules tab)
+export async function getClaimRules(): Promise<ClaimRuleMaster[]> {
+  return fetchApi<ClaimRuleMaster[]>("/masters/claim-rules");
 }
 

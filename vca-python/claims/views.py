@@ -26,6 +26,9 @@ from .serializers import (
     UserUpdateSerializer,
     ChangeRoleSerializer,
     ResetPasswordSerializer,
+    ClaimTypeMasterSerializer,
+    ClaimRuleMasterSerializer,
+    DamageCodeMasterSerializer,
 )
 
 
@@ -365,6 +368,112 @@ def get_fnol(request, pk: int):
         "updated_by": obj.updated_by,
     }
     return Response(data)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def claim_type_master_collection(request):
+    if request.method == "GET":
+        qs = ClaimTypeMaster.objects.all().order_by("claim_type_id")
+        return Response(ClaimTypeMasterSerializer(qs, many=True).data)
+
+    serializer = ClaimTypeMasterSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+    obj = serializer.save(created_by=created_by)
+    return Response(ClaimTypeMasterSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def claim_type_master_detail(request, pk: int):
+    obj = get_object_or_404(ClaimTypeMaster, pk=pk)
+
+    if request.method == "GET":
+        return Response(ClaimTypeMasterSerializer(obj).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = ClaimTypeMasterSerializer(
+            obj, data=request.data, partial=(request.method == "PATCH")
+        )
+        serializer.is_valid(raise_exception=True)
+        updated_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+        obj = serializer.save(created_by=obj.created_by or updated_by)
+        # Note: model doesn't have updated_by; keeping created_by stable
+        return Response(ClaimTypeMasterSerializer(obj).data)
+
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def claim_rule_master_collection(request):
+    if request.method == "GET":
+        qs = ClaimRuleMaster.objects.all().order_by("rule_id")
+        return Response(ClaimRuleMasterSerializer(qs, many=True).data)
+
+    serializer = ClaimRuleMasterSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+    obj = serializer.save(created_by=created_by)
+    return Response(ClaimRuleMasterSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def claim_rule_master_detail(request, pk: int):
+    obj = get_object_or_404(ClaimRuleMaster, pk=pk)
+
+    if request.method == "GET":
+        return Response(ClaimRuleMasterSerializer(obj).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = ClaimRuleMasterSerializer(
+            obj, data=request.data, partial=(request.method == "PATCH")
+        )
+        serializer.is_valid(raise_exception=True)
+        updated_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+        obj = serializer.save(created_by=obj.created_by or updated_by)
+        return Response(ClaimRuleMasterSerializer(obj).data)
+
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def damage_code_master_collection(request):
+    if request.method == "GET":
+        qs = DamageCodeMaster.objects.all().order_by("damage_id")
+        return Response(DamageCodeMasterSerializer(qs, many=True).data)
+
+    serializer = DamageCodeMasterSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+    obj = serializer.save(created_by=created_by)
+    return Response(DamageCodeMasterSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def damage_code_master_detail(request, pk: int):
+    obj = get_object_or_404(DamageCodeMaster, pk=pk)
+
+    if request.method == "GET":
+        return Response(DamageCodeMasterSerializer(obj).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = DamageCodeMasterSerializer(
+            obj, data=request.data, partial=(request.method == "PATCH")
+        )
+        serializer.is_valid(raise_exception=True)
+        updated_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+        obj = serializer.save(created_by=obj.created_by or updated_by)
+        return Response(DamageCodeMasterSerializer(obj).data)
+
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(['POST'])

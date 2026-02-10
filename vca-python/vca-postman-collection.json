@@ -1,0 +1,428 @@
+{
+  "info": {
+    "_postman_id": "3a1b3c4d-5e6f-47a8-9b0c-1d2e3f4a5b6c",
+    "name": "Vehicle Claim Automation (VCA) - APIs",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login (get token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/login",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "login" ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "FNOL",
+      "item": [
+        {
+          "name": "Save FNOL",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [ { "key": "token", "value": "{{token}}", "type": "string" } ] },
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fnol\": {\n    \"claim_id\": \"CLM-1001\",\n    \"policy\": {\n      \"policy_status\": \"Active\",\n      \"policy_start_date\": \"2026-01-15\"\n    },\n    \"incident\": {\n      \"date_time_of_loss\": \"2026-02-05T10:30:00Z\",\n      \"loss_description\": \"bumper dent\",\n      \"estimated_amount\": 20000,\n      \"location\": \"Bangalore\"\n    },\n    \"history\": {\n      \"previous_claims_last_12_months\": 0\n    },\n    \"documents\": {\n      \"photos_uploaded\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/save-fnol",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "save-fnol" ]
+            }
+          }
+        },
+        {
+          "name": "List FNOL responses",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/fnol",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "fnol" ]
+            }
+          }
+        },
+        {
+          "name": "Get FNOL response by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/fnol/1/",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "fnol", "1" ],
+              "trailingSlash": true
+            }
+          }
+        },
+        {
+          "name": "Process Claim",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fnol\": {\n    \"claim_id\": \"CLM-1001\",\n    \"policy\": {\n      \"policy_status\": \"Active\",\n      \"policy_start_date\": \"2026-01-15\"\n    },\n    \"incident\": {\n      \"date_time_of_loss\": \"2026-02-05T10:30:00Z\",\n      \"loss_description\": \"glass bumper dent\",\n      \"estimated_amount\": 20000,\n      \"location\": \"Bangalore\"\n    },\n    \"history\": {\n      \"previous_claims_last_12_months\": 0\n    },\n    \"documents\": {\n      \"photos_uploaded\": true\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/process-claim",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "process-claim" ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Masters - Claim Types (claim_type_master)",
+      "item": [
+        {
+          "name": "List claim types",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-types",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-types" ]
+            }
+          }
+        },
+        {
+          "name": "Create claim type",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"claim_type_name\": \"SIMPLE\",\n  \"risk_percentage\": 25.0,\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-types",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-types" ]
+            }
+          }
+        },
+        {
+          "name": "Get claim type by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-types/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-types", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Update claim type (PUT)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"claim_type_name\": \"SIMPLE\",\n  \"risk_percentage\": 30.0,\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-types/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-types", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Update claim type (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"risk_percentage\": 35.0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-types/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-types", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Delete claim type",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-types/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-types", "1" ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Masters - Claim Rules (claim_rule_master)",
+      "item": [
+        {
+          "name": "List claim rules",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-rules",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-rules" ]
+            }
+          }
+        },
+        {
+          "name": "Create claim rule",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rule_type\": \"Early Claim\",\n  \"rule_group\": \"Fraud Check\",\n  \"rule_description\": \"Claim soon after policy start\",\n  \"rule_expression\": \"Claim < 30 days\",\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-rules",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-rules" ]
+            }
+          }
+        },
+        {
+          "name": "Get claim rule by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-rules/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-rules", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Update claim rule (PUT)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rule_type\": \"Early Claim\",\n  \"rule_group\": \"Fraud Check\",\n  \"rule_description\": \"Claim soon after policy start\",\n  \"rule_expression\": \"Claim < 45 days\",\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-rules/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-rules", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Update claim rule (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rule_expression\": \"Claim < 60 days\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-rules/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-rules", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Delete claim rule",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/claim-rules/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "claim-rules", "1" ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Masters - Damage Codes (damage_code_master)",
+      "item": [
+        {
+          "name": "List damage codes",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/damage-codes",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "damage-codes" ]
+            }
+          }
+        },
+        {
+          "name": "Create damage code",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"damage_type\": \"bumper\",\n  \"severity_percentage\": 20.0,\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/damage-codes",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "damage-codes" ]
+            }
+          }
+        },
+        {
+          "name": "Get damage code by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/damage-codes/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "damage-codes", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Update damage code (PUT)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"damage_type\": \"bumper\",\n  \"severity_percentage\": 25.0,\n  \"is_active\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/damage-codes/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "damage-codes", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Update damage code (PATCH)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"severity_percentage\": 30.0\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/damage-codes/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "damage-codes", "1" ]
+            }
+          }
+        },
+        {
+          "name": "Delete damage code",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Token {{token}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/masters/damage-codes/1",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "api", "masters", "damage-codes", "1" ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
+
