@@ -145,16 +145,16 @@ export default function ClaimDetail() {
             </Link>
           </Button>
           <div className="flex items-center gap-2">
-            <StatusBadge
+            {/* <StatusBadge
               status={getStatusVariant(decision)}
               pulse={claimStatus === "Open"}
               className="text-sm px-3 py-1"
             >
               {decision}
-            </StatusBadge>
-            <Button variant="outline">Request Documents</Button>
-            <Button variant="destructive">Reject</Button>
-            <Button>Approve Claim</Button>
+            </StatusBadge> */}
+             {/* <Button variant="outline">Request Documents</Button>
+           <Button variant="destructive">Reject</Button> */}
+            <Button>Evaluate Claim</Button>
           </div>
         </div>
 

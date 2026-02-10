@@ -152,7 +152,7 @@ export default function Claims() {
         </Card>
 
         {/* Claims Table */}
-        <Card className="card-elevated overflow-hidden">
+        <Card className="card-elevated overflow-hidden border-none">
           {loading ? (
             <div className="flex items-center justify-center py-16">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -166,7 +166,7 @@ export default function Claims() {
             </div>
           ) : (
             <Table>
-              <TableHeader>
+              <TableHeader className="table-header-bg">
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="pl-6">Claim #</TableHead>
                   <TableHead>Policy</TableHead>
