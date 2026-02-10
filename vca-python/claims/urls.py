@@ -12,6 +12,12 @@ from .views import (
     change_role,
     reset_password,
     deactivate_user,
+    claim_type_master_collection,
+    claim_type_master_detail,
+    claim_rule_master_collection,
+    claim_rule_master_detail,
+    damage_code_master_collection,
+    damage_code_master_detail,
 )
 
 urlpatterns = [
@@ -26,4 +32,12 @@ urlpatterns = [
     path("process-claim", process_claim, name="process_claim"),
     path("fnol", list_fnol, name="list_fnol"),
     path("fnol/<int:pk>/", get_fnol, name="get_fnol"),
+
+    # Master tables CRUD
+    path("masters/claim-types", claim_type_master_collection, name="claim_type_master_collection"),
+    path("masters/claim-types/<int:pk>", claim_type_master_detail, name="claim_type_master_detail"),
+    path("masters/claim-rules", claim_rule_master_collection, name="claim_rule_master_collection"),
+    path("masters/claim-rules/<int:pk>", claim_rule_master_detail, name="claim_rule_master_detail"),
+    path("masters/damage-codes", damage_code_master_collection, name="damage_code_master_collection"),
+    path("masters/damage-codes/<int:pk>", damage_code_master_detail, name="damage_code_master_detail"),
 ]

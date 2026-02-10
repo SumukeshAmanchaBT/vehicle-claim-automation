@@ -1,6 +1,8 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
+from .models import ClaimRuleMaster, ClaimTypeMaster, DamageCodeMaster
+
 
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for User model."""
@@ -66,3 +68,47 @@ class ChangeRoleSerializer(serializers.Serializer):
 
 class ResetPasswordSerializer(serializers.Serializer):
     new_password = serializers.CharField(required=True, write_only=True)
+
+
+class ClaimTypeMasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ClaimTypeMaster
+        fields = [
+            "claim_type_id",
+            "claim_type_name",
+            "risk_percentage",
+            "is_active",
+            "created_date",
+            "created_by",
+        ]
+        read_only_fields = ["claim_type_id", "created_date"]
+
+
+class ClaimRuleMasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ClaimRuleMaster
+        fields = [
+            "rule_id",
+            "rule_type",
+            "rule_group",
+            "rule_description",
+            "rule_expression",
+            "is_active",
+            "created_date",
+            "created_by",
+        ]
+        read_only_fields = ["rule_id", "created_date"]
+
+
+class DamageCodeMasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DamageCodeMaster
+        fields = [
+            "damage_id",
+            "damage_type",
+            "severity_percentage",
+            "is_active",
+            "created_date",
+            "created_by",
+        ]
+        read_only_fields = ["damage_id", "created_date"]
