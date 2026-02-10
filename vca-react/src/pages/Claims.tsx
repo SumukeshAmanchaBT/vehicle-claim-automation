@@ -173,7 +173,7 @@ export default function Claims() {
                   <TableHead>Customer</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Incident Date</TableHead>
-                  <TableHead>Amount</TableHead>
+                  {/* <TableHead>Amount</TableHead> */}
                   <TableHead>Status</TableHead>
                   <TableHead className="pr-6 text-right">Actions</TableHead>
                 </TableRow>
@@ -214,9 +214,9 @@ export default function Claims() {
                       <TableCell className="text-muted-foreground">
                         {new Date(claim.incidentDate).toLocaleDateString()}
                       </TableCell>
-                      <TableCell className="font-medium">
+                      {/* <TableCell className="font-medium">
                         {formatCurrency(claim.estimatedAmount)}
-                      </TableCell>
+                      </TableCell> */}
                       <TableCell>
                         <StatusBadge status="pending">Pending</StatusBadge>
                       </TableCell>
