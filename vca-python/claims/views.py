@@ -21,6 +21,7 @@ from .models import (
     FnolClaim,
     FnolDamagePhoto,
     Claim,
+    PricingConfig,
 )
 from .serializers import (
     LoginSerializer,
@@ -32,6 +33,7 @@ from .serializers import (
     ClaimTypeMasterSerializer,
     ClaimRuleMasterSerializer,
     DamageCodeMasterSerializer,
+    PricingConfigSerializer,
 )
 
 
@@ -643,6 +645,41 @@ def damage_code_master_detail(request, pk: int):
         updated_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
         obj = serializer.save(created_by=obj.created_by or updated_by)
         return Response(DamageCodeMasterSerializer(obj).data)
+
+    obj.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def pricing_config_collection(request):
+    if request.method == "GET":
+        qs = PricingConfig.objects.all().order_by("config_key")
+        return Response(PricingConfigSerializer(qs, many=True).data)
+
+    serializer = PricingConfigSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+    obj = serializer.save(created_by=created_by, updated_by=created_by)
+    return Response(PricingConfigSerializer(obj).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def pricing_config_detail(request, pk: int):
+    obj = get_object_or_404(PricingConfig, pk=pk)
+
+    if request.method == "GET":
+        return Response(PricingConfigSerializer(obj).data)
+
+    if request.method in ("PUT", "PATCH"):
+        serializer = PricingConfigSerializer(
+            obj, data=request.data, partial=(request.method == "PATCH")
+        )
+        serializer.is_valid(raise_exception=True)
+        updated_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+        obj = serializer.save(updated_by=updated_by)
+        return Response(PricingConfigSerializer(obj).data)
 
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)

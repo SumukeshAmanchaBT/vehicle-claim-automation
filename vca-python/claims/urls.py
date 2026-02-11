@@ -19,6 +19,8 @@ from .views import (
     claim_rule_master_detail,
     damage_code_master_collection,
     damage_code_master_detail,
+    pricing_config_collection,
+    pricing_config_detail,
 )
 
 urlpatterns = [
@@ -42,4 +44,6 @@ urlpatterns = [
     path("masters/claim-rules/<int:pk>", claim_rule_master_detail, name="claim_rule_master_detail"),
     path("masters/damage-codes", damage_code_master_collection, name="damage_code_master_collection"),
     path("masters/damage-codes/<int:pk>", damage_code_master_detail, name="damage_code_master_detail"),
+    path("masters/pricing-config", pricing_config_collection, name="pricing_config_collection"),
+    path("masters/pricing-config/<int:pk>", pricing_config_detail, name="pricing_config_detail"),
 ]

@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
-from .models import ClaimRuleMaster, ClaimTypeMaster, DamageCodeMaster
+from .models import ClaimRuleMaster, ClaimTypeMaster, DamageCodeMaster, PricingConfig
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -112,3 +112,22 @@ class DamageCodeMasterSerializer(serializers.ModelSerializer):
             "created_by",
         ]
         read_only_fields = ["damage_id", "created_date"]
+
+
+class PricingConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PricingConfig
+        fields = [
+            "config_id",
+            "config_key",
+            "config_name",
+            "config_value",
+            "config_type",
+            "description",
+            "is_active",
+            "created_date",
+            "created_by",
+            "updated_date",
+            "updated_by",
+        ]
+        read_only_fields = ["config_id", "created_date"]
