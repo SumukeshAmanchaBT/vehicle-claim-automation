@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/use-toast";
+import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { Plus, Edit2, Trash2, Settings2 } from "lucide-react";
 import {
   Dialog,
@@ -44,6 +46,8 @@ import {
 
 export default function MasterData() {
   const { toast } = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const [damageTypes, setDamageTypes] = useState<DamageCodeMaster[]>([]);
   const [claimTypes, setClaimTypes] = useState<ClaimTypeMaster[]>([]);
@@ -77,6 +81,102 @@ export default function MasterData() {
   const [editRuleGroup, setEditRuleGroup] = useState("");
   const [editRuleDescription, setEditRuleDescription] = useState("");
   const [editRuleExpression, setEditRuleExpression] = useState("");
+
+  const sectionParam =
+    new URLSearchParams(location.search).get("section") ?? "damage-types";
+
+  const [activeTab, setActiveTab] = useState(sectionParam);
+
+  // Damage types: search, sort, pagination
+  const [damageSearch, setDamageSearch] = useState("");
+  const [damageSortKey, setDamageSortKey] = useState<"name" | "severity" | "status" | null>("name");
+  const [damageSortDir, setDamageSortDir] = useState<SortDirection>("asc");
+  const [damagePage, setDamagePage] = useState(1);
+  const [damagePageSize, setDamagePageSize] = useState(10);
+
+  const filteredDamage = useMemo(() => {
+    const term = damageSearch.toLowerCase();
+    return damageTypes.filter(
+      (d) =>
+        d.damage_type?.toLowerCase().includes(term),
+    );
+  }, [damageTypes, damageSearch]);
+  const sortedDamage = useMemo(() => {
+    if (!damageSortKey) return filteredDamage;
+    return [...filteredDamage].sort((a, b) => {
+      let cmp = 0;
+      if (damageSortKey === "name") cmp = (a.damage_type ?? "").localeCompare(b.damage_type ?? "");
+      else if (damageSortKey === "severity") cmp = a.severity_percentage - b.severity_percentage;
+      else if (damageSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
+      return damageSortDir === "desc" ? -cmp : cmp;
+    });
+  }, [filteredDamage, damageSortKey, damageSortDir]);
+  const paginatedDamage = useMemo(() => {
+    const start = (damagePage - 1) * damagePageSize;
+    return sortedDamage.slice(start, start + damagePageSize);
+  }, [sortedDamage, damagePage, damagePageSize]);
+
+  // Claim types: search, sort, pagination
+  const [claimTypeSearch, setClaimTypeSearch] = useState("");
+  const [claimTypeSortKey, setClaimTypeSortKey] = useState<"name" | "risk" | "status" | null>("name");
+  const [claimTypeSortDir, setClaimTypeSortDir] = useState<SortDirection>("asc");
+  const [claimTypePage, setClaimTypePage] = useState(1);
+  const [claimTypePageSize, setClaimTypePageSize] = useState(10);
+
+  const filteredClaimTypes = useMemo(() => {
+    const term = claimTypeSearch.toLowerCase();
+    return claimTypes.filter((c) => c.claim_type_name?.toLowerCase().includes(term));
+  }, [claimTypes, claimTypeSearch]);
+  const sortedClaimTypes = useMemo(() => {
+    if (!claimTypeSortKey) return filteredClaimTypes;
+    return [...filteredClaimTypes].sort((a, b) => {
+      let cmp = 0;
+      if (claimTypeSortKey === "name") cmp = (a.claim_type_name ?? "").localeCompare(b.claim_type_name ?? "");
+      else if (claimTypeSortKey === "risk") cmp = a.risk_percentage - b.risk_percentage;
+      else if (claimTypeSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
+      return claimTypeSortDir === "desc" ? -cmp : cmp;
+    });
+  }, [filteredClaimTypes, claimTypeSortKey, claimTypeSortDir]);
+  const paginatedClaimTypes = useMemo(() => {
+    const start = (claimTypePage - 1) * claimTypePageSize;
+    return sortedClaimTypes.slice(start, start + claimTypePageSize);
+  }, [sortedClaimTypes, claimTypePage, claimTypePageSize]);
+
+  // Fraud rules: search, sort, pagination
+  const [ruleSearch, setRuleSearch] = useState("");
+  const [ruleSortKey, setRuleSortKey] = useState<"type" | "group" | "expression" | "status" | null>("type");
+  const [ruleSortDir, setRuleSortDir] = useState<SortDirection>("asc");
+  const [rulePage, setRulePage] = useState(1);
+  const [rulePageSize, setRulePageSize] = useState(10);
+
+  const filteredRules = useMemo(() => {
+    const term = ruleSearch.toLowerCase();
+    return claimRules.filter(
+      (r) =>
+        r.rule_type?.toLowerCase().includes(term) ||
+        r.rule_group?.toLowerCase().includes(term) ||
+        r.rule_expression?.toLowerCase().includes(term),
+    );
+  }, [claimRules, ruleSearch]);
+  const sortedRules = useMemo(() => {
+    if (!ruleSortKey) return filteredRules;
+    return [...filteredRules].sort((a, b) => {
+      let cmp = 0;
+      if (ruleSortKey === "type") cmp = (a.rule_type ?? "").localeCompare(b.rule_type ?? "");
+      else if (ruleSortKey === "group") cmp = (a.rule_group ?? "").localeCompare(b.rule_group ?? "");
+      else if (ruleSortKey === "expression") cmp = (a.rule_expression ?? "").localeCompare(b.rule_expression ?? "");
+      else if (ruleSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
+      return ruleSortDir === "desc" ? -cmp : cmp;
+    });
+  }, [filteredRules, ruleSortKey, ruleSortDir]);
+  const paginatedRules = useMemo(() => {
+    const start = (rulePage - 1) * rulePageSize;
+    return sortedRules.slice(start, start + rulePageSize);
+  }, [sortedRules, rulePage, rulePageSize]);
+
+  useEffect(() => {
+    setActiveTab(sectionParam);
+  }, [sectionParam]);
 
   useEffect(() => {
     async function loadMasterData() {
@@ -395,18 +495,27 @@ export default function MasterData() {
       subtitle="Configure damage types, thresholds, and automation rules"
     >
       <div className="space-y-6 animate-fade-in">
-        <Tabs defaultValue="damage-types" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="damage-types">Damage Types</TabsTrigger>
+        <Tabs
+          value={activeTab}
+          onValueChange={(value) => {
+            setActiveTab(value);
+            const params = new URLSearchParams(location.search);
+            params.set("section", value);
+            navigate({ pathname: location.pathname, search: params.toString() });
+          }}
+          className="space-y-4"
+        >
+          {/* <TabsList>
+            <TabsTrigger value="damage-types">Damage Configuration</TabsTrigger>
             <TabsTrigger value="thresholds">Claim Thresholds</TabsTrigger>
             <TabsTrigger value="fraud-rules">Fraud Rules</TabsTrigger>
-            {/* <TabsTrigger value="automation">Automation Settings</TabsTrigger> */}
-          </TabsList>
+            <TabsTrigger value="automation">Automation Settings</TabsTrigger>
+          </TabsList> */}
 
           <TabsContent value="damage-types">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base">Damage Type Configuration</CardTitle>
+                <CardTitle className="text-base">Damage  Configuration</CardTitle>
                 <Dialog open={damageDialogOpen} onOpenChange={setDamageDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -475,32 +584,70 @@ export default function MasterData() {
                 </Dialog>
               </CardHeader>
               <CardContent className="p-0">
+                <TableToolbar
+                  searchPlaceholder="Search damage types..."
+                  searchValue={damageSearch}
+                  onSearchChange={(v) => { setDamageSearch(v); setDamagePage(1); }}
+                  className="border-0 border-b rounded-none shadow-none"
+                />
                 <Table>
                   <TableHeader className="table-header-bg">
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
-                      <TableHead className="pl-6">Damage Type</TableHead>
-                      <TableHead>Severity Percentage (%)</TableHead>
-                      {/* <TableHead>Base Cost ($)</TableHead>
-                      <TableHead>Max Cost ($)</TableHead> */}
-                      <TableHead>Status</TableHead>
+                      <SortableTableHead
+                        sortKey="name"
+                        currentSortKey={damageSortKey}
+                        direction={damageSortDir}
+                        onSort={(k) => {
+                          if (damageSortKey === k) setDamageSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setDamageSortKey(k as "name" | "severity" | "status"); setDamageSortDir("asc"); }
+                          setDamagePage(1);
+                        }}
+                        className="pl-6"
+                      >
+                        Damage Type
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="severity"
+                        currentSortKey={damageSortKey}
+                        direction={damageSortDir}
+                        onSort={(k) => {
+                          if (damageSortKey === k) setDamageSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setDamageSortKey(k as "name" | "severity" | "status"); setDamageSortDir("asc"); }
+                          setDamagePage(1);
+                        }}
+                      >
+                        Severity (%)
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="status"
+                        currentSortKey={damageSortKey}
+                        direction={damageSortDir}
+                        onSort={(k) => {
+                          if (damageSortKey === k) setDamageSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setDamageSortKey(k as "name" | "severity" | "status"); setDamageSortDir("asc"); }
+                          setDamagePage(1);
+                        }}
+                      >
+                        Status
+                      </SortableTableHead>
                       <TableHead className="pr-6 text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {loading ? (
                       <TableRow>
-                        <TableCell className="pl-6" colSpan={5}>
+                        <TableCell className="pl-6" colSpan={4}>
                           Loading damage types...
                         </TableCell>
                       </TableRow>
-                    ) : damageTypes.length === 0 ? (
+                    ) : filteredDamage.length === 0 ? (
                       <TableRow>
-                        <TableCell className="pl-6" colSpan={5}>
+                        <TableCell className="pl-6" colSpan={4}>
                           No damage types configured yet.
                         </TableCell>
                       </TableRow>
                     ) : (
-                      damageTypes.map((type) => (
+                      paginatedDamage.map((type) => (
                         <TableRow key={type.damage_id} className="group">
                           <TableCell className="pl-6 font-medium">
                             {type.damage_type}
@@ -540,6 +687,14 @@ export default function MasterData() {
                     )}
                   </TableBody>
                 </Table>
+                <DataTablePagination
+                  totalCount={sortedDamage.length}
+                  page={damagePage}
+                  pageSize={damagePageSize}
+                  onPageChange={setDamagePage}
+                  onPageSizeChange={(s) => { setDamagePageSize(s); setDamagePage(1); }}
+                  itemLabel="damage types"
+                />
               </CardContent>
             </Card>
           </TabsContent>
@@ -547,7 +702,7 @@ export default function MasterData() {
           <TabsContent value="thresholds">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base">Claim Type Thresholds</CardTitle>
+                <CardTitle className="text-base">Claim  Configuration</CardTitle>
                 <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -596,14 +751,54 @@ export default function MasterData() {
                 </Dialog>
               </CardHeader>
               <CardContent className="p-0">
+                <TableToolbar
+                  searchPlaceholder="Search claim types..."
+                  searchValue={claimTypeSearch}
+                  onSearchChange={(v) => { setClaimTypeSearch(v); setClaimTypePage(1); }}
+                  className="border-0 border-b rounded-none shadow-none"
+                />
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
-                      <TableHead className="pl-6">Claim Type</TableHead>
-                      <TableHead>Risk Percentage (%)</TableHead>
-                      <TableHead>Status</TableHead>
+                      <SortableTableHead
+                        sortKey="name"
+                        currentSortKey={claimTypeSortKey}
+                        direction={claimTypeSortDir}
+                        onSort={(k) => {
+                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
+                          setClaimTypePage(1);
+                        }}
+                        className="pl-6"
+                      >
+                        Claim Type
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="risk"
+                        currentSortKey={claimTypeSortKey}
+                        direction={claimTypeSortDir}
+                        onSort={(k) => {
+                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
+                          setClaimTypePage(1);
+                        }}
+                      >
+                        Risk (%)
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="status"
+                        currentSortKey={claimTypeSortKey}
+                        direction={claimTypeSortDir}
+                        onSort={(k) => {
+                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
+                          setClaimTypePage(1);
+                        }}
+                      >
+                        Status
+                      </SortableTableHead>
                       <TableHead className="pr-6 text-right">Created At</TableHead>
-                      <TableHead className="pr-6 text-right"> Actions</TableHead>
+                      <TableHead className="pr-6 text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -613,14 +808,14 @@ export default function MasterData() {
                           Loading claim types...
                         </TableCell>
                       </TableRow>
-                    ) : claimTypes.length === 0 ? (
+                    ) : filteredClaimTypes.length === 0 ? (
                       <TableRow>
                         <TableCell className="pl-6" colSpan={5}>
                           No claim types configured.
                         </TableCell>
                       </TableRow>
                     ) : (
-                      claimTypes.map((type) => (
+                      paginatedClaimTypes.map((type) => (
                         <TableRow key={type.claim_type_id}>
                           <TableCell className="pl-6 font-medium">
                             {type.claim_type_name}
@@ -658,7 +853,7 @@ export default function MasterData() {
                         </TableRow>
                       ))
                     )}
-                    
+
                   </TableBody>
                 </Table>
               </CardContent>
@@ -734,13 +929,64 @@ export default function MasterData() {
                 </Dialog>
               </CardHeader>
               <CardContent className="p-0">
+                <TableToolbar
+                  searchPlaceholder="Search rules..."
+                  searchValue={ruleSearch}
+                  onSearchChange={(v) => { setRuleSearch(v); setRulePage(1); }}
+                  className="border-0 border-b rounded-none shadow-none"
+                />
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
-                      <TableHead className="pl-6">Rule Type</TableHead>
-                      <TableHead>Rule Category </TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead>Status</TableHead>
+                      <SortableTableHead
+                        sortKey="type"
+                        currentSortKey={ruleSortKey}
+                        direction={ruleSortDir}
+                        onSort={(k) => {
+                          if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          setRulePage(1);
+                        }}
+                        className="pl-6"
+                      >
+                        Rule Type
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="group"
+                        currentSortKey={ruleSortKey}
+                        direction={ruleSortDir}
+                        onSort={(k) => {
+                          if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          setRulePage(1);
+                        }}
+                      >
+                        Rule Category
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="expression"
+                        currentSortKey={ruleSortKey}
+                        direction={ruleSortDir}
+                        onSort={(k) => {
+                          if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          setRulePage(1);
+                        }}
+                      >
+                        Description
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="status"
+                        currentSortKey={ruleSortKey}
+                        direction={ruleSortDir}
+                        onSort={(k) => {
+                          if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          setRulePage(1);
+                        }}
+                      >
+                        Status
+                      </SortableTableHead>
                       <TableHead className="pr-6 text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -751,14 +997,14 @@ export default function MasterData() {
                           Loading fraud rules...
                         </TableCell>
                       </TableRow>
-                    ) : claimRules.length === 0 ? (
+                    ) : filteredRules.length === 0 ? (
                       <TableRow>
                         <TableCell className="pl-6" colSpan={5}>
                           No fraud rules configured.
                         </TableCell>
                       </TableRow>
                     ) : (
-                      claimRules.map((rule) => (
+                      paginatedRules.map((rule) => (
                         <TableRow key={rule.rule_id}>
                           <TableCell className="pl-6 font-medium">
                             {rule.rule_type}
@@ -798,6 +1044,14 @@ export default function MasterData() {
                     )}
                   </TableBody>
                 </Table>
+                <DataTablePagination
+                  totalCount={sortedRules.length}
+                  page={rulePage}
+                  pageSize={rulePageSize}
+                  onPageChange={setRulePage}
+                  onPageSizeChange={(s) => { setRulePageSize(s); setRulePage(1); }}
+                  itemLabel="rules"
+                />
               </CardContent>
             </Card>
           </TabsContent>
@@ -944,80 +1198,163 @@ export default function MasterData() {
             </DialogContent>
           </Dialog>
 
-          <TabsContent value="automation">
+          <TabsContent value="pricing">
             <Card className="card-elevated">
-              <CardHeader>
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Settings2 className="h-4 w-4" />
-                  Automation Settings
-                </CardTitle>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-base"> Pricing Configuratoin</CardTitle>
+                <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm">
+                      <Plus className="mr-2 h-4 w-4" />
+                      Add Pricing Config
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Add Pricing Config</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="claim-type-name">Claim Type Name</Label>
+                        <Input
+                          id="claim-type-name"
+                          value={newClaimTypeName}
+                          onChange={(e) => setNewClaimTypeName(e.target.value)}
+                          placeholder="e.g. SIMPLE"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="claim-type-risk">Pricing Value in $</Label>
+                        <Input
+                          id="claim-type-risk"
+                          type="number"
+                          value={newClaimTypeRisk}
+                          onChange={(e) => setNewClaimTypeRisk(e.target.value)}
+                          placeholder="e.g. 25"
+                        />
+                      </div>
+                    </div>
+                    <DialogFooter className="mt-4">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setClaimTypeDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="button" onClick={handleCreateClaimType}>
+                        Save
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="grid gap-6 lg:grid-cols-2">
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between rounded-lg border p-4">
-                      <div>
-                        <p className="font-medium">Auto-Approve Simple Claims</p>
-                        <p className="text-sm text-muted-foreground">
-                          Automatically approve claims meeting all STP criteria
-                        </p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
-                    
-                    <div className="flex items-center justify-between rounded-lg border p-4">
-                      <div>
-                        <p className="font-medium">Auto-Assign to Adjusters</p>
-                        <p className="text-sm text-muted-foreground">
-                          Automatically assign complex claims to available adjusters
-                        </p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
-                    
-                    <div className="flex items-center justify-between rounded-lg border p-4">
-                      <div>
-                        <p className="font-medium">Send Settlement Notifications</p>
-                        <p className="text-sm text-muted-foreground">
-                          Automatically notify customers of settlement decisions
-                        </p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
-                  </div>
-                  
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between rounded-lg border p-4">
-                      <div>
-                        <p className="font-medium">Sync with Guidewire</p>
-                        <p className="text-sm text-muted-foreground">
-                          Push approved claims back to core system
-                        </p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
-                    
-                    <div className="flex items-center justify-between rounded-lg border p-4">
-                      <div>
-                        <p className="font-medium">Auto-Escalate High Risk</p>
-                        <p className="text-sm text-muted-foreground">
-                          Escalate high fraud risk claims to supervisor
-                        </p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
-                    
-                    <div className="flex items-center justify-between rounded-lg border p-4">
-                      <div>
-                        <p className="font-medium">Document Request Automation</p>
-                        <p className="text-sm text-muted-foreground">
-                          Auto-request missing documents from claimants
-                        </p>
-                      </div>
-                      <Switch defaultChecked />
-                    </div>
-                  </div>
-                </div>
+              <CardContent className="p-0">
+                <TableToolbar
+                  searchPlaceholder="Search claim types..."
+                  searchValue={claimTypeSearch}
+                  onSearchChange={(v) => { setClaimTypeSearch(v); setClaimTypePage(1); }}
+                  className="border-0 border-b rounded-none shadow-none"
+                />
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-muted/50 hover:bg-muted/50">
+                      <SortableTableHead
+                        sortKey="name"
+                        currentSortKey={claimTypeSortKey}
+                        direction={claimTypeSortDir}
+                        onSort={(k) => {
+                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
+                          setClaimTypePage(1);
+                        }}
+                        className="pl-6"
+                      >
+                        Claim Type
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="risk"
+                        currentSortKey={claimTypeSortKey}
+                        direction={claimTypeSortDir}
+                        onSort={(k) => {
+                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
+                          setClaimTypePage(1);
+                        }}
+                      >
+                        Pricing Value in $
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="status"
+                        currentSortKey={claimTypeSortKey}
+                        direction={claimTypeSortDir}
+                        onSort={(k) => {
+                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
+                          setClaimTypePage(1);
+                        }}
+                      >
+                        Status
+                      </SortableTableHead>
+                      <TableHead className="pr-6 text-right">Created At</TableHead>
+                      <TableHead className="pr-6 text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {loading ? (
+                      <TableRow>
+                        <TableCell className="pl-6" colSpan={5}>
+                          Loading claim types...
+                        </TableCell>
+                      </TableRow>
+                    ) : filteredClaimTypes.length === 0 ? (
+                      <TableRow>
+                        <TableCell className="pl-6" colSpan={5}>
+                          No claim types configured.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      paginatedClaimTypes.map((type) => (
+                        <TableRow key={type.claim_type_id}>
+                          <TableCell className="pl-6 font-medium">
+                            {type.claim_type_name}
+                          </TableCell>
+                          <TableCell>{Math.round(type.risk_percentage)}</TableCell>
+                          <TableCell>
+                            <Switch
+                              checked={type.is_active}
+                              onCheckedChange={(next) =>
+                                handleToggleClaimTypeActive(type, next)
+                              }
+                            />
+                          </TableCell>
+                          <TableCell className="pr-6 text-right text-xs text-muted-foreground">
+                            {new Date(type.created_date).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="pr-6 text-right">
+                            <div className="flex items-center justify-end gap-1 ">
+                              <Button
+                                variant="default"
+                                size="icon"
+                                onClick={() => openEditClaimType(type)}
+                              >
+                                <Edit2 className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="default"
+                                size="icon"
+                                onClick={() => handleDeleteClaimType(type.claim_type_id)}
+                              >
+                                <Trash2 className="h-4 w-4 " />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+
+                  </TableBody>
+                </Table>
               </CardContent>
             </Card>
           </TabsContent>

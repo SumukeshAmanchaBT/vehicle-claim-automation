@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent } from "@/components/ui/card";
@@ -12,13 +12,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { StatusBadge } from "@/components/ui/status-badge";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -36,9 +29,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, UserPlus, Edit2, Shield, KeyRound, UserX } from "lucide-react";
+import { UserPlus, Edit2, Shield, Trash2 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { Switch } from "@/components/ui/switch";
+import {
+  TableToolbar,
+  DataTablePagination,
+  SortableTableHead,
+  type SortDirection,
+} from "@/components/data-table";
 import {
   listUsers,
   createUser,
@@ -61,10 +60,18 @@ function getDisplayName(user: UserSummary) {
   return full || user.username;
 }
 
+type SortKey = "user" | "role" | "status" | "claims" | "lastLogin";
+
 export default function Users() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sortKey, setSortKey] = useState<SortKey | null>("user");
+  const [sortDir, setSortDir] = useState<SortDirection>("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [isAddOpen, setIsAddOpen] = useState(false);
 
   // Add user form state
@@ -146,13 +153,67 @@ export default function Users() {
     },
   });
 
-  const filteredUsers = users.filter((user) => {
-    const term = search.toLowerCase();
-    return (
-      getDisplayName(user).toLowerCase().includes(term) ||
-      user.email.toLowerCase().includes(term)
-    );
-  });
+  const filteredUsers = useMemo(() => {
+    let list = users.filter((user) => {
+      const term = search.toLowerCase();
+      const matchesSearch =
+        getDisplayName(user).toLowerCase().includes(term) ||
+        user.email.toLowerCase().includes(term);
+      const role = (user.role ?? "").toString().toLowerCase();
+      const matchesRole =
+        roleFilter === "all" ||
+        role === roleFilter ||
+        (roleFilter === "admin" && role === "admin") ||
+        (roleFilter === "user" && (role === "user" || !role));
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "active" && user.status === "active") ||
+        (statusFilter === "inactive" && user.status === "inactive");
+      return matchesSearch && matchesRole && matchesStatus;
+    });
+    if (sortKey) {
+      list = [...list].sort((a, b) => {
+        let cmp = 0;
+        switch (sortKey) {
+          case "user":
+            cmp = getDisplayName(a).localeCompare(getDisplayName(b));
+            break;
+          case "role":
+            cmp = (a.role ?? "").localeCompare(b.role ?? "");
+            break;
+          case "status":
+            cmp = (a.status ?? "").localeCompare(b.status ?? "");
+            break;
+          case "claims":
+            cmp = (a.claims_handled ?? 0) - (b.claims_handled ?? 0);
+            break;
+          case "lastLogin":
+            cmp = new Date(a.last_login ?? 0).getTime() - new Date(b.last_login ?? 0).getTime();
+            break;
+          default:
+            break;
+        }
+        return sortDir === "desc" ? -cmp : cmp;
+      });
+    }
+    return list;
+  }, [users, search, roleFilter, statusFilter, sortKey, sortDir]);
+
+  const handleSort = (key: string) => {
+    const k = key as SortKey;
+    if (sortKey === k) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(k);
+      setSortDir("asc");
+    }
+    setPage(1);
+  };
+
+  const paginatedUsers = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredUsers.slice(start, start + pageSize);
+  }, [filteredUsers, page, pageSize]);
 
   const handleCreateUser = (e: React.FormEvent) => {
     e.preventDefault();
@@ -219,30 +280,49 @@ export default function Users() {
 
   return (
     <AppLayout
-      title="User Management"
+      title="Users List"
       subtitle="Manage system users and permissions"
     >
       <div className="space-y-6 animate-fade-in">
-        {/* Filters & Add */}
-        <Card className="card-elevated">
-          <CardContent className="p-4">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="relative flex-1 max-w-md">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search users..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
-              <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-                <DialogTrigger asChild>
-                  <Button>
-                    <UserPlus className="mr-2 h-4 w-4" />
-                    Add User
-                  </Button>
-                </DialogTrigger>
+        <TableToolbar
+          searchPlaceholder="Search users..."
+          searchValue={search}
+          onSearchChange={(v) => {
+            setSearch(v);
+            setPage(1);
+          }}
+          filters={
+            <>
+              <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Roles</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="user">User</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </>
+          }
+          primaryAction={
+            <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+              <DialogTrigger asChild>
+                <Button>
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Add New User
+                </Button>
+              </DialogTrigger>
                 <DialogContent>
                   <form onSubmit={handleCreateUser}>
                     <DialogHeader>
@@ -333,9 +413,8 @@ export default function Users() {
                   </form>
                 </DialogContent>
               </Dialog>
-            </div>
-          </CardContent>
-        </Card>
+          }
+        />
 
         {/* Users Table */}
         <Card className="card-elevated overflow-hidden">
@@ -348,19 +427,41 @@ export default function Users() {
               Failed to load users.
             </div>
           ) : (
-            <Table>
-              <TableHeader className="table-header-bg">
-                <TableRow className="bg-muted/50 hover:bg-muted/50">
-                  <TableHead className="pl-6">User</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Claims Handled</TableHead>
-                  <TableHead>Last Login</TableHead>
-                  <TableHead className="pr-6 text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredUsers.map((user) => (
+            <>
+              <Table>
+                <TableHeader className="table-header-bg">
+                  <TableRow className="bg-muted/50 hover:bg-muted/50">
+                    <SortableTableHead
+                      sortKey="user"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                      className="pl-6"
+                    >
+                      User
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="role"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Role
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="status"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Status
+                    </SortableTableHead>
+                    
+                    <TableHead className="pr-6 text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {paginatedUsers.map((user) => (
                   <TableRow key={user.id} className="group">
                     <TableCell className="pl-6">
                       <div className="flex items-center gap-3">
@@ -401,14 +502,7 @@ export default function Users() {
                         </span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {user.claims_handled}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {user.last_login
-                        ? new Date(user.last_login).toLocaleString()
-                        : "-"}
-                    </TableCell>
+                    
                     <TableCell className="pr-6 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button
@@ -429,16 +523,7 @@ export default function Users() {
                         >
                           <Shield className="h-4 w-4" />
                         </Button>
-                        {/* <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground hover:text-foreground"
-                          title="Reset password"
-                          onClick={() => handleResetPassword(user)}
-                        >
-                          <KeyRound className="h-4 w-4" />
-                        </Button> */}
-                        {/* <Button
+                        <Button
                           variant="ghost"
                           size="icon"
                           className="text-destructive hover:text-destructive"
@@ -450,14 +535,26 @@ export default function Users() {
                           disabled={user.status !== "active"}
                           onClick={() => handleDeactivate(user)}
                         >
-                          <UserX className="h-4 w-4" />
-                        </Button> */}
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
                 ))}
-              </TableBody>
-            </Table>
+                </TableBody>
+              </Table>
+              <DataTablePagination
+                totalCount={filteredUsers.length}
+                page={page}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+                itemLabel="users"
+              />
+            </>
           )}
         </Card>
       </div>

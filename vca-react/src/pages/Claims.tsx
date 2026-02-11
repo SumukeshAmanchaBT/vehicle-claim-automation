@@ -1,9 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -20,22 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-  Search,
-  Filter,
-  Eye,
-  MoreHorizontal,
-  Download,
-  Plus,
-  Loader2,
-  ZoomIn,
-} from "lucide-react";
+import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
+import { Loader2, ZoomIn, Plus } from "lucide-react";
 import { getFnolList, type FnolResponse } from "@/lib/api";
 
 type BadgeVariant = "approved" | "pending" | "rejected" | "processing" | "default";
@@ -131,20 +116,71 @@ export default function Claims() {
     return () => { cancelled = true; };
   }, []);
 
-  const displayClaims = claims.map(fnolToDisplay);
-  const filteredClaims = displayClaims.filter((claim) => {
-    const term = search.toLowerCase();
-    const matchesSearch =
-      claim.claimNumber.toLowerCase().includes(term) ||
-      claim.customerName.toLowerCase().includes(term) ||
-      claim.policyNumber.toLowerCase().includes(term);
+  const displayClaims = useMemo(() => claims.map(fnolToDisplay), [claims]);
 
-    const matchesStatus =
-      statusFilter === "all" ||
-      claim.statusKey === (statusFilter as ClaimStatusKey);
+  type ClaimSortKey = "claimNumber" | "policy" | "customer" | "type" | "date" | "status";
+  const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
+  const [sortDir, setSortDir] = useState<SortDirection>("desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
-    return matchesSearch && matchesStatus;
-  });
+  const filteredClaims = useMemo(() => {
+    let list = displayClaims.filter((claim) => {
+      const term = search.toLowerCase();
+      const matchesSearch =
+        claim.claimNumber.toLowerCase().includes(term) ||
+        claim.customerName.toLowerCase().includes(term) ||
+        claim.policyNumber.toLowerCase().includes(term);
+      const matchesStatus =
+        statusFilter === "all" ||
+        claim.statusKey === (statusFilter as ClaimStatusKey);
+      return matchesSearch && matchesStatus;
+    });
+    if (sortKey) {
+      list = [...list].sort((a, b) => {
+        let cmp = 0;
+        switch (sortKey) {
+          case "claimNumber":
+            cmp = a.claimNumber.localeCompare(b.claimNumber);
+            break;
+          case "policy":
+            cmp = a.policyNumber.localeCompare(b.policyNumber);
+            break;
+          case "customer":
+            cmp = a.customerName.localeCompare(b.customerName);
+            break;
+          case "type":
+            cmp = a.claimType.localeCompare(b.claimType);
+            break;
+          case "date":
+            cmp = new Date(a.incidentDate).getTime() - new Date(b.incidentDate).getTime();
+            break;
+          case "status":
+            cmp = a.statusKey.localeCompare(b.statusKey);
+            break;
+          default:
+            break;
+        }
+        return sortDir === "desc" ? -cmp : cmp;
+      });
+    }
+    return list;
+  }, [displayClaims, search, statusFilter, sortKey, sortDir]);
+
+  const paginatedClaims = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredClaims.slice(start, start + pageSize);
+  }, [filteredClaims, page, pageSize]);
+
+  const handleSort = (key: string) => {
+    const k = key as ClaimSortKey;
+    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortKey(k);
+      setSortDir(k === "date" ? "desc" : "asc");
+    }
+    setPage(1);
+  };
 
   const handleStatusChange = (value: string) => {
     setSearchParams((prev) => {
@@ -156,55 +192,39 @@ export default function Claims() {
   };
 
   return (
-    <AppLayout title="Claims" subtitle="Manage and process insurance claims">
+    <AppLayout title="Claims List" subtitle="Manage and process insurance claims">
       <div className="space-y-6 animate-fade-in">
-        {/* Filters */}
-        <Card className="card-elevated border-none">
-          <CardContent className="p-4">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex flex-1 items-center gap-3">
-                <div className="relative flex-1 max-w-md">
-                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="Search claims, policies, customers..."
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-                <Select value={statusFilter} onValueChange={handleStatusChange}>
-                  <SelectTrigger className="w-[150px]">
-                    <Filter className="mr-2 h-4 w-4" />
-                    <SelectValue placeholder="Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="auto_approved">Auto Approved</SelectItem>
-                    <SelectItem value="fraudulent">Fraudulent</SelectItem>
-                    <SelectItem value="manual_review">Manual Review</SelectItem>
-                    <SelectItem value="open">Open</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="pending_damage_detection">
-                      Pending Damage Detection
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center gap-2">
-                {/* <Button variant="outline" size="sm">
-                  <Download className="mr-2 h-4 w-4" />
-                  Export
-                </Button> */}
-                {/* <Button size="sm" asChild>
-                  <Link to="/claims/new">
-                    <Plus className="mr-2 h-4 w-4" />
-                   Fletch a Claim
-                  </Link>
-                </Button> */}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <TableToolbar
+          searchPlaceholder="Search claims, policies, customers..."
+          searchValue={search}
+          onSearchChange={(v) => { setSearch(v); setPage(1); }}
+          // filters={
+          //   <Select value={statusFilter} onValueChange={(v) => { handleStatusChange(v); setPage(1); }}>
+          //     <SelectTrigger className="w-[180px]">
+          //       <SelectValue placeholder="Status" />
+          //     </SelectTrigger>
+          //     <SelectContent>
+          //       <SelectItem value="all">All Status</SelectItem>
+          //       <SelectItem value="auto_approved">Auto Approved</SelectItem>
+          //       <SelectItem value="fraudulent">Fraudulent</SelectItem>
+          //       <SelectItem value="manual_review">Manual Review</SelectItem>
+          //       <SelectItem value="open">Open</SelectItem>
+          //       <SelectItem value="pending">Pending</SelectItem>
+          //       <SelectItem value="pending_damage_detection">
+          //         Pending Damage Detection
+          //       </SelectItem>
+          //     </SelectContent>
+          //   </Select>
+          // }
+          // primaryAction={(
+          //   <Button asChild>
+          //     <Link to="/claims/new">
+          //       <Plus className="mr-2 h-4 w-4" />
+          //       Add New Claim
+          //     </Link>
+          //   </Button>
+          // )}
+        />
 
         {/* Claims Table */}
         <Card className="card-elevated overflow-hidden border-none">
@@ -216,96 +236,90 @@ export default function Claims() {
             <div className="py-16 text-center">
               <p className="text-destructive">{error}</p>
               <p className="text-sm text-muted-foreground mt-2">
-                Ensure the backend is running 
+                Ensure the backend is running
               </p>
             </div>
           ) : (
-            <Table>
-              <TableHeader className="table-header-bg">
-                <TableRow className="bg-muted/50 hover:bg-muted/50">
-                  <TableHead className="pl-6">Claim #</TableHead>
-                  <TableHead>Policy</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Incident Date</TableHead>
-                  {/* <TableHead>Amount</TableHead> */}
-                  <TableHead>Status</TableHead>
-                  <TableHead className="pr-6 text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredClaims.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                      No claims found.{" "}
-                      <Link to="/claims/new" className="text-primary hover:underline">
-                        Submit a new claim
-                      </Link>
-                    </TableCell>
+            <>
+              <Table>
+                <TableHeader className="table-header-bg">
+                  <TableRow className="bg-muted/50 hover:bg-muted/50">
+                    <SortableTableHead sortKey="claimNumber" currentSortKey={sortKey} direction={sortDir} onSort={handleSort} className="pl-6">Claim #</SortableTableHead>
+                    <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy</SortableTableHead>
+                    <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Customer</SortableTableHead>
+                    <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Type</SortableTableHead>
+                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Date</SortableTableHead>
+                    <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Status</SortableTableHead>
+                    <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>
-                ) : (
-                  filteredClaims.map((claim) => (
-                    <TableRow key={claim.id} className="group">
-                      <TableCell className="pl-6">
+                </TableHeader>
+                <TableBody>
+                  {filteredClaims.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
+                        No claims found.{" "}
+                        <Link to="/claims/new" className="text-primary hover:underline">
+                          Submit a new claim
+                        </Link>
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    paginatedClaims.map((claim) => (
+                      <TableRow key={claim.id} className="group">
+                        <TableCell className="pl-6">
                         <Link
                           to={`/claims/${claim.id}`}
                           className="font-medium text-primary hover:underline"
                         >
                           {claim.claimNumber}
                         </Link>
-                      </TableCell>
-                      <TableCell className="font-mono text-sm">
-                        {claim.policyNumber}
-                      </TableCell>
-                      <TableCell>
-                        <div>
-                          <p className="font-medium">{claim.customerName}</p>
-                          <p className="text-xs text-muted-foreground">
-                            {claim.vehicleInfo}
-                          </p>
-                        </div>
-                      </TableCell>
-                      <TableCell>{claim.claimType}</TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {new Date(claim.incidentDate).toLocaleDateString()}
-                      </TableCell>
-                      {/* <TableCell className="font-medium">
-                        {formatCurrency(claim.estimatedAmount)}
-                      </TableCell> */}
-                      <TableCell>
-                        <StatusBadge status={CLAIM_STATUS_META[claim.statusKey].badge}>
-                          {CLAIM_STATUS_META[claim.statusKey].label}
-                        </StatusBadge>
-                      </TableCell>
-                      <TableCell className="pr-6 text-right">
-                        <div className="flex items-center justify-end gap-1 opacity-50 group-hover:opacity-100 transition-opacity">
-                          <Button variant="default" size="icon" asChild>
-                            <Link to={`/claims/${claim.id}`}>
-                              <ZoomIn className="h-4 w-4" />
-                            </Link>
-                          </Button>
-                          {/* <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="ghost" size="icon">
-                                <MoreHorizontal className="h-4 w-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              <DropdownMenuItem>Approve Claim</DropdownMenuItem>
-                              <DropdownMenuItem>Request Documents</DropdownMenuItem>
-                              <DropdownMenuItem>Assign Adjuster</DropdownMenuItem>
-                              <DropdownMenuItem className="text-destructive">
-                                Reject Claim
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu> */}
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                        </TableCell>
+                        <TableCell className="font-mono text-sm">
+                          {claim.policyNumber}
+                        </TableCell>
+                        <TableCell>
+                          <div>
+                            <p className="font-medium">{claim.customerName}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {claim.vehicleInfo}
+                            </p>
+                          </div>
+                        </TableCell>
+                        <TableCell>{claim.claimType}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {new Date(claim.incidentDate).toLocaleDateString()}
+                        </TableCell>
+                        {/* <TableCell className="font-medium">
+                          {formatCurrency(claim.estimatedAmount)}
+                        </TableCell> */}
+                        <TableCell>
+                          <StatusBadge status={CLAIM_STATUS_META[claim.statusKey].badge}>
+                            {CLAIM_STATUS_META[claim.statusKey].label}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="pr-6 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button variant="ghost" size="icon" asChild>
+                              <Link to={`/claims/${claim.id}`} title="View claim">
+                                <ZoomIn className="h-4 w-4" />
+                              </Link>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+              <DataTablePagination
+                totalCount={filteredClaims.length}
+                page={page}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => { setPageSize(size); setPage(1); }}
+                itemLabel="claims"
+              />
+            </>
           )}
         </Card>
       </div>
