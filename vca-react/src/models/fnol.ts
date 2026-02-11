@@ -47,13 +47,12 @@ export interface FnolResponse {
   policy_start_date: string | null;
   policy_end_date: string | null;
   policy_holder_name: string | null;
-  previous_claims_last_12_months: number | null;
-  vehicle_name: string | null;
+  vehicle_make: string | null;
   vehicle_year: number | null;
   vehicle_model: string | null;
   vehicle_registration_number: string | null;
   incident_location: string | null;
-  claim_type: string | null;
+  incident_type: string | null;
   incident_description: string | null;
   incident_date_time: string | null;
   fir_document_copy: string | null;

@@ -89,8 +89,8 @@ function fnolToDisplay(fnol: FnolResponse) {
   const r = fnol.raw_response;
   const vehicle = r?.vehicle
     ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}`
-    : fnol.vehicle_name && fnol.vehicle_model && fnol.vehicle_year
-      ? `${fnol.vehicle_year} ${fnol.vehicle_name} ${fnol.vehicle_model}`
+    : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
+      ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
       : "—";
   const normalizedStatus = normalizeStatus((fnol as { status?: string }).status);
 
@@ -101,7 +101,7 @@ function fnolToDisplay(fnol: FnolResponse) {
     customerName: r?.claimant?.driver_name || fnol.policy_holder_name || "—",
     vehicleInfo: vehicle,
     incidentDate: r?.incident?.date_time_of_loss || fnol.incident_date_time || fnol.created_date,
-    claimType: r?.incident?.claim_type || fnol.claim_type || "—",
+    claimType: r?.incident?.claim_type || fnol.incident_type || "—",
     estimatedAmount: r?.incident?.estimated_amount ?? 0,
     statusKey: normalizedStatus,
   };
