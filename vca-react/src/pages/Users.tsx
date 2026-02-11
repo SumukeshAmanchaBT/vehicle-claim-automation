@@ -36,8 +36,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, UserPlus, MoreHorizontal } from "lucide-react";
+import { Search, UserPlus, Edit2, Shield, KeyRound, UserX } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { Switch } from "@/components/ui/switch";
 import {
   listUsers,
   createUser,
@@ -384,14 +385,21 @@ export default function Users() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <StatusBadge
-                        status={
-                          user.status === "active" ? "approved" : "rejected"
-                        }
-                      >
-                        {user.status.charAt(0).toUpperCase() +
-                          user.status.slice(1)}
-                      </StatusBadge>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={user.status === "active"}
+                          // Backend only supports deactivation; once inactive we keep it off.
+                          disabled={user.status !== "active"}
+                          onCheckedChange={(next) => {
+                            if (!next && user.status === "active") {
+                              handleDeactivate(user);
+                            }
+                          }}
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          {user.status === "active" ? "Active" : "Inactive"}
+                        </span>
+                      </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {user.claims_handled}
@@ -402,42 +410,49 @@ export default function Users() {
                         : "-"}
                     </TableCell>
                     <TableCell className="pr-6 text-right">
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => handleEditUserInline(user)}
-                          >
-                            Edit User
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleChangeRole(user)}
-                          >
-                            Change Role
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleResetPassword(user)}
-                          >
-                            Reset Password
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => handleDeactivate(user)}
-                          >
-                            {user.status === "active"
-                              ? "Deactivate"
-                              : "Activate"}
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground"
+                          title="Edit user"
+                          onClick={() => handleEditUserInline(user)}
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground"
+                          title="Change role"
+                          onClick={() => handleChangeRole(user)}
+                        >
+                          <Shield className="h-4 w-4" />
+                        </Button>
+                        {/* <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground"
+                          title="Reset password"
+                          onClick={() => handleResetPassword(user)}
+                        >
+                          <KeyRound className="h-4 w-4" />
+                        </Button> */}
+                        {/* <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive hover:text-destructive"
+                          title={
+                            user.status === "active"
+                              ? "Deactivate user"
+                              : "User already inactive"
+                          }
+                          disabled={user.status !== "active"}
+                          onClick={() => handleDeactivate(user)}
+                        >
+                          <UserX className="h-4 w-4" />
+                        </Button> */}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
