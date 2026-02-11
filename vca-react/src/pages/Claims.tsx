@@ -87,18 +87,22 @@ function normalizeStatus(raw?: string | null): ClaimStatusKey {
 
 function fnolToDisplay(fnol: FnolResponse) {
   const r = fnol.raw_response;
-  const vehicle = r.vehicle ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}` : "—";
-  const normalizedStatus = normalizeStatus((fnol as any).status);
+  const vehicle = r?.vehicle
+    ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}`
+    : fnol.vehicle_name && fnol.vehicle_model && fnol.vehicle_year
+      ? `${fnol.vehicle_year} ${fnol.vehicle_name} ${fnol.vehicle_model}`
+      : "—";
+  const normalizedStatus = normalizeStatus((fnol as { status?: string }).status);
 
   return {
-    id: String(fnol.id),
-    claimNumber: r.claim_id || `FNOL-${fnol.id}`,
-    policyNumber: r.policy?.policy_number || "—",
-    customerName: r.claimant?.driver_name || "—",
+    id: fnol.complaint_id,
+    claimNumber: r?.claim_id || fnol.complaint_id || `FNOL-${fnol.id}`,
+    policyNumber: r?.policy?.policy_number || fnol.policy_number || "—",
+    customerName: r?.claimant?.driver_name || fnol.policy_holder_name || "—",
     vehicleInfo: vehicle,
-    incidentDate: r.incident?.date_time_of_loss || fnol.created_date,
-    claimType: r.incident?.claim_type || "—",
-    estimatedAmount: r.incident?.estimated_amount ?? 0,
+    incidentDate: r?.incident?.date_time_of_loss || fnol.incident_date_time || fnol.created_date,
+    claimType: r?.incident?.claim_type || fnol.claim_type || "—",
+    estimatedAmount: r?.incident?.estimated_amount ?? 0,
     statusKey: normalizedStatus,
   };
 }

@@ -15,8 +15,11 @@ from rest_framework import status
 from .models import (
     ClaimRuleMaster,
     ClaimTypeMaster,
+    ClaimStatus,
     DamageCodeMaster,
-    FnolResponse,
+    ClaimEvaluationResponse,
+    FnolClaim,
+    FnolDamagePhoto,
     Claim,
 )
 from .serializers import (
@@ -336,49 +339,207 @@ def evaluate_score(confidence: int, amount: float) -> float:
     return round(base, 2)
 
 
+def _fraud_band_to_numeric(band: str) -> float:
+    """Convert fraud band (Low/Medium/High) to numeric score."""
+    band_lower = (band or "").strip().lower()
+    if band_lower == "low":
+        return 10.0
+    if band_lower == "medium":
+        return 50.0
+    if band_lower == "high":
+        return 90.0
+    return 0.0
+
+
+def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
+    """
+    Map run_fraud_detection result to claim_status table.
+    claim_status: 1=Open, 2=Pending, 3=Fraudulent, 4=Pending Damage Detection,
+                  5=Auto Approved, 6=Manual Review
+    """
+    decision = (result.get("decision") or "").strip()
+    reason = (result.get("reason") or "").strip().lower()
+    if decision == "Reject":
+        return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
+    if decision == "Auto Approve":
+        return ClaimStatus.objects.filter(status_name__iexact="Auto Approved").first()
+    if decision == "Manual Review":
+        if "photos" in reason or "photo" in reason:
+            return ClaimStatus.objects.filter(
+                status_name__iexact="Pending Damage Detection"
+            ).first()
+        return ClaimStatus.objects.filter(status_name__iexact="Manual Review").first()
+    return ClaimStatus.objects.filter(status_name__iexact="Open").first()
+
+
+def _run_process_claim_logic(data: dict) -> dict:
+    """
+    Run the process_claim validation logic. Returns a dict with evaluation results.
+    May return early with decision/reason on failure paths.
+    """
+    policy = data.get("policy") or {}
+    incident = data.get("incident") or {}
+    history = data.get("history") or {}
+    documents = data.get("documents") or {}
+    complaint_id = data.get("claim_id", "")
+
+    estimated_amount = incident.get("estimated_amount") or 0
+
+    if not product_rule(policy):
+        return {
+            "claim_id": complaint_id,
+            "decision": "Reject",
+            "claim_status": "Rejected",
+            "reason": "Policy inactive",
+            "damage_confidence": 0,
+            "fraud_score": "Low",
+            "evaluation_score": 0,
+            "threshold": 0.75,
+            "claim_type": None,
+            "estimated_amount": estimated_amount,
+        }
+
+    fraud_score = fraud_check(history, incident, policy)
+    if fraud_score == "High":
+        return {
+            "claim_id": complaint_id,
+            "decision": "Reject",
+            "claim_status": "Rejected",
+            "reason": "High fraud risk",
+            "damage_confidence": 0,
+            "fraud_score": fraud_score,
+            "evaluation_score": 0,
+            "threshold": 0.75,
+            "claim_type": None,
+            "estimated_amount": estimated_amount,
+        }
+
+    if not documents.get("photos_uploaded"):
+        return {
+            "claim_id": complaint_id,
+            "decision": "Manual Review",
+            "claim_status": "Open",
+            "reason": "Photos missing",
+            "damage_confidence": damage_detection(incident),
+            "fraud_score": fraud_score,
+            "evaluation_score": 0,
+            "threshold": 0.75,
+            "claim_type": None,
+            "estimated_amount": estimated_amount,
+        }
+
+    confidence = damage_detection(incident)
+    score = evaluate_score(confidence, incident.get("estimated_amount") or 0)
+    threshold, claim_type_name = _get_claim_type_threshold(incident)
+
+    if score >= threshold:
+        decision = "Auto Approve"
+        status = "Closed"
+    else:
+        decision = "Manual Review"
+        status = "Open"
+
+    return {
+        "claim_id": complaint_id,
+        "damage_confidence": confidence,
+        "fraud_score": fraud_score,
+        "evaluation_score": score,
+        "threshold": threshold,
+        "claim_type": claim_type_name,
+        "decision": decision,
+        "claim_status": status,
+        "estimated_amount": estimated_amount,
+    }
+
+
+def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
+    """Build FnolPayload-like dict from FnolClaim for process_claim compatibility."""
+    photos = [p.photo_path for p in claim.damage_photos.all()]
+    incident_dt = claim.incident_date_time.isoformat() if claim.incident_date_time else None
+    return {
+        "claim_id": claim.complaint_id,
+        "policy": {
+            "policy_number": claim.policy_number or "",
+            "policy_status": claim.policy_status or "",
+            "coverage_type": claim.coverage_type or "",
+            "policy_start_date": claim.policy_start_date.isoformat() if claim.policy_start_date else "",
+            "policy_end_date": claim.policy_end_date.isoformat() if claim.policy_end_date else "",
+        },
+        "vehicle": {
+            "registration_number": claim.vehicle_registration_number or "",
+            "make": claim.vehicle_name or "",
+            "model": claim.vehicle_model or "",
+            "year": claim.vehicle_year or 0,
+        },
+        "incident": {
+            "date_time_of_loss": incident_dt or "",
+            "location": claim.incident_location or "",
+            "loss_description": claim.incident_description or "",
+            "claim_type": claim.claim_type or "",
+            "estimated_amount": 0,  # fnol_claims schema doesn't include this; can be extended
+        },
+        "claimant": {"driver_name": claim.policy_holder_name or ""},
+        "documents": {
+            "rc_copy_uploaded": False,
+            "dl_copy_uploaded": False,
+            "photos_uploaded": len(photos) > 0,
+            "fir_uploaded": bool(claim.fir_document_copy),
+            "photos": photos,
+        },
+        "history": {"previous_claims_last_12_months": claim.previous_claims_last_12_months or 0},
+    }
+
+
+def _fnol_claim_to_response(claim: FnolClaim) -> dict:
+    """Convert FnolClaim to API response format."""
+    return {
+        "id": claim.complaint_id,
+        "complaint_id": claim.complaint_id,
+        "coverage_type": claim.coverage_type,
+        "policy_number": claim.policy_number,
+        "policy_status": claim.policy_status,
+        "policy_start_date": claim.policy_start_date.isoformat() if claim.policy_start_date else None,
+        "policy_end_date": claim.policy_end_date.isoformat() if claim.policy_end_date else None,
+        "policy_holder_name": claim.policy_holder_name,
+        "previous_claims_last_12_months": claim.previous_claims_last_12_months,
+        "vehicle_name": claim.vehicle_name,
+        "vehicle_year": claim.vehicle_year,
+        "vehicle_model": claim.vehicle_model,
+        "vehicle_registration_number": claim.vehicle_registration_number,
+        "incident_location": claim.incident_location,
+        "claim_type": claim.claim_type,
+        "incident_description": claim.incident_description,
+        "incident_date_time": claim.incident_date_time.isoformat() if claim.incident_date_time else None,
+        "fir_document_copy": claim.fir_document_copy,
+        "insurance_document_copy": claim.insurance_document_copy,
+        "damage_photos": [p.photo_path for p in claim.damage_photos.all()],
+        "raw_response": _fnol_claim_to_raw_response(claim),
+        "status": claim.claim_status.status_name if claim.claim_status else "Open",
+        "created_date": None,
+        "created_by": None,
+        "updated_date": None,
+        "updated_by": None,
+    }
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_fnol(request):
     """
-    Return a list of FNOL responses.
+    Return a list of FNOL claims.
     """
-    qs = FnolResponse.objects.filter(deleted_date__isnull=True).order_by(
-        "-created_date"
-    )
-    data = [
-        {
-            "id": obj.id,
-            "raw_response": obj.raw_response,
-            "created_date": obj.created_date,
-            "created_by": obj.created_by,
-            "updated_date": obj.updated_date,
-            "updated_by": obj.updated_by,
-            # claim_status is an FK to ClaimStatus; expose the name (not the ID)
-            "status": obj.claim_status.status_name if obj.claim_status else None,
-        }
-        for obj in qs
-    ]
+    qs = FnolClaim.objects.all().order_by("-incident_date_time", "-complaint_id")
+    data = [_fnol_claim_to_response(obj) for obj in qs]
     return Response(data)
 
 
 @api_view(['GET'])
-def get_fnol(request, pk: int):
+def get_fnol(request, pk: str):
     """
-    Return a single FNOL response by ID.
+    Return a single FNOL claim by complaint_id.
     """
-    obj = get_object_or_404(
-        FnolResponse,
-        pk=pk,
-        deleted_date__isnull=True,
-    )
-    data = {
-        "id": obj.id,
-        "raw_response": obj.raw_response,
-        "created_date": obj.created_date,
-        "created_by": obj.created_by,
-        "updated_date": obj.updated_date,
-        "updated_by": obj.updated_by,
-    }
+    obj = get_object_or_404(FnolClaim, complaint_id=pk)
+    data = _fnol_claim_to_response(obj)
     return Response(data)
 
 
@@ -488,12 +649,50 @@ def damage_code_master_detail(request, pk: int):
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _fnol_payload_to_claim_data(data: dict) -> dict:
+    """Map FnolPayload (raw_response format) to FnolClaim fields."""
+    policy = data.get("policy") or {}
+    vehicle = data.get("vehicle") or {}
+    incident = data.get("incident") or {}
+    history = data.get("history") or {}
+    claimant = data.get("claimant") or {}
+    documents = data.get("documents") or {}
+    complaint_id = data.get("claim_id") or ""
+    incident_dt = incident.get("date_time_of_loss")
+    if incident_dt:
+        try:
+            incident_dt = parse_datetime(str(incident_dt))
+        except (TypeError, ValueError):
+            incident_dt = None
+    policy_start = parse_date(policy.get("policy_start_date")) if policy.get("policy_start_date") else None
+    policy_end = parse_date(policy.get("policy_end_date")) if policy.get("policy_end_date") else None
+    return {
+        "complaint_id": complaint_id,
+        "coverage_type": policy.get("coverage_type"),
+        "policy_number": policy.get("policy_number"),
+        "policy_status": policy.get("policy_status"),
+        "policy_start_date": policy_start,
+        "policy_end_date": policy_end,
+        "policy_holder_name": claimant.get("driver_name"),
+        "previous_claims_last_12_months": history.get("previous_claims_last_12_months"),
+        "vehicle_name": vehicle.get("make"),
+        "vehicle_year": vehicle.get("year"),
+        "vehicle_model": vehicle.get("model"),
+        "vehicle_registration_number": vehicle.get("registration_number"),
+        "incident_location": incident.get("location"),
+        "claim_type": incident.get("claim_type"),
+        "incident_description": incident.get("loss_description"),
+        "incident_date_time": incident_dt,
+        "fir_document_copy": documents.get("fir_path") if isinstance(documents.get("fir_path"), str) else None,
+        "insurance_document_copy": documents.get("insurance_path") if isinstance(documents.get("insurance_path"), str) else None,
+    }
+
+
 @api_view(['POST'])
 def save_fnol(request):
     """
-    Basic FNOL save endpoint.
-    In a real system this would persist data to the database.
-    For now it validates input and echoes it back.
+    Save FNOL to fnol_claims and fnol_damage_photos.
+    Accepts FnolPayload format and maps to fnol_claims schema.
     """
     data = request.data.get("fnol")
 
@@ -503,18 +702,32 @@ def save_fnol(request):
             status=400,
         )
 
-    created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
+    complaint_id = data.get("claim_id", "").strip()
+    if not complaint_id:
+        return Response(
+            {"detail": "claim_id is required."},
+            status=400,
+        )
 
-    record = FnolResponse.objects.create(
-        raw_response=data,
-        created_by=created_by,
-        updated_by=created_by,
+    claim_data = _fnol_payload_to_claim_data(data)
+    record, _ = FnolClaim.objects.update_or_create(
+        complaint_id=complaint_id,
+        defaults=claim_data,
     )
+
+    # Handle damage photos
+    documents = data.get("documents") or {}
+    photo_paths = documents.get("photos")
+    if isinstance(photo_paths, list):
+        record.damage_photos.all().delete()
+        for path in photo_paths:
+            if isinstance(path, str) and path.strip():
+                FnolDamagePhoto.objects.create(complaint=record, photo_path=path.strip())
 
     return Response(
         {
             "message": "FNOL saved successfully",
-            "id": record.id,
+            "id": record.complaint_id,
         },
         status=201,
     )
@@ -522,59 +735,60 @@ def save_fnol(request):
 
 @api_view(['POST'])
 def process_claim(request):
-    data = request.data["fnol"]
+    """
+    Run claim validation (product rule, fraud check, damage detection, etc.).
+    Does not persist to claim_evaluation_response.
+    """
+    data = request.data.get("fnol")
+    if not data:
+        return Response(
+            {"detail": "Field 'fnol' is required in request body."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    result = _run_process_claim_logic(data)
+    return Response(result)
 
-    policy = data["policy"]
-    incident = data["incident"]
-    history = data["history"]
-    documents = data["documents"]
 
-    # Step 1: Product Rule (policy validation via DB-driven rule)
-    if not product_rule(policy):
-        return Response({
-            "decision": "Reject",
-            "reason": "Policy inactive"
-        })
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def run_fraud_detection(request, complaint_id: str):
+    """
+    Run process_claim validation for the given complaint_id and save the
+    response to claim_evaluation_response. Triggered by Fraud Detection button.
+    """
+    fnol_claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
+    raw_response = _fnol_claim_to_raw_response(fnol_claim)
 
-    # Step 2: Fraud Check (uses Early Claim rule from DB)
-    fraud_score = fraud_check(history, incident, policy)
-    if fraud_score == "High":
-        return Response({
-            "decision": "Reject",
-            "reason": "High fraud risk"
-        })
+    result = _run_process_claim_logic(raw_response)
 
-    # Step 3: Document Check
-    if not documents["photos_uploaded"]:
-        return Response({
-            "decision": "Manual Review",
-            "reason": "Photos missing"
-        })
+    user_id = None
+    if request.user and request.user.pk:
+        user_id = request.user.pk
 
-    # Step 4: Damage Detection (now uses damage_code_master)
-    confidence = damage_detection(incident)
+    fraud_score_numeric = _fraud_band_to_numeric(result.get("fraud_score", ""))
+    threshold_val = result.get("threshold")
+    threshold_int = int(round((threshold_val or 0) * 100)) if threshold_val is not None else 0
 
-    # Step 5: Evaluation
-    score = evaluate_score(confidence, incident["estimated_amount"])
+    ClaimEvaluationResponse.objects.create(
+        complaint_id=complaint_id,
+        damage_confidence=result.get("damage_confidence") or 0,
+        fraud_score=fraud_score_numeric,
+        evaluation_score=result.get("evaluation_score") or 0,
+        estimated_amount=result.get("estimated_amount") or 0,
+        claim_amount=result.get("claim_amount") or result.get("estimated_amount") or 0,
+        threshold_value=threshold_int,
+        claim_type=(result.get("claim_type") or "")[:20],
+        decision=(result.get("decision") or "")[:20],
+        claim_status=(result.get("claim_status") or "")[:20],
+        created_by=user_id,
+        updated_by=user_id,
+    )
 
-    # Step 6: Threshold based on claim_type_master
-    threshold, claim_type_name = _get_claim_type_threshold(incident)
+    # Update fnol_claims.claim_status based on evaluation result
+    new_status = _get_claim_status_for_result(result)
+    if new_status:
+        fnol_claim.claim_status = new_status
+        fnol_claim.save(update_fields=["claim_status"])
 
-    if score >= threshold:
-        decision = "Auto Approve"
-        status = "Closed"
-    else:
-        decision = "Manual Review"
-        status = "Open"
-
-    return Response({
-        "claim_id": data["claim_id"],
-        "damage_confidence": confidence,
-        "fraud_score": fraud_score,
-        "evaluation_score": score,
-        "threshold": threshold,
-        "claim_type": claim_type_name,
-        "decision": decision,
-        "claim_status": status
-    })
+    return Response(result, status=status.HTTP_200_OK)
 

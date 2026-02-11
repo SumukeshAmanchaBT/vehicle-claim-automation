@@ -30,20 +30,41 @@ export interface FnolPayload {
     dl_copy_uploaded: boolean;
     photos_uploaded: boolean;
     fir_uploaded: boolean;
+    photos?: string[];
   };
   history: {
     previous_claims_last_12_months: number;
   };
 }
 
+/** FNOL claim from fnol_claims + fnol_damage_photos */
 export interface FnolResponse {
-  status: string;
-  id: number;
+  id: string;
+  complaint_id: string;
+  coverage_type: string | null;
+  policy_number: string | null;
+  policy_status: string | null;
+  policy_start_date: string | null;
+  policy_end_date: string | null;
+  policy_holder_name: string | null;
+  previous_claims_last_12_months: number | null;
+  vehicle_name: string | null;
+  vehicle_year: number | null;
+  vehicle_model: string | null;
+  vehicle_registration_number: string | null;
+  incident_location: string | null;
+  claim_type: string | null;
+  incident_description: string | null;
+  incident_date_time: string | null;
+  fir_document_copy: string | null;
+  insurance_document_copy: string | null;
+  damage_photos: string[];
   raw_response: FnolPayload;
+  status?: string;
   created_date: string;
-  created_by: string;
+  created_by: string | null;
   updated_date: string;
-  updated_by: string;
+  updated_by: string | null;
 }
 
 export interface ProcessClaimResponse {
