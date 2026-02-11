@@ -174,7 +174,7 @@ export default function Fraud() {
           </CardHeader>
           <CardContent className="p-0">
             <Table>
-              <TableHeader>
+              <TableHeader className="table-header-bg">
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="pl-6">Claim #</TableHead>
                   <TableHead>Customer</TableHead>
