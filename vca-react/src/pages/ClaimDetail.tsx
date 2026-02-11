@@ -162,7 +162,7 @@ export default function ClaimDetail() {
   return (
     <AppLayout
       title={r.claim_id || fnol.complaint_id || `FNOL-${fnol.id}`}
-      subtitle={`${incident.claim_type || fnol.claim_type || "Claim"} - ${claimant.driver_name || fnol.policy_holder_name || "—"}`}
+      subtitle={`${incident.claim_type || fnol.incident_type || "Claim"} - ${claimant.driver_name || fnol.policy_holder_name || "—"}`}
     >
       <div className="space-y-6 animate-fade-in">
         {/* Header Actions */}
