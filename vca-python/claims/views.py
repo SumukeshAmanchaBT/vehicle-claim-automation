@@ -32,11 +32,21 @@ from .serializers import (
 )
 
 
+def _is_admin_user(user) -> bool:
+    """True if user can perform admin actions: Django staff or in 'Admin' group."""
+    if user.is_staff:
+        return True
+    return user.groups.filter(name__iexact="admin").exists()
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_user(request):
-    if not request.user.is_staff:
-        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if not _is_admin_user(request.user):
+        return Response(
+            {"error": "Forbidden - Admin role or staff required to create users"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     serializer = UserCreateSerializer(data=request.data)
     if not serializer.is_valid():
@@ -83,7 +93,7 @@ def edit_user(request, pk):
     # Users can edit their own profile, staff can edit anyone
     user = get_object_or_404(User, pk=pk)
     
-    if user.id != request.user.id and not request.user.is_staff:
+    if user.id != request.user.id and not _is_admin_user(request.user):
         return Response({"error": "Forbidden - can only edit your own profile"}, status=status.HTTP_403_FORBIDDEN)
     
     serializer = UserUpdateSerializer(user, data=request.data, partial=True)
@@ -96,8 +106,8 @@ def edit_user(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def change_role(request, pk):
-    if not request.user.is_staff:
-        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if not _is_admin_user(request.user):
+        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ChangeRoleSerializer(data=request.data)
@@ -113,8 +123,8 @@ def change_role(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def reset_password(request, pk):
-    if not request.user.is_staff:
-        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if not _is_admin_user(request.user):
+        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ResetPasswordSerializer(data=request.data)
@@ -129,8 +139,8 @@ def reset_password(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def deactivate_user(request, pk):
-    if not request.user.is_staff:
-        return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    if not _is_admin_user(request.user):
+        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     user.is_active = False
