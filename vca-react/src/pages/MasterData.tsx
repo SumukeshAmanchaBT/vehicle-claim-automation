@@ -625,7 +625,7 @@ export default function MasterData() {
                           <TableCell className="pl-6 font-medium">
                             {type.claim_type_name}
                           </TableCell>
-                          <TableCell>{type.risk_percentage}</TableCell>
+                          <TableCell>{Math.round(type.risk_percentage)}</TableCell>
                           <TableCell>
                             <Switch
                               checked={type.is_active}
