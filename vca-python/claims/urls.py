@@ -5,6 +5,7 @@ from .views import (
     list_fnol,
     login,
     process_claim,
+    run_fraud_detection,
     save_fnol,
     create_user,
     list_users,
@@ -30,8 +31,9 @@ urlpatterns = [
     path("users/<int:pk>/deactivate", deactivate_user, name="deactivate_user"),
     path("save-fnol", save_fnol, name="save_fnol"),
     path("process-claim", process_claim, name="process_claim"),
+    path("fnol/<str:complaint_id>/run-fraud-detection", run_fraud_detection, name="run_fraud_detection"),
     path("fnol", list_fnol, name="list_fnol"),
-    path("fnol/<int:pk>/", get_fnol, name="get_fnol"),
+    path("fnol/<str:pk>/", get_fnol, name="get_fnol"),
 
     # Master tables CRUD
     path("masters/claim-types", claim_type_master_collection, name="claim_type_master_collection"),

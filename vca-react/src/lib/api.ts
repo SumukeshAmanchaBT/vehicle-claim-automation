@@ -28,16 +28,16 @@ export async function getFnolList(): Promise<FnolResponse[]> {
   return fetchApi<FnolResponse[]>("/fnol");
 }
 
-/** GET /api/fnol/:id/ - Get single FNOL by ID */
-export async function getFnolById(id: string | number): Promise<FnolResponse> {
-  return fetchApi<FnolResponse>(`/fnol/${id}`);
+/** GET /api/fnol/:id/ - Get single FNOL by complaint_id */
+export async function getFnolById(id: string): Promise<FnolResponse> {
+  return fetchApi<FnolResponse>(`/fnol/${encodeURIComponent(id)}`);
 }
 
-/** POST /api/save-fnol/ - Save FNOL payload */
+/** POST /api/save-fnol/ - Save FNOL payload to fnol_claims + fnol_damage_photos */
 export async function saveFnol(
   fnol: FnolPayload
-): Promise<{ message: string; id: number }> {
-  return fetchApi<{ message: string; id: number }>("/save-fnol", {
+): Promise<{ message: string; id: string }> {
+  return fetchApi<{ message: string; id: string }>("/save-fnol", {
     method: "POST",
     data: { fnol },
   });
@@ -51,6 +51,16 @@ export async function processClaim(
     method: "POST",
     data: { fnol },
   });
+}
+
+/** POST /api/fnol/:complaintId/run-fraud-detection - Run fraud detection and save to claim_evaluation_response */
+export async function runFraudDetection(
+  complaintId: string
+): Promise<ProcessClaimResponse> {
+  return fetchApi<ProcessClaimResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/run-fraud-detection`,
+    { method: "POST" }
+  );
 }
 
 /** ****************************

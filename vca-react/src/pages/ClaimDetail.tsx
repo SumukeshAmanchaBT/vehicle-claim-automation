@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ import {
 import {
   getFnolById,
   processClaim,
+  runFraudDetection,
   type FnolResponse,
   type ProcessClaimResponse,
 } from "@/lib/api";
@@ -54,10 +55,12 @@ function fraudBandToNumeric(band: string): number {
 
 export default function ClaimDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [fnol, setFnol] = useState<FnolResponse | null>(null);
   const [assessment, setAssessment] = useState<ProcessClaimResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fraudDetectionLoading, setFraudDetectionLoading] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -81,6 +84,20 @@ export default function ClaimDetail() {
       });
     return () => { cancelled = true; };
   }, [id]);
+
+  const handleFraudDetection = async () => {
+    if (!id) return;
+    setFraudDetectionLoading(true);
+    setError(null);
+    try {
+      await runFraudDetection(id);
+      navigate("/claims");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Fraud detection failed");
+    } finally {
+      setFraudDetectionLoading(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -108,12 +125,13 @@ export default function ClaimDetail() {
     );
   }
 
-  const r = fnol.raw_response;
+  const r = fnol.raw_response || {};
   const incident = r.incident || {};
   const policy = r.policy || {};
   const vehicle = r.vehicle || {};
   const claimant = r.claimant || {};
   const documents = r.documents || {};
+  const photos = documents.photos ?? fnol.damage_photos ?? [];
   const aiConfidence = assessment?.damage_confidence ?? 0;
   const fraudBand = assessment?.fraud_score ?? "—";
   const fraudScore = fraudBandToNumeric(fraudBand);
@@ -131,10 +149,20 @@ export default function ClaimDetail() {
     return "pending";
   };
 
+  // Only use persisted fnol.status (from fnol_claims.claim_status), not live assessment.decision
+  const isAutoApproved =
+    (fnol.status || "").toLowerCase() === "auto approved";
+
+  // Open claim: show Claim Details + Documents only; hide AI Assessment, Estimated, AI Damage %, Fraud Evaluation
+  const isOpenClaim =
+    !fnol.status ||
+    (fnol.status || "").toLowerCase() === "open" ||
+    (fnol.status || "").toLowerCase() === "pending";
+
   return (
     <AppLayout
-      title={r.claim_id || `FNOL-${fnol.id}`}
-      subtitle={`${incident.claim_type || "Claim"} - ${claimant.driver_name || "—"}`}
+      title={r.claim_id || fnol.complaint_id || `FNOL-${fnol.id}`}
+      subtitle={`${incident.claim_type || fnol.claim_type || "Claim"} - ${claimant.driver_name || fnol.policy_holder_name || "—"}`}
     >
       <div className="space-y-6 animate-fade-in">
         {/* Header Actions */}
@@ -155,69 +183,87 @@ export default function ClaimDetail() {
             </StatusBadge> */}
             {/* <Button variant="outline">Request Documents</Button> */}
 
-            <Button>Fraud Detection</Button>
+            <Button
+              onClick={handleFraudDetection}
+              disabled={fraudDetectionLoading || !fnol || isAutoApproved}
+            >
+              {fraudDetectionLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Validating...
+                </>
+              ) : (
+                "Fraud Detection"
+              )}
+            </Button>
 
-            <Button variant="destructive" disabled>Damage Detection</Button>
+            <Button variant="destructive" disabled={isAutoApproved}>
+              Damage Detection
+            </Button>
           </div>
         </div>
 
         <div className="grid gap-6 lg:grid-cols-3">
           {/* Main Content */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Overview Cards */}
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Card className="card-elevated">
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                      <DollarSign className="h-5 w-5 text-primary" />
+            {/* Overview Cards - hidden for Open/Pending claims */}
+            {!isOpenClaim && (
+              <div className="grid gap-4 sm:grid-cols-3">
+                <Card className="card-elevated">
+                  <CardContent className="p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                        <DollarSign className="h-5 w-5 text-primary" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Estimated</p>
+                        <p className="text-xl font-bold">
+                          {formatCurrency(incident.estimated_amount ?? 0)}
+                        </p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Estimated</p>
-                      <p className="text-xl font-bold">
-                        {formatCurrency(incident.estimated_amount ?? 0)}
-                      </p>
+                  </CardContent>
+                </Card>
+                <Card className="card-elevated">
+                  <CardContent className="p-4">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
+                        <Brain className="h-5 w-5 text-success" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">AI Damage Assessment %</p>
+                        <p className="text-xl font-bold">{aiConfidence}%</p>
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="card-elevated">
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
-                      <Brain className="h-5 w-5 text-success" />
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">AI Damage Assessment %</p>
-                      <p className="text-xl font-bold">{aiConfidence}%</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="card-elevated">
-                <CardContent className="p-4">
-                  <div
-                    className={`flex h-10 w-10 items-center justify-center rounded-lg ${fraudScore >= 50 ? "bg-destructive/10" : fraudScore >= 30 ? "bg-warning/10" : "bg-success/10"
-                      }`}
-                  >
-                    <Shield
-                      className={`h-5 w-5 ${fraudScore >= 50 ? "text-destructive" : fraudScore >= 30 ? "text-warning" : "text-success"
+                  </CardContent>
+                </Card>
+                <Card className="card-elevated">
+                  <CardContent className="p-4">
+                    <div
+                      className={`flex h-10 w-10 items-center justify-center rounded-lg ${fraudScore >= 50 ? "bg-destructive/10" : fraudScore >= 30 ? "bg-warning/10" : "bg-success/10"
                         }`}
-                    />
-                  </div>
-                  <div className="mt-2">
-                    <p className="text-xs text-muted-foreground">Fraud Evaluation</p>
-                    <p className="text-xl font-bold">{fraudBand} ({fraudScore}%)</p>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+                    >
+                      <Shield
+                        className={`h-5 w-5 ${fraudScore >= 50 ? "text-destructive" : fraudScore >= 30 ? "text-warning" : "text-success"
+                          }`}
+                      />
+                    </div>
+                    <div className="mt-2">
+                      <p className="text-xs text-muted-foreground">Fraud Evaluation</p>
+                      <p className="text-xl font-bold">{fraudBand} ({fraudScore}%)</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
 
             {/* Tabs */}
             <Tabs defaultValue="details" className="space-y-4 p-4 w-full">
               <TabsList>
                 <TabsTrigger value="details">Claim Details</TabsTrigger>
-                <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
+                {!isOpenClaim && (
+                  <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
+                )}
                 <TabsTrigger value="documents">Documents</TabsTrigger>
                 {/* <TabsTrigger value="timeline">Timeline</TabsTrigger> */}
               </TabsList>
@@ -302,6 +348,7 @@ export default function ClaimDetail() {
                 </Card>
               </TabsContent>
 
+              {!isOpenClaim && (
               <TabsContent value="assessment">
                 <Card className="card-elevated">
                   <CardHeader>
@@ -380,6 +427,7 @@ export default function ClaimDetail() {
                   </CardContent>
                 </Card>
               </TabsContent>
+              )}
 
               <TabsContent value="documents">
                 <Card className="card-elevated">
@@ -419,15 +467,15 @@ export default function ClaimDetail() {
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium">Photos</span>
 
-                          <StatusBadge status={documents?.photos?.length >= 1 ? "approved" : "pending"}>
-                            {documents?.photos?.length >= 1 ? "Available" : "Not Available"}
+                          <StatusBadge status={photos.length >= 1 ? "approved" : "pending"}>
+                            {photos.length >= 1 ? "Available" : "Not Available"}
                           </StatusBadge>
                         </div>
 
                         {/* 4 Image Grid */}
                         <div className="grid grid-cols-2 gap-3">
                           {[0, 1, 2, 3].map((index) => {
-                            const imageUrl = documents?.photos?.[index];
+                            const imageUrl = photos[index];
 
                             return imageUrl ? (
                               <img

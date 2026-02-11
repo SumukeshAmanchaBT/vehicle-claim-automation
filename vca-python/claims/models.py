@@ -1,36 +1,106 @@
 from django.db import models
 
 
-class FnolResponse(models.Model):
+class FnolClaim(models.Model):
     """
-    Stores the raw FNOL JSON payload and audit fields.
+    Stores FNOL claim data (fnol_claims table).
+    Uses complaint_id as primary key.
     """
 
-    raw_response = models.JSONField()
-    # Foreign key to legacy claim_status lookup table (stores ID in column 'claim_status')
+    complaint_id = models.CharField(max_length=20, primary_key=True)
+    coverage_type = models.CharField(max_length=50, null=True, blank=True)
+    policy_number = models.CharField(max_length=50, null=True, blank=True)
+    policy_status = models.CharField(max_length=20, null=True, blank=True)
+    policy_start_date = models.DateField(null=True, blank=True)
+    policy_end_date = models.DateField(null=True, blank=True)
+    policy_holder_name = models.CharField(max_length=100, null=True, blank=True)
+    previous_claims_last_12_months = models.IntegerField(null=True, blank=True)
+    vehicle_name = models.CharField(max_length=50, null=True, blank=True)
+    vehicle_year = models.IntegerField(null=True, blank=True)
+    vehicle_model = models.CharField(max_length=50, null=True, blank=True)
+    vehicle_registration_number = models.CharField(max_length=20, null=True, blank=True)
+    incident_location = models.CharField(max_length=100, null=True, blank=True)
+    claim_type = models.CharField(max_length=50, null=True, blank=True)
+    incident_description = models.TextField(null=True, blank=True)
+    incident_date_time = models.DateTimeField(null=True, blank=True)
+    fir_document_copy = models.CharField(max_length=255, null=True, blank=True)
+    insurance_document_copy = models.CharField(max_length=255, null=True, blank=True)
     claim_status = models.ForeignKey(
         "ClaimStatus",
-        on_delete=models.DO_NOTHING,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         db_column="claim_status",
-        related_name="fnols",
+        related_name="fnol_claims",
     )
 
-    created_date = models.DateTimeField(auto_now_add=True)
-    created_by = models.CharField(max_length=150, null=True, blank=True)
-
-    updated_date = models.DateTimeField(auto_now=True)
-    updated_by = models.CharField(max_length=150, null=True, blank=True)
-
-    deleted_date = models.DateTimeField(null=True, blank=True)
-    deleted_by = models.CharField(max_length=150, null=True, blank=True)
-
     class Meta:
-        db_table = "fnol_response"
+        db_table = "fnol_claims"
 
     def __str__(self) -> str:
-        return f"FnolResponse(id={self.id})"
+        return f"FnolClaim(complaint_id={self.complaint_id})"
+
+
+class FnolDamagePhoto(models.Model):
+    """
+    Stores damage photo paths for FNOL claims (fnol_damage_photos table).
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="damage_photos",
+    )
+    photo_path = models.CharField(max_length=255)
+
+    class Meta:
+        db_table = "fnol_damage_photos"
+
+    def __str__(self) -> str:
+        return f"FnolDamagePhoto(id={self.id}, complaint_id={self.complaint_id})"
+
+
+class ClaimEvaluationResponse(models.Model):
+    """
+    Stores evaluation results from process_claim / fraud detection (claim_evaluation_response table).
+    """
+
+    complaint_id = models.CharField(max_length=20, db_column="complaint_id")
+    damage_confidence = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True, default=0
+    )
+    fraud_score = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True, default=0
+    )
+    evaluation_score = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True, default=0
+    )
+    estimated_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True, default=0
+    )
+    claim_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True, default=0
+    )
+    threshold_value = models.IntegerField(null=True, blank=True, default=0)
+    claim_type = models.CharField(max_length=20, null=True, blank=True)
+    decision = models.CharField(max_length=20, null=True, blank=True)
+    claim_status = models.CharField(max_length=20, null=True, blank=True)
+
+    created_date = models.DateTimeField(auto_now_add=True)
+    created_by = models.IntegerField(null=True, blank=True)
+    updated_date = models.DateTimeField(auto_now=True)
+    updated_by = models.IntegerField(null=True, blank=True)
+    deleted_date = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        db_table = "claim_evaluation_response"
+
+    def __str__(self) -> str:
+        return f"ClaimEvaluationResponse(id={self.id}, complaint_id={self.complaint_id})"
 
 
 class ClaimRuleMaster(models.Model):
@@ -147,7 +217,7 @@ class Claim(models.Model):
         help_text="External/business claim identifier coming from FNOL/core system.",
     )
     fnol = models.ForeignKey(
-        FnolResponse,
+        FnolClaim,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
