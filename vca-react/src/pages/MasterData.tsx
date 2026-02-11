@@ -263,7 +263,7 @@ export default function MasterData() {
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
-                  <TableHeader>
+                  <TableHeader className="table-header-bg">
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
                       <TableHead className="pl-6">Damage Type</TableHead>
                       <TableHead>Base Cost ($)</TableHead>
@@ -297,18 +297,18 @@ export default function MasterData() {
                             <Switch checked={type.is_active} disabled />
                           </TableCell>
                           <TableCell className="pr-6 text-right">
-                            <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <Button variant="ghost" size="icon">
+                            <div className="flex items-center justify-end gap-1 ">
+                              <Button variant="default" size="icon">
                                 <Edit2 className="h-4 w-4" />
                               </Button>
                               <Button
-                                variant="ghost"
+                                variant="default"
                                 size="icon"
                                 onClick={() =>
                                   handleDeleteDamageType(type.damage_id)
                                 }
                               >
-                                <Trash2 className="h-4 w-4 text-destructive" />
+                                <Trash2 className="h-4 w-4 " />
                               </Button>
                             </div>
                           </TableCell>
@@ -380,6 +380,7 @@ export default function MasterData() {
                       <TableHead>Risk Percentage (%)</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="pr-6 text-right">Created At</TableHead>
+                      <TableHead className="pr-6 text-right"> Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -408,9 +409,26 @@ export default function MasterData() {
                           <TableCell className="pr-6 text-right text-xs text-muted-foreground">
                             {new Date(type.created_date).toLocaleString()}
                           </TableCell>
+                          <TableCell className="pr-6 text-right">
+                            <div className="flex items-center justify-end gap-1 ">
+                              <Button variant="default" size="icon">
+                                <Edit2 className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="default"
+                                size="icon"
+                                onClick={() =>
+                                  handleDeleteDamageType(type.damage_id)
+                                }
+                              >
+                                <Trash2 className="h-4 w-4 " />
+                              </Button>
+                            </div>
+                          </TableCell>
                         </TableRow>
                       ))
                     )}
+                    
                   </TableBody>
                 </Table>
               </CardContent>

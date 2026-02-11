@@ -45,9 +45,16 @@ export async function listUsers(): Promise<UserSummary[]> {
   return res.data.results;
 }
 
+/** Backend create-user response shape */
+interface CreateUserResponse {
+  user: UserSummary;
+  message: string;
+}
+
 export async function createUser(payload: CreateUserRequest): Promise<UserSummary> {
-  const res = await httpClient.post<UserSummary>("/users/create", payload);
-  return res.data;
+  const res = await httpClient.post<CreateUserResponse>("/users/create", payload);
+  const data = res.data as CreateUserResponse;
+  return data.user ?? (data as unknown as UserSummary);
 }
 
 export async function updateUser(

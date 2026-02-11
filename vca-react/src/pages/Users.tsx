@@ -37,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Search, UserPlus, MoreHorizontal } from "lucide-react";
+import { useToast } from "@/components/ui/use-toast";
 import {
   listUsers,
   createUser,
@@ -47,6 +48,7 @@ import {
   type UserSummary,
   type UserRole,
 } from "@/services/userService";
+import { isAxiosError } from "axios";
 
 const roleLabels: Record<UserRole, string> = {
   admin: "Admin",
@@ -60,6 +62,7 @@ function getDisplayName(user: UserSummary) {
 
 export default function Users() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [isAddOpen, setIsAddOpen] = useState(false);
 
@@ -87,6 +90,25 @@ export default function Users() {
       setNewFirstName("");
       setNewLastName("");
       setNewRole("user");
+      toast({ title: "User created successfully" });
+    },
+    onError: (err) => {
+      if (isAxiosError(err) && err.response?.status === 403) {
+        const msg =
+          (err.response?.data as { error?: string })?.error ||
+          "You don’t have permission to create users.";
+        toast({
+          variant: "destructive",
+          title: "Cannot create user",
+          description: `${msg} Grant your account the Admin role by running: python manage.py make_admin <your_username>`,
+        });
+        return;
+      }
+      toast({
+        variant: "destructive",
+        title: "Failed to create user",
+        description: isAxiosError(err) && err.message ? err.message : "Please try again.",
+      });
     },
   });
 
@@ -326,7 +348,7 @@ export default function Users() {
             </div>
           ) : (
             <Table>
-              <TableHeader>
+              <TableHeader className="table-header-bg">
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
                   <TableHead className="pl-6">User</TableHead>
                   <TableHead>Role</TableHead>
