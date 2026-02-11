@@ -312,3 +312,33 @@ class ClaimStatus(models.Model):
 
     def __str__(self) -> str:
         return self.status_name
+
+
+class PricingConfig(models.Model):
+    """
+    Master table for pricing configuration.
+    Used for claim amounts, thresholds, rates, etc.
+    """
+    config_id = models.BigAutoField(primary_key=True)
+    config_key = models.CharField(max_length=100, unique=True)
+    config_name = models.CharField(max_length=255)
+    config_value = models.TextField()
+    config_type = models.CharField(
+        max_length=50,
+        default="string",
+        help_text="string, number, decimal, json, boolean",
+    )
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    created_date = models.DateTimeField(auto_now_add=True)
+    created_by = models.CharField(max_length=150, null=True, blank=True)
+    updated_date = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=150, null=True, blank=True)
+
+    class Meta:
+        db_table = "pricing_config"
+        ordering = ["config_key"]
+
+    def __str__(self) -> str:
+        return f"{self.config_key}: {self.config_value}"

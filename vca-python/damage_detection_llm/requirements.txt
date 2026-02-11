@@ -1,0 +1,4 @@
+# Damage Detection LLM is now a Django app.
+# Dependencies are in the project root requirements.txt:
+#   ultralytics, tensorflow, keras, numpy, Pillow
+# Flask/flask-cors are no longer needed.
