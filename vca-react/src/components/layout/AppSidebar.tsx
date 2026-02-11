@@ -1,12 +1,19 @@
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, FileText, Users, Settings, ShieldCheck, BarChart3, Database, Car, LogOut, Activity } from "lucide-react";
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { useState } from "react";
+  LayoutDashboard,
+  FileText,
+  Users,
+  Settings,
+  ShieldCheck,
+  BarChart3,
+  Database,
+  Car,
+  LogOut,
+  Activity,
+} from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 
 const navItems = [
@@ -37,21 +44,34 @@ const navItems = [
   },
 ];
 
-const adminItems = [
+const adminSections = [
   {
     title: "User Management",
-    href: "/users",
     icon: Users,
+    baseMatch: ["/users", "/roles", "/roles/permissions"],
+    items: [
+      { label: "Users", href: "/users" },
+      // Stub routes for future expansion
+      { label: "Roles", href: "/roles" },
+      { label: "Role Permissions", href: "/roles/permissions" },
+    ],
   },
   {
     title: "Master Data",
-    href: "/master-data",
     icon: Database,
+    baseMatch: ["/master-data"],
+    items: [
+      { label: "Damage Configuration", href: "/master-data?section=damage-types" },
+      { label: "Claim Configuration", href: "/master-data?section=thresholds" },
+      { label: "Fraud Rules", href: "/master-data?section=fraud-rules" },
+      { label: "Pricing Configuration", href: "/master-data?section=pricing" },
+    ],
   },
   {
     title: "Settings",
-    href: "/settings",
     icon: Settings,
+    baseMatch: ["/settings"],
+    items: [{ label: "Settings", href: "/settings" }],
   },
 ];
 
@@ -59,9 +79,19 @@ export function AppSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
-  const [claimsOpen, setClaimsOpen] = useState(
-    location.pathname.startsWith("/claims")
+  const [userMgmtOpen, setUserMgmtOpen] = useState(
+    location.pathname.startsWith("/users") ||
+      location.pathname.startsWith("/roles"),
   );
+  const [masterDataOpen, setMasterDataOpen] = useState(
+    location.pathname.startsWith("/master-data"),
+  );
+
+  const [settingsOpen, setSettingsOpen] = useState(
+    location.pathname.startsWith("/settings"),
+  );
+
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
 
   return (
     <aside className="fixed left-0 top-0 z-40 h-screen w-64 bg-sidebar border-r border-sidebar-border">
@@ -107,23 +137,90 @@ export function AppSidebar() {
               Administration
             </p>
             <div className="space-y-1">
-              {adminItems.map((item) => (
-                <NavLink
-                  key={item.href}
-                  to={item.href}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                      isActive
-                        ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                        : "text-sidebar-foreground hover:bg-sidebar-accent"
-                    )
-                  }
-                >
-                  <item.icon className="h-4 w-4" />
-                  {item.title}
-                </NavLink>
-              ))}
+              {adminSections.map((section) => {
+                const isMaster = section.title === "Master Data";
+                const isUserMgmt = section.title === "User Management";
+                const isSettings = section.title === "Settings";
+                const open =
+                  (isMaster && masterDataOpen) ||
+                  (isUserMgmt && userMgmtOpen) ||
+                  (isSettings && settingsOpen);
+
+                const setOpen =
+                  isMaster
+                    ? setMasterDataOpen
+                    : isUserMgmt
+                      ? setUserMgmtOpen
+                      : setSettingsOpen;
+
+                const isSectionActive = section.baseMatch.some((prefix) =>
+                  location.pathname.startsWith(prefix),
+                );
+
+                return (
+                  <Collapsible
+                    key={section.title}
+                    open={open}
+                    onOpenChange={setOpen}
+                    className="space-y-1"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <button
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                          isSectionActive
+                            ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                            : "text-sidebar-foreground hover:bg-sidebar-accent",
+                        )}
+                      >
+                        <span className="flex items-center gap-3">
+                          <section.icon className="h-4 w-4" />
+                          {section.title}
+                        </span>
+                        <span className="text-xs text-sidebar-muted">
+                          {open ? "−" : "+"}
+                        </span>
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <div className="mt-1 space-y-0.5 pl-9">
+                        {section.items.map((item) => {
+                          const url = new URL(
+                            item.href,
+                            window.location.origin,
+                          );
+                          const isActive =
+                            location.pathname === url.pathname &&
+                            (isMaster
+                              ? // for master data, also consider section param
+                                (searchParams.get("section") ||
+                                  "damage-types") ===
+                                (url.searchParams.get("section") ||
+                                  "damage-types")
+                              : true);
+
+                          return (
+                            <NavLink
+                              key={item.href}
+                              to={item.href}
+                              className={() =>
+                                cn(
+                                  "block rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                                  isActive
+                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                    : "text-sidebar-muted hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                )
+                              }
+                            >
+                              {item.label}
+                            </NavLink>
+                          );
+                        })}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                );
+              })}
             </div>
           </div>
         </nav>

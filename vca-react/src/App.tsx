@@ -8,6 +8,8 @@ import Claims from "./pages/Claims";
 import ClaimDetail from "./pages/ClaimDetail";
 import ClaimIntake from "./pages/ClaimIntake";
 import Users from "./pages/Users";
+import Roles from "./pages/Roles";
+import RolePermissions from "./pages/RolePermissions";
 import MasterData from "./pages/MasterData";
 import Reports from "./pages/Reports";
 import Fraud from "./pages/Fraud";
@@ -73,6 +75,22 @@ const App = () => (
               element={
                 <RequireAuth>
                   <Users />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/roles"
+              element={
+                <RequireAuth>
+                  <Roles />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/roles/permissions"
+              element={
+                <RequireAuth>
+                  <RolePermissions />
                 </RequireAuth>
               }
             />
