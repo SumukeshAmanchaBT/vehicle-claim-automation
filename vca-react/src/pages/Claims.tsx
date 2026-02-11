@@ -38,17 +38,58 @@ import {
 } from "lucide-react";
 import { getFnolList, type FnolResponse } from "@/lib/api";
 
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: 0,
-  }).format(amount);
+type BadgeVariant = "approved" | "pending" | "rejected" | "processing" | "default";
+
+type ClaimStatusKey =
+  | "auto_approved"
+  | "fraudulent"
+  | "manual_review"
+  | "open"
+  | "pending"
+  | "pending_damage_detection";
+
+const CLAIM_STATUS_META: Record<
+  ClaimStatusKey,
+  { label: string; badge: BadgeVariant }
+> = {
+  auto_approved: { label: "Auto Approved", badge: "approved" },
+  fraudulent: { label: "Fraudulent", badge: "rejected" },
+  manual_review: { label: "Manual Review", badge: "pending" },
+  open: { label: "Open", badge: "processing" },
+  pending: { label: "Pending", badge: "pending" },
+  pending_damage_detection: {
+    label: "Pending Damage Detection",
+    badge: "processing",
+  },
 };
+
+function normalizeStatus(raw?: string | null): ClaimStatusKey {
+  const value = (raw || "").trim().toLowerCase();
+
+  if (value === "auto approved" || value === "auto_approved") {
+    return "auto_approved";
+  }
+  if (value === "fraudulent") {
+    return "fraudulent";
+  }
+  if (value === "manual review" || value === "manual_review") {
+    return "manual_review";
+  }
+  if (value === "open") {
+    return "open";
+  }
+  if (value === "pending damage detection" || value === "pending_damage_detection") {
+    return "pending_damage_detection";
+  }
+  // Fallback
+  return "pending";
+}
 
 function fnolToDisplay(fnol: FnolResponse) {
   const r = fnol.raw_response;
   const vehicle = r.vehicle ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}` : "—";
+  const normalizedStatus = normalizeStatus((fnol as any).status);
+
   return {
     id: String(fnol.id),
     claimNumber: r.claim_id || `FNOL-${fnol.id}`,
@@ -58,6 +99,7 @@ function fnolToDisplay(fnol: FnolResponse) {
     incidentDate: r.incident?.date_time_of_loss || fnol.created_date,
     claimType: r.incident?.claim_type || "—",
     estimatedAmount: r.incident?.estimated_amount ?? 0,
+    statusKey: normalizedStatus,
   };
 }
 
@@ -87,11 +129,17 @@ export default function Claims() {
 
   const displayClaims = claims.map(fnolToDisplay);
   const filteredClaims = displayClaims.filter((claim) => {
+    const term = search.toLowerCase();
     const matchesSearch =
-      claim.claimNumber.toLowerCase().includes(search.toLowerCase()) ||
-      claim.customerName.toLowerCase().includes(search.toLowerCase()) ||
-      claim.policyNumber.toLowerCase().includes(search.toLowerCase());
-    return matchesSearch;
+      claim.claimNumber.toLowerCase().includes(term) ||
+      claim.customerName.toLowerCase().includes(term) ||
+      claim.policyNumber.toLowerCase().includes(term);
+
+    const matchesStatus =
+      statusFilter === "all" ||
+      claim.statusKey === (statusFilter as ClaimStatusKey);
+
+    return matchesSearch && matchesStatus;
   });
 
   const handleStatusChange = (value: string) => {
@@ -127,11 +175,14 @@ export default function Claims() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="auto_approved">Auto Approved</SelectItem>
+                    <SelectItem value="fraudulent">Fraudulent</SelectItem>
+                    <SelectItem value="manual_review">Manual Review</SelectItem>
+                    <SelectItem value="open">Open</SelectItem>
                     <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="processing">Processing</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                    <SelectItem value="flagged">Flagged</SelectItem>
+                    <SelectItem value="pending_damage_detection">
+                      Pending Damage Detection
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -218,7 +269,9 @@ export default function Claims() {
                         {formatCurrency(claim.estimatedAmount)}
                       </TableCell> */}
                       <TableCell>
-                        <StatusBadge status="pending">Pending</StatusBadge>
+                        <StatusBadge status={CLAIM_STATUS_META[claim.statusKey].badge}>
+                          {CLAIM_STATUS_META[claim.statusKey].label}
+                        </StatusBadge>
                       </TableCell>
                       <TableCell className="pr-6 text-right">
                         <div className="flex items-center justify-end gap-1 opacity-50 group-hover:opacity-100 transition-opacity">

@@ -7,6 +7,15 @@ class FnolResponse(models.Model):
     """
 
     raw_response = models.JSONField()
+    # Foreign key to legacy claim_status lookup table (stores ID in column 'claim_status')
+    claim_status = models.ForeignKey(
+        "ClaimStatus",
+        on_delete=models.DO_NOTHING,
+        null=True,
+        blank=True,
+        db_column="claim_status",
+        related_name="fnols",
+    )
 
     created_date = models.DateTimeField(auto_now_add=True)
     created_by = models.CharField(max_length=150, null=True, blank=True)
@@ -218,3 +227,19 @@ class Claim(models.Model):
 
     def __str__(self) -> str:
         return f"Claim(id={self.id}, claim_id={self.claim_id})"
+
+
+class ClaimStatus(models.Model):
+    """
+    Lookup table for claim status names.
+    Maps integer IDs in fnol_response.claim_status to human-readable names.
+    """
+
+    status_name = models.CharField(max_length=150, db_column="status_name")
+
+    class Meta:
+        db_table = "claim_status"
+        managed = False  # existing legacy table; Django will not create/modify it
+
+    def __str__(self) -> str:
+        return self.status_name
