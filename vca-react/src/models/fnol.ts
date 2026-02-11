@@ -37,6 +37,7 @@ export interface FnolPayload {
 }
 
 export interface FnolResponse {
+  status: string;
   id: number;
   raw_response: FnolPayload;
   created_date: string;
