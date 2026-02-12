@@ -15,7 +15,6 @@ export interface FnolPayload {
   };
   incident: {
     date_time_of_loss: string;
-    location: string;
     loss_description: string;
     claim_type: string;
     estimated_amount: number;
@@ -51,7 +50,6 @@ export interface FnolResponse {
   vehicle_year: number | null;
   vehicle_model: string | null;
   vehicle_registration_number: string | null;
-  incident_location: string | null;
   incident_type: string | null;
   incident_description: string | null;
   incident_date_time: string | null;
@@ -60,10 +58,18 @@ export interface FnolResponse {
   damage_photos: string[];
   raw_response: FnolPayload;
   status?: string;
+  estimated_amount?: number | null;
+  claim_amount?: number | null;
   created_date: string;
   created_by: string | null;
   updated_date: string;
   updated_by: string | null;
+}
+
+export interface FraudRuleResult {
+  rule_type: string;
+  rule_description: string;
+  passed: boolean;
 }
 
 export interface ProcessClaimResponse {
@@ -76,5 +82,8 @@ export interface ProcessClaimResponse {
   decision?: string;
   claim_status?: string;
   reason?: string;
+  estimated_amount?: number;
+  claim_amount?: number;
+  fraud_rule_results?: FraudRuleResult[];
 }
 

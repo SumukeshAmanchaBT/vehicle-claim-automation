@@ -18,7 +18,6 @@ class FnolClaim(models.Model):
     vehicle_year = models.IntegerField(null=True, blank=True)
     vehicle_model = models.CharField(max_length=50, null=True, blank=True)
     vehicle_registration_number = models.CharField(max_length=20, null=True, blank=True)
-    incident_location = models.CharField(max_length=100, null=True, blank=True)
     incident_type = models.CharField(max_length=50, null=True, blank=True, db_column="incident_type")
     incident_description = models.TextField(null=True, blank=True)
     incident_date_time = models.DateTimeField(null=True, blank=True)
@@ -70,12 +69,6 @@ class ClaimEvaluationResponse(models.Model):
     complaint_id = models.CharField(max_length=20, db_column="complaint_id")
     damage_confidence = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, default=0
-    )
-    fraud_score = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True, default=0
-    )
-    evaluation_score = models.DecimalField(
-        max_digits=6, decimal_places=2, null=True, blank=True, default=0
     )
     estimated_amount = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True, default=0
