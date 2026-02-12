@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,65 +21,9 @@ import {
   XCircle,
   Clock,
   TrendingUp,
+  Loader2,
 } from "lucide-react";
-
-const fraudCases = [
-  {
-    id: "1",
-    claimNumber: "CLM-2024-0891",
-    customer: "Michael Chen",
-    riskScore: 78,
-    reason: "Early claim filing (<30 days from policy start)",
-    amount: 28000,
-    status: "under_review",
-    detectedAt: "2024-02-01T14:30:00",
-    indicators: ["Early claim", "High value", "Theft claim"],
-  },
-  {
-    id: "2",
-    claimNumber: "CLM-2024-0888",
-    customer: "Jessica Williams",
-    riskScore: 65,
-    reason: "Location mismatch detected",
-    amount: 3200,
-    status: "under_review",
-    detectedAt: "2024-01-28T09:15:00",
-    indicators: ["Location mismatch", "Unusual timing"],
-  },
-  {
-    id: "3",
-    claimNumber: "CLM-2024-0875",
-    customer: "David Lee",
-    riskScore: 58,
-    reason: "Repeat repair shop usage pattern",
-    amount: 4500,
-    status: "cleared",
-    detectedAt: "2024-01-25T11:45:00",
-    indicators: ["Repeat shop"],
-  },
-  {
-    id: "4",
-    claimNumber: "CLM-2024-0862",
-    customer: "Sarah Johnson",
-    riskScore: 82,
-    reason: "Multiple indicators triggered",
-    amount: 15000,
-    status: "confirmed",
-    detectedAt: "2024-01-22T08:30:00",
-    indicators: ["Blacklisted", "Document tampering", "Early claim"],
-  },
-  {
-    id: "5",
-    claimNumber: "CLM-2024-0850",
-    customer: "Robert Martinez",
-    riskScore: 45,
-    reason: "Unusual claim pattern",
-    amount: 2100,
-    status: "cleared",
-    detectedAt: "2024-01-20T16:20:00",
-    indicators: ["Pattern anomaly"],
-  },
-];
+import { getFraudClaims, type FraudClaimItem } from "@/lib/api";
 
 const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat("en-US", {
@@ -98,9 +43,31 @@ const getStatusInfo = (status: string) => {
 };
 
 export default function Fraud() {
+  const [fraudCases, setFraudCases] = useState<FraudClaimItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    getFraudClaims()
+      .then((data) => {
+        if (!cancelled) setFraudCases(data || []);
+      })
+      .catch(() => {
+        if (!cancelled) setFraudCases([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const underReview = fraudCases.filter((c) => c.status === "under_review").length;
   const confirmed = fraudCases.filter((c) => c.status === "confirmed").length;
   const cleared = fraudCases.filter((c) => c.status === "cleared").length;
+  const detectionRate = fraudCases.length > 0
+    ? Math.round((confirmed / fraudCases.length) * 100)
+    : 0;
 
   return (
     <AppLayout
@@ -157,7 +124,7 @@ export default function Fraud() {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Detection Rate</p>
-                  <p className="text-2xl font-bold">94%</p>
+                  <p className="text-2xl font-bold">{detectionRate}%</p>
                 </div>
               </div>
             </CardContent>
@@ -173,6 +140,16 @@ export default function Fraud() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
+            {loading ? (
+              <div className="flex flex-col items-center justify-center py-16">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                <p className="mt-4 text-sm text-muted-foreground">Loading fraud claims...</p>
+              </div>
+            ) : fraudCases.length === 0 ? (
+              <div className="py-16 text-center text-sm text-muted-foreground">
+                No fraud detection results yet. Run Fraud Detection on claims to see them here.
+              </div>
+            ) : (
             <Table>
               <TableHeader className="table-header-bg">
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
@@ -191,10 +168,10 @@ export default function Fraud() {
                   const statusInfo = getStatusInfo(fraudCase.status);
                   const StatusIcon = statusInfo.icon;
                   return (
-                    <TableRow key={fraudCase.id} className="group">
+                    <TableRow key={fraudCase.complaint_id} className="group">
                       <TableCell className="pl-6">
                         <Link
-                          to={`/claims/${fraudCase.id}`}
+                          to={`/claims/${fraudCase.complaint_id}`}
                           className="font-medium text-primary hover:underline"
                         >
                           {fraudCase.claimNumber}
@@ -266,7 +243,7 @@ export default function Fraud() {
                           className="opacity-0 group-hover:opacity-100 transition-opacity"
                           asChild
                         >
-                          <Link to={`/claims/${fraudCase.id}`}>
+                          <Link to={`/claims/${fraudCase.complaint_id}`}>
                             <Eye className="h-4 w-4 mr-1" />
                             Review
                           </Link>
@@ -277,6 +254,7 @@ export default function Fraud() {
                 })}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </div>

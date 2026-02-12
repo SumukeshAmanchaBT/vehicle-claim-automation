@@ -80,6 +80,7 @@ class ClaimEvaluationResponse(models.Model):
     claim_type = models.CharField(max_length=20, null=True, blank=True)
     decision = models.CharField(max_length=20, null=True, blank=True)
     claim_status = models.CharField(max_length=20, null=True, blank=True)
+    reason = models.TextField(null=True, blank=True)
 
     created_date = models.DateTimeField(auto_now_add=True)
     created_by = models.IntegerField(null=True, blank=True)

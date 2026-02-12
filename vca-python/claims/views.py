@@ -651,6 +651,65 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def list_fraud_claims(request):
+    """
+    Return claims that have been through fraud detection (exist in claim_evaluation_response).
+    Used by Fraud Detection page - shows Fraudulent, Under Review, and Cleared claims dynamically.
+    """
+    # Claims that have been through fraud detection (exist in claim_evaluation_response)
+    fnol_claims = (
+        FnolClaim.objects.filter(
+            complaint_id__in=ClaimEvaluationResponse.objects.values_list(
+                "complaint_id", flat=True
+            ).distinct()
+        )
+        .select_related("claim_status")
+        .order_by("-incident_date_time", "-complaint_id")
+    )
+    results = []
+    for claim in fnol_claims:
+        eval_row = (
+            ClaimEvaluationResponse.objects.filter(complaint_id=claim.complaint_id)
+            .order_by("-created_date")
+            .first()
+        )
+        if not eval_row:
+            continue
+        status_name = (claim.claim_status.status_name if claim.claim_status else "") or ""
+        status_lower = status_name.lower()
+        if "fraud" in status_lower or status_lower == "fraudulent":
+            ui_status = "confirmed"
+        elif status_lower in ("auto approved", "closed"):
+            ui_status = "cleared"
+        else:
+            ui_status = "under_review"
+
+        decision = (eval_row.decision or "").lower()
+        if decision == "reject":
+            risk_score = 90
+        elif decision == "manual review":
+            risk_score = 65
+        else:
+            risk_score = 25
+
+        reason = eval_row.reason or eval_row.decision or "—"
+
+        results.append({
+            "complaint_id": claim.complaint_id,
+            "claimNumber": claim.complaint_id,
+            "customer": claim.policy_holder_name or "—",
+            "riskScore": risk_score,
+            "reason": reason,
+            "amount": float(eval_row.estimated_amount or eval_row.claim_amount or 0),
+            "status": ui_status,
+            "detectedAt": eval_row.created_date.isoformat() if eval_row.created_date else None,
+            "indicators": [reason] if reason and reason != "—" else [],
+        })
+    return Response(results)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def list_fnol(request):
     """
     Return a list of FNOL claims.
@@ -937,6 +996,7 @@ def run_fraud_detection(request, complaint_id: str):
         claim_type=(result.get("claim_type") or "")[:20],
         decision=(result.get("decision") or "")[:20],
         claim_status=(result.get("claim_status") or "")[:20],
+        reason=result.get("reason"),
         created_by=user_id,
         updated_by=user_id,
     )
