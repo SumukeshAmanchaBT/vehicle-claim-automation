@@ -506,16 +506,16 @@ export default function MasterData() {
           className="space-y-4"
         >
           {/* <TabsList>
-            <TabsTrigger value="damage-types">Damage Configuration</TabsTrigger>
+            <TabsTrigger value="damage-types">Damage Types</TabsTrigger>
             <TabsTrigger value="thresholds">Claim Thresholds</TabsTrigger>
             <TabsTrigger value="fraud-rules">Fraud Rules</TabsTrigger>
-            <TabsTrigger value="automation">Automation Settings</TabsTrigger>
+           <TabsTrigger value="automation">Automation Settings</TabsTrigger> 
           </TabsList> */}
 
           <TabsContent value="damage-types">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base">Damage  Configuration</CardTitle>
+                <CardTitle className="text-base">Damage Configuration</CardTitle>
                 <Dialog open={damageDialogOpen} onOpenChange={setDamageDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -702,7 +702,7 @@ export default function MasterData() {
           <TabsContent value="thresholds">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base">Claim  Configuration</CardTitle>
+                <CardTitle className="text-base">Claim Configuration</CardTitle>
                 <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -1198,20 +1198,20 @@ export default function MasterData() {
             </DialogContent>
           </Dialog>
 
-          <TabsContent value="pricing">
+          <TabsContent value="PriceConfig">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base"> Pricing Configuratoin</CardTitle>
+                <CardTitle className="text-base">Price Configuration</CardTitle>
                 <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
                       <Plus className="mr-2 h-4 w-4" />
-                      Add Pricing Config
+                      Add Pricing config values
                     </Button>
                   </DialogTrigger>
                   <DialogContent>
                     <DialogHeader>
-                      <DialogTitle>Add Pricing Config</DialogTitle>
+                      <DialogTitle>Add Pricing config values</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4">
                       <div className="space-y-2">
@@ -1282,7 +1282,7 @@ export default function MasterData() {
                           setClaimTypePage(1);
                         }}
                       >
-                        Pricing Value in $
+                        Price Value ($)
                       </SortableTableHead>
                       <SortableTableHead
                         sortKey="status"
@@ -1296,7 +1296,7 @@ export default function MasterData() {
                       >
                         Status
                       </SortableTableHead>
-                      <TableHead className="pr-6 text-right">Created At</TableHead>
+                      {/* <TableHead className="pr-6 text-right">Created At</TableHead> */}
                       <TableHead className="pr-6 text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1328,9 +1328,9 @@ export default function MasterData() {
                               }
                             />
                           </TableCell>
-                          <TableCell className="pr-6 text-right text-xs text-muted-foreground">
+                          {/* <TableCell className="pr-6 text-right text-xs text-muted-foreground">
                             {new Date(type.created_date).toLocaleString()}
-                          </TableCell>
+                          </TableCell> */}
                           <TableCell className="pr-6 text-right">
                             <div className="flex items-center justify-end gap-1 ">
                               <Button

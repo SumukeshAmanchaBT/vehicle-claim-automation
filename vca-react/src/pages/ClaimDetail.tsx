@@ -8,15 +8,21 @@ import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   ArrowLeft,
   Car,
   User,
   Calendar,
-  FileImage,
+  MapPin,
   Shield,
   CheckCircle2,
   AlertTriangle,
-  Clock,
   DollarSign,
   Brain,
   Eye,
@@ -27,6 +33,7 @@ import {
   getFnolById,
   processClaim,
   runFraudDetection,
+  type FnolPayload,
   type FnolResponse,
   type ProcessClaimResponse,
 } from "@/lib/api";
@@ -59,7 +66,8 @@ export default function ClaimDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fraudDetectionLoading, setFraudDetectionLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState("fraud-evaluation");
+  const [fraudSuccessModalOpen, setFraudSuccessModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("details");
   const [fraudResult, setFraudResult] = useState<ProcessClaimResponse | null>(null);
   const [damageDetectionRun, setDamageDetectionRun] = useState(false);
 
@@ -111,6 +119,7 @@ export default function ClaimDetail() {
       const updatedFnol = await getFnolById(id);
       setFnol(updatedFnol);
       setActiveTab("fraud-evaluation");
+      setFraudSuccessModalOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Fraud detection failed");
     } finally {
@@ -144,21 +153,30 @@ export default function ClaimDetail() {
     );
   }
 
-  const r = fnol.raw_response || {};
-  const incident = r.incident || {};
-  const policy = r.policy || {};
-  const vehicle = r.vehicle || {};
-  const claimant = r.claimant || {};
-  const documents = r.documents || {};
+  const r: Partial<FnolPayload> = fnol.raw_response || {};
+  const incident = (r.incident || {}) as FnolPayload["incident"];
+  const policy = (r.policy || {}) as FnolPayload["policy"];
+  const vehicle = (r.vehicle || {}) as FnolPayload["vehicle"];
+  const claimant = (r.claimant || {}) as FnolPayload["claimant"];
+  const documents = (r.documents || {}) as FnolPayload["documents"];
+
+  // Prefer top-level API fields (complaint_id, incident_date_time, incident_location, etc.), fall back to raw_response
+  const incidentDate = fnol.incident_date_time || incident.date_time_of_loss;
+  const incidentLocation = (incident as any)?.location ?? null;
+  const incidentType =
+    fnol.incident_type ??
+    (r as { Incident_type?: string }).Incident_type ??
+    incident.claim_type;
+  const incidentDescription = fnol.incident_description ?? incident.loss_description;
+
   const photos = documents.photos ?? fnol.damage_photos ?? [];
   const aiConfidence = assessment?.damage_confidence ?? 0;
   const fraudBand = assessment?.fraud_score ?? "—";
   const fraudScore = fraudBandToNumeric(fraudBand);
   const decision = assessment?.decision ?? "Pending";
   const claimStatus = assessment?.claim_status ?? "Open";
-  const lossDesc = fnol.incident_description || incident.loss_description || "";
-  const damageTypes = lossDesc
-    ? lossDesc.split(/[,&]|\band\b/i).map((s: string) => s.trim()).filter(Boolean)
+  const damageTypes = incidentDescription
+    ? incidentDescription.split(/[,&]|\band\b/i).map((s: string) => s.trim()).filter(Boolean)
     : [];
 
   const getStatusVariant = (
@@ -181,8 +199,8 @@ export default function ClaimDetail() {
 
   return (
     <AppLayout
-      title={r.claim_id || fnol.complaint_id || `FNOL-${fnol.id}`}
-      subtitle={`${incident.claim_type || fnol.incident_type || "Claim"} - ${claimant.driver_name || fnol.policy_holder_name || "—"}`}
+      title={fnol.complaint_id || r.claim_id || `FNOL-${fnol.id}`}
+      subtitle={`${incidentType || "Claim"} - ${fnol.policy_holder_name || claimant.driver_name || "—"}`}
     >
       <div className="space-y-6 animate-fade-in">
         {/* Header Actions */}
@@ -229,6 +247,20 @@ export default function ClaimDetail() {
             </Button>
           </div>
         </div>
+
+        <Dialog open={fraudSuccessModalOpen} onOpenChange={setFraudSuccessModalOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Fraud Detection Evaluated Successfully</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Fraud detection has been completed for this claim. You can review the results in the Fraud Evaluation tab.
+            </p>
+            <DialogFooter>
+              <Button onClick={() => setFraudSuccessModalOpen(false)}>OK</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <div className="grid gap-6 lg:grid-cols-3">
           {/* Main Content */}
@@ -293,10 +325,10 @@ export default function ClaimDetail() {
             {/* Tabs */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4 p-4 w-full">
               <TabsList>
+                <TabsTrigger value="details">Claim Details</TabsTrigger>
                 {!isOpenClaim && (
                   <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
                 )}
-                <TabsTrigger value="details">Claim Details</TabsTrigger>
                 {damageDetectionRun && (
                   <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
                 )}
@@ -316,45 +348,33 @@ export default function ClaimDetail() {
                           <div>
                             <p className="text-sm font-medium">Incident Date</p>
                             <p className="text-sm text-muted-foreground">
-                              {fnol.incident_date_time
-                                ? new Date(fnol.incident_date_time).toLocaleDateString()
+                              {incidentDate
+                                ? new Date(incidentDate).toLocaleDateString()
                                 : "—"}
                             </p>
                           </div>
                         </div>
                         <div className="flex items-start gap-3">
-                          <User className="h-4 w-4 mt-1 text-muted-foreground" />
+                          <MapPin className="h-4 w-4 mt-1 text-muted-foreground" />
                           <div>
-                            <p className="text-sm font-medium">Incident Type</p>
+                            <p className="text-sm font-medium">Location</p>
                             <p className="text-sm text-muted-foreground">
-                              {fnol.incident_type || "—"}
+                              {incidentLocation || "—"}
                             </p>
                           </div>
                         </div>
                       </div>
-                      <div className="space-y-4">
-                        <div className="flex items-start gap-3">
-                          <Clock className="h-4 w-4 mt-1 text-muted-foreground" />
-                          <div>
-                            <p className="text-sm font-medium">Submitted</p>
-                            <p className="text-sm text-muted-foreground">
-                              {fnol.incident_date_time
-                                ? new Date(fnol.incident_date_time).toLocaleString()
-                                : "—"}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
+                      {/* Additional incident meta (submitted, created by, etc.) can be added here if needed */}
                     </div>
 
                     <Separator />
 
                     <div>
-                      <h4 className="text-sm font-medium mb-3">Loss Description</h4>
+                      <h4 className="text-sm font-medium mb-3">Incident Description</h4>
                       <p className="text-sm text-muted-foreground mb-3">
-                        {fnol.incident_description || "—"}
+                        {incidentDescription || "—"}
                       </p>
-                      {damageTypes.length > 0 && (
+                      {/* {damageTypes.length > 0 && (
                         <>
                           <h4 className="text-sm font-medium mb-2">Damage Types</h4>
                           <div className="flex flex-wrap gap-2">
@@ -368,7 +388,7 @@ export default function ClaimDetail() {
                             ))}
                           </div>
                         </>
-                      )}
+                      )} */}
                     </div>
                   </CardContent>
                 </Card>
@@ -493,9 +513,9 @@ export default function ClaimDetail() {
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium">Photos</span>
 
-                          <StatusBadge status={photos.length >= 1 ? "approved" : "pending"}>
+                          {/* <StatusBadge status={photos.length >= 1 ? "approved" : "pending"}>
                             {photos.length >= 1 ? "Available" : "Not Available"}
-                          </StatusBadge>
+                          </StatusBadge> */}
                         </div>
 
                         {/* 4 Image Grid */}
@@ -655,11 +675,26 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <p className="text-sm font-medium">{fnol.policy_holder_name || "—"}</p>
+                  <p className="text-sm font-medium">
+                    {fnol.policy_holder_name || claimant.driver_name || "—"}
+                  </p>
                   <p className="text-xs text-muted-foreground">
-                    Policy: {fnol.policy_number || "—"}
+                    Policy: {fnol.policy_number || policy.policy_number || "—"}
                   </p>
                 </div>
+                {/* <Separator />
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">License</span>
+                    <span className="font-mono text-xs">
+                      {claimant.driving_license_number || "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Valid Till</span>
+                    <span>{claimant.license_valid_till || "—"}</span>
+                  </div>
+                </div> */}
               </CardContent>
             </Card>
 
@@ -672,21 +707,29 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Coverage</span>
-                  <span>{fnol.coverage_type || "—"}</span>
-                </div>
-                <div className="flex justify-between">
                   <span className="text-muted-foreground">Policy Status</span>
-                  <span>{fnol.policy_status || "—"}</span>
+                  <span className="font-medium">
+                    {fnol.policy_status || policy.policy_status || "—"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Policy Start</span>
-                  <span>{fnol.policy_start_date ? new Date(fnol.policy_start_date).toLocaleDateString() : "—"}</span>
+                  <span className="text-muted-foreground">Start Date</span>
+                  <span>
+                    {fnol.policy_start_date
+                      ? new Date(fnol.policy_start_date).toLocaleDateString()
+                      : "—"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Policy End</span>
-                  <span>{fnol.policy_end_date ? new Date(fnol.policy_end_date).toLocaleDateString() : "—"}</span>
+                  <span className="text-muted-foreground">End Date</span>
+                  <span>
+                    {fnol.policy_end_date
+                      ? new Date(fnol.policy_end_date).toLocaleDateString()
+                      : "—"}
+                  </span>
                 </div>
+                
+                
               </CardContent>
             </Card>
 
@@ -701,16 +744,22 @@ export default function ClaimDetail() {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Vehicle</span>
                   <span>
-                    {fnol.vehicle_year} {fnol.vehicle_make} {fnol.vehicle_model}
+                    {[fnol.vehicle_year, fnol.vehicle_make, fnol.vehicle_model]
+                      .filter(Boolean)
+                      .join(" ") ||
+                      `${vehicle.year ?? ""} ${vehicle.make ?? ""} ${vehicle.model ?? ""}`.trim() ||
+                      "—"}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Registration</span>
-                  <span className="font-mono">{fnol.vehicle_registration_number || "—"}</span>
+                  <span className="font-mono">
+                    {fnol.vehicle_registration_number || vehicle.registration_number || "—"}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Coverage</span>
-                  <span>{fnol.coverage_type || "—"}</span>
+                  <span>{fnol.coverage_type || policy.coverage_type || "—"}</span>
                 </div>
               </CardContent>
             </Card>

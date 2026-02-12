@@ -1,35 +1,56 @@
 import { httpClient } from "@/lib/httpClient";
 
-export type UserRole = "admin" | "user";
-export type UserStatus = "active" | "inactive";
-
 export interface UserSummary {
   id: number;
   username: string;
   email: string;
   first_name: string;
   last_name: string;
-  role: UserRole;
-  status: UserStatus;
-  claims_handled: number;
-  last_login: string | null;
+  is_active: boolean;
+  role: Role | null;
+  permissions: Permission[];
 }
 
-export interface ListUsersResponse {
-  results: UserSummary[] | UserSummary[];
+export interface Role {
+  id: number;
+  name: string;
+  description: string;
+  is_active: boolean;
+  permission_count: number;
+  created_date: string;
+  created_by: string | null;
+  updated_date: string;
+  updated_by: string | null;
 }
 
+export interface RoleCreateRequest {
+  name: string;
+  description: string;
+  is_active: boolean;
+}
+
+export type RoleUpdateRequest = Partial<RoleCreateRequest>;
+
+export interface Permission {
+  id: number;
+  codename: string;
+  name: string;
+  description: string;
+  module: string;
+  is_active: boolean;
+  created_date: string;
+  created_by: string | null;
+}
+
+export interface PermissionAssignRequest {
+  permission_ids: number[];
+}
 export interface CreateUserRequest {
   username: string;
   password: string;
   email: string;
   first_name: string;
   last_name: string;
-  role: UserRole;
-}
-
-export interface ChangeRoleRequest {
-  role: UserRole;
 }
 
 export interface ResetPasswordRequest {
@@ -37,12 +58,8 @@ export interface ResetPasswordRequest {
 }
 
 export async function listUsers(): Promise<UserSummary[]> {
-  const res = await httpClient.get<UserSummary[] | ListUsersResponse>("/users/");
-  // Support both plain array and paginated { results: [] }
-  if (Array.isArray(res.data)) {
-    return res.data;
-  }
-  return res.data.results;
+  const res = await httpClient.get<UserSummary[]>("/core/users/");
+  return res.data;
 }
 
 /** Backend create-user response shape */
@@ -67,11 +84,84 @@ export async function updateUser(
 
 export async function changeUserRole(
   id: number,
-  payload: ChangeRoleRequest
+  payload: { role_id: number | null }
 ): Promise<UserSummary> {
-  const res = await httpClient.post<UserSummary>(`/users/${id}/change-role/`, payload);
+  const res = await httpClient.post<UserSummary>(
+    `/core/users/${id}/assign-role/`,
+    payload
+  );
   return res.data;
 }
+
+export async function getRoles(): Promise<Role[]> {
+  const res = await httpClient.get<Role[]>(`/core/roles/`);
+  return res.data;
+}
+
+export async function createRole(payload: RoleCreateRequest): Promise<Role> {
+  const res = await httpClient.post<Role>("/core/roles/", payload);
+  return res.data;
+}
+
+export async function updateRole(
+  id: number,
+  payload: RoleUpdateRequest
+): Promise<Role> {
+  const res = await httpClient.patch<Role>(`/core/roles/${id}/`, payload);
+  return res.data;
+}
+
+export async function deleteRole(id: number): Promise<void> {
+  await httpClient.delete<void>(`/core/roles/${id}/`);
+}
+
+export async function listPermissions(): Promise<Permission[]> {
+  const res = await httpClient.get<Permission[]>("/core/permissions/");
+  return res.data;
+}
+
+export async function createPermission(
+  payload: Omit<Permission, "id" | "created_date" | "created_by">
+): Promise<Permission> {
+  const res = await httpClient.post<Permission>("/core/permissions/", payload);
+  return res.data;
+}
+
+export async function updatePermission(
+  id: number,
+  payload: Partial<Omit<Permission, "id" | "created_date" | "created_by">>
+): Promise<Permission> {
+  const res = await httpClient.patch<Permission>(
+    `/core/permissions/${id}/`,
+    payload
+  );
+  return res.data;
+}
+
+export async function deletePermission(id: number): Promise<void> {
+  await httpClient.delete<void>(`/core/permissions/${id}/`);
+}
+
+export async function getRolePermissions(
+  roleId: number
+): Promise<Permission[]> {
+  const res = await httpClient.get<Permission[]>(
+    `/core/roles/${roleId}/permissions/`
+  );
+  return res.data;
+}
+
+export async function assignRolePermissions(
+  roleId: number,
+  payload: PermissionAssignRequest
+): Promise<void> {
+  await httpClient.post<void>(
+    `/core/roles/${roleId}/permissions/assign/`,
+    payload
+  );
+}
+
+
 
 export async function resetUserPassword(
   id: number,
@@ -90,4 +180,5 @@ export async function deactivateUser(
   const res = await httpClient.post<UserSummary>(`/users/${id}/deactivate/`);
   return res.data;
 }
+
 
