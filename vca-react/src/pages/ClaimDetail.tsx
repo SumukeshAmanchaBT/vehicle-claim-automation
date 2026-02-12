@@ -37,6 +37,8 @@ import {
   type FnolResponse,
   type ProcessClaimResponse,
 } from "@/lib/api";
+import API_BASE_URL from "@/lib/httpClient";
+import API_MEDIA_URL from "@/lib/httpClient";
 
 const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat("en-IN", {
@@ -191,6 +193,14 @@ export default function ClaimDetail() {
   const isAutoApproved =
     (fnol.status || "").toLowerCase() === "auto approved";
 
+  // Damage Detection button only active when claim status is "Pending Damage Detection"
+  console.log("Claim status for damage detection check:", fnol.status);
+  console.log("Claim status for damage detection check:", claimStatus);
+  const statusForCheck = (fnol.status || claimStatus || "").toLowerCase();
+  const isPendingDamageDetection =
+    statusForCheck === "pending damage detection" || statusForCheck === "pending_damage_detection";
+
+  console.log("Is pending damage detection:", isPendingDamageDetection);
   // Open claim: show Claim Details + Documents only; hide AI Assessment, Fraud Evaluation tab, overview cards
   const isOpenClaim =
     !fnol.status ||
@@ -237,7 +247,7 @@ export default function ClaimDetail() {
 
             <Button
               variant="destructive"
-              disabled={!fraudResult || isAutoApproved}
+              disabled={!isPendingDamageDetection || isAutoApproved}
               onClick={() => {
                 setDamageDetectionRun(true);
                 setActiveTab("assessment");
@@ -395,26 +405,26 @@ export default function ClaimDetail() {
               </TabsContent>
 
               {damageDetectionRun && (
-              <TabsContent value="assessment">
-                <Card className="card-elevated">
-                  <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Brain className="h-4 w-4" />
-                      AI Damage Assessment
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-6">
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm">Damage Evaluation %</span>
-                        <span className="text-sm font-medium">{aiConfidence}%</span>
+                <TabsContent value="assessment">
+                  <Card className="card-elevated">
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Brain className="h-4 w-4" />
+                        AI Damage Assessment
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm">Damage Evaluation %</span>
+                          <span className="text-sm font-medium">{aiConfidence}%</span>
+                        </div>
+                        <Progress value={aiConfidence} className="h-2" />
                       </div>
-                      <Progress value={aiConfidence} className="h-2" />
-                    </div>
 
-                    {assessment && (
-                      <div className="grid gap-4">
-                        {/* <div className="rounded-lg border p-4">
+                      {assessment && (
+                        <div className="grid gap-4">
+                          {/* <div className="rounded-lg border p-4">
                           <div className="flex items-center gap-2 mb-2">
                             <CheckCircle2 className="h-4 w-4 text-success" />
                             <span className="text-sm font-medium">Assessment Result</span>
@@ -427,52 +437,52 @@ export default function ClaimDetail() {
                             {assessment.reason && <li>• Reason: {assessment.reason}</li>}
                           </ul>
                         </div> */}
-                        <div className="rounded-lg border p-4">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Eye className="h-4 w-4 text-primary" />
-                            <span className="text-sm font-medium">Damage Detection</span>
+                          <div className="rounded-lg border p-4">
+                            <div className="flex items-center gap-2 mb-2">
+                              <Eye className="h-4 w-4 text-primary" />
+                              <span className="text-sm font-medium">Damage Detection</span>
+                            </div>
+                            <ul className="space-y-1 text-sm text-muted-foreground">
+                              {damageTypes.map((type) => (
+                                <li key={type}>• {type} detected</li>
+                              ))}
+                              <li>• Policy: {policy.policy_status ?? "—"}</li>
+                              <li>• Coverage: {policy.coverage_type ?? "—"}</li>
+                            </ul>
                           </div>
-                          <ul className="space-y-1 text-sm text-muted-foreground">
-                            {damageTypes.map((type) => (
-                              <li key={type}>• {type} detected</li>
-                            ))}
-                            <li>• Policy: {policy.policy_status ?? "—"}</li>
-                            <li>• Coverage: {policy.coverage_type ?? "—"}</li>
-                          </ul>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {decision === "Auto Approve" && fraudScore < 30 && (
-                      <div className="flex items-center gap-2 rounded-lg bg-success/10 p-4">
-                        <CheckCircle2 className="h-5 w-5 text-success" />
-                        <div>
-                          <p className="text-sm font-medium text-success">
-                            Eligible for Straight-Through Processing
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            This claim meets all criteria for automated approval
-                          </p>
+                      {decision === "Auto Approve" && fraudScore < 30 && (
+                        <div className="flex items-center gap-2 rounded-lg bg-success/10 p-4">
+                          <CheckCircle2 className="h-5 w-5 text-success" />
+                          <div>
+                            <p className="text-sm font-medium text-success">
+                              Eligible for Straight-Through Processing
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              This claim meets all criteria for automated approval
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )}
 
-                    {fraudScore >= 50 && (
-                      <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-4">
-                        <AlertTriangle className="h-5 w-5 text-destructive" />
-                        <div>
-                          <p className="text-sm font-medium text-destructive">
-                            High Fraud Risk Detected
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Manual review required before processing
-                          </p>
+                      {fraudScore >= 50 && (
+                        <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-4">
+                          <AlertTriangle className="h-5 w-5 text-destructive" />
+                          <div>
+                            <p className="text-sm font-medium text-destructive">
+                              High Fraud Risk Detected
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Manual review required before processing
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
               )}
 
               <TabsContent value="documents">
@@ -521,9 +531,16 @@ export default function ClaimDetail() {
                         {/* 4 Image Grid */}
                         <div className="grid grid-cols-2 gap-3">
                           {[0, 1, 2, 3].map((index) => {
-                            const imageUrl = photos[index];
-
-                            return imageUrl ? (
+                            const obj = photos[index];
+                            const imageUrlObject =
+                              typeof obj === "string"
+                                ? obj
+                                : (obj as { image?: { url?: string } })?.image?.url;
+                            // const imageUrl = "http://localhost:8000/media/vehicle_damage/CLM_D001_1.JPEG";
+                            const imageUrl = API_MEDIA_URL + imageUrlObject;
+                            const imageExists = Boolean(imageUrl);
+                            console.log("Photo object:", imageUrl);
+                            return imageExists ? (
                               <img
                                 key={index}
                                 src={imageUrl}
@@ -554,65 +571,63 @@ export default function ClaimDetail() {
               </TabsContent>
 
               {!isOpenClaim && (
-              <TabsContent value="fraud-evaluation">
-                <Card className="card-elevated">
-                  <CardHeader>
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Shield className="h-4 w-4" />
-                      Fraud Evaluation
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <p className="text-sm text-muted-foreground">
-                      Evaluation based on Master Data fraud rules. Green indicates the rule passed; red indicates it failed.
-                    </p>
-                    {(() => {
-                      const rules = fraudResult?.fraud_rule_results ?? assessment?.fraud_rule_results ?? [];
-                      if (rules.length === 0) {
+                <TabsContent value="fraud-evaluation">
+                  <Card className="card-elevated">
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Shield className="h-4 w-4" />
+                        Fraud Evaluation
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <p className="text-sm text-muted-foreground">
+                        Evaluation based on Master Data fraud rules. Green indicates the rule passed; red indicates it failed.
+                      </p>
+                      {(() => {
+                        const rules = fraudResult?.fraud_rule_results ?? assessment?.fraud_rule_results ?? [];
+                        if (rules.length === 0) {
+                          return (
+                            <p className="text-sm text-muted-foreground py-8 text-center">
+                              Click &quot;Fraud Detection&quot; to run validation and see results.
+                            </p>
+                          );
+                        }
                         return (
-                          <p className="text-sm text-muted-foreground py-8 text-center">
-                            Click &quot;Fraud Detection&quot; to run validation and see results.
-                          </p>
-                        );
-                      }
-                      return (
-                        <div className="space-y-3">
-                          {rules.map((r, i) => (
-                            <div
-                              key={i}
-                              className={`flex items-center justify-between rounded-lg border p-4 ${
-                                r.passed ? "bg-success/5 border-success/20" : "bg-destructive/5 border-destructive/20"
-                              }`}
-                            >
-                              <div>
-                                <p className="text-sm font-medium">{r.rule_type}</p>
-                                <p className="text-xs text-muted-foreground">{r.rule_description}</p>
-                              </div>
-                              <span
-                                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
-                                  r.passed ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
-                                }`}
+                          <div className="space-y-3">
+                            {rules.map((r, i) => (
+                              <div
+                                key={i}
+                                className={`flex items-center justify-between rounded-lg border p-4 ${r.passed ? "bg-success/5 border-success/20" : "bg-destructive/5 border-destructive/20"
+                                  }`}
                               >
-                                {r.passed ? (
-                                  <>
-                                    <CheckCircle2 className="h-3.5 w-3.5" />
-                                    Pass
-                                  </>
-                                ) : (
-                                  <>
-                                    <AlertTriangle className="h-3.5 w-3.5" />
-                                    Fail
-                                  </>
-                                )}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                  </CardContent>
-                </Card>
-              </TabsContent>
+                                <div>
+                                  <p className="text-sm font-medium">{r.rule_type}</p>
+                                  <p className="text-xs text-muted-foreground">{r.rule_description}</p>
+                                </div>
+                                <span
+                                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${r.passed ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
+                                    }`}
+                                >
+                                  {r.passed ? (
+                                    <>
+                                      <CheckCircle2 className="h-3.5 w-3.5" />
+                                      Pass
+                                    </>
+                                  ) : (
+                                    <>
+                                      <AlertTriangle className="h-3.5 w-3.5" />
+                                      Fail
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
               )}
 
               {/* <TabsContent value="timeline">
@@ -728,8 +743,8 @@ export default function ClaimDetail() {
                       : "—"}
                   </span>
                 </div>
-                
-                
+
+
               </CardContent>
             </Card>
 

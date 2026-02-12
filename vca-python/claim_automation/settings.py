@@ -161,6 +161,10 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Media files (user-uploaded content)
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
