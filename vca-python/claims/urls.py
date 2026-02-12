@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     get_fnol,
     list_fnol,
+    list_fraud_claims,
     login,
     process_claim,
     run_fraud_detection,
@@ -34,6 +35,7 @@ urlpatterns = [
     path("save-fnol", save_fnol, name="save_fnol"),
     path("process-claim", process_claim, name="process_claim"),
     path("fnol/<str:complaint_id>/run-fraud-detection", run_fraud_detection, name="run_fraud_detection"),
+    path("fraud-claims", list_fraud_claims, name="list_fraud_claims"),
     path("fnol", list_fnol, name="list_fnol"),
     path("fnol/<str:pk>/", get_fnol, name="get_fnol"),
 

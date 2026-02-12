@@ -53,6 +53,23 @@ export async function processClaim(
   });
 }
 
+export interface FraudClaimItem {
+  complaint_id: string;
+  claimNumber: string;
+  customer: string;
+  riskScore: number;
+  reason: string;
+  amount: number;
+  status: "under_review" | "confirmed" | "cleared";
+  detectedAt: string | null;
+  indicators: string[];
+}
+
+/** GET /api/fraud-claims - List claims that have been through fraud detection */
+export async function getFraudClaims(): Promise<FraudClaimItem[]> {
+  return fetchApi<FraudClaimItem[]>("/fraud-claims");
+}
+
 /** POST /api/fnol/:complaintId/run-fraud-detection - Run fraud detection and save to claim_evaluation_response */
 export async function runFraudDetection(
   complaintId: string
