@@ -29,7 +29,7 @@ export interface FnolPayload {
     dl_copy_uploaded: boolean;
     photos_uploaded: boolean;
     fir_uploaded: boolean;
-    photos?: string[];
+    photos?: (string | { image?: { url?: string } })[];
   };
   history: {
     previous_claims_last_12_months: number;

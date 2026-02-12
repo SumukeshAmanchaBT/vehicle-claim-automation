@@ -1,6 +1,7 @@
 import axios, { type AxiosRequestHeaders } from "axios";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const API_MEDIA_URL = import.meta.env.VITE_API_MEDIA_URL;
 
 export const httpClient = axios.create({
   baseURL: API_BASE_URL,
@@ -19,3 +20,4 @@ httpClient.interceptors.request.use((config) => {
   return config;
 });
 
+export default API_MEDIA_URL;

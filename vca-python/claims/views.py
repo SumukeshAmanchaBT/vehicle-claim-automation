@@ -619,6 +619,13 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         estimated_amount = float(latest_eval.estimated_amount or 0)
         claim_amount = float(latest_eval.claim_amount or 0)
 
+    BASE_URL = "media/vehicle_damage/"
+
+    photo_urls = [
+        f"{BASE_URL}{path}"
+        for path in claim.damage_photos.values_list("photo_path", flat=True)
+    ]
+
     return {
         "id": claim.complaint_id,
         "complaint_id": claim.complaint_id,
@@ -637,7 +644,7 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "incident_date_time": claim.incident_date_time.isoformat() if claim.incident_date_time else None,
         "fir_document_copy": claim.fir_document_copy,
         "insurance_document_copy": claim.insurance_document_copy,
-        "damage_photos": [p.photo_path for p in claim.damage_photos.all()],
+        "damage_photos": photo_urls,
         "raw_response": _fnol_claim_to_raw_response(claim),
         "status": claim.claim_status.status_name if claim.claim_status else "Open",
         "estimated_amount": estimated_amount,
