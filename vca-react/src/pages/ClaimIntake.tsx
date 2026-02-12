@@ -34,7 +34,6 @@ const defaultFnol: FnolPayload = {
   },
   incident: {
     date_time_of_loss: "",
-    location: "Bangalore",
     loss_description: "",
     claim_type: "Own Damage",
     estimated_amount: 0,
@@ -249,15 +248,6 @@ export default function ClaimIntake() {
                   value={fnol.incident.date_time_of_loss ? fnol.incident.date_time_of_loss.replace("Z", "").slice(0, 16) : ""}
                   onChange={(e) => update("incident", "date_time_of_loss", e.target.value ? `${e.target.value}:00` : "")}
                   required
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="location">Location</Label>
-                <Input
-                  id="location"
-                  value={fnol.incident.location}
-                  onChange={(e) => update("incident", "location", e.target.value)}
-                  placeholder="e.g. Bangalore"
                 />
               </div>
               <div className="space-y-2">

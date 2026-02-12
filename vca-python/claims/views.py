@@ -1,9 +1,11 @@
 import random
 import re
+from datetime import date
 from typing import Optional, Tuple
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User, Group
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
 from rest_framework.authtoken.models import Token
@@ -257,30 +259,133 @@ def _get_early_claim_window_days() -> int:
         return 30
 
 
-def fraud_check(history: dict, incident: dict, policy: dict) -> str:
+def _is_fraud_rule_active(rule_type: str) -> bool:
+    """Check if a Fraud Check rule is active in claim_rule_master."""
+    return ClaimRuleMaster.objects.filter(
+        rule_type__iexact=rule_type,
+        rule_group__iexact="Fraud Check",
+        is_active=True,
+    ).exists()
+
+
+def _get_fraud_rule_description(rule_type: str) -> str:
+    """Return rule_description from claim_rule_master for Fraud Check rules, else rule_type."""
+    rule = ClaimRuleMaster.objects.filter(
+        rule_type__iexact=rule_type,
+        rule_group__iexact="Fraud Check",
+        is_active=True,
+    ).first()
+    return (rule.rule_description or rule_type).strip() if rule else rule_type
+
+
+def fraud_check(
+    history: dict, incident: dict, policy: dict, vehicle: Optional[dict] = None
+) -> Tuple[str, str]:
     """
-    Fraud check combining history and database-driven early-claim rule.
+    Fraud check using claim_rule_master (Fraud Check rules).
+    Returns (fraud_band, reason).
     """
-    # 1) Early-claim rule based on dates and DB-configured window
-    early_window_days = _get_early_claim_window_days()
-    start_date = parse_date(policy.get("policy_start_date"))
-    loss_dt = parse_datetime(incident.get("date_time_of_loss"))
+    vehicle = vehicle or {}
 
-    if start_date and loss_dt:
-        days_diff = (loss_dt.date() - start_date).days
-        # Claim before policy start or within "early" window is high risk
-        if days_diff < 0 or days_diff < early_window_days:
-            return "High"
+    # 1) Early Claim - policy_start_date, date_time_of_loss
+    if _is_fraud_rule_active("Early Claim"):
+        early_window_days = _get_early_claim_window_days()
+        start_date = parse_date(policy.get("policy_start_date"))
+        loss_dt = parse_datetime(incident.get("date_time_of_loss"))
+        if start_date and loss_dt:
+            days_diff = (loss_dt.date() - start_date).days
+            if days_diff < 0 or days_diff < early_window_days:
+                return "High", _get_fraud_rule_description("Early Claim")
 
-    # 2) Historical claims rule
-    if history.get("previous_claims_last_12_months", 0) >= 3:
-        return "High"
+    # 2) Data missing - incident_description empty
+    if _is_fraud_rule_active("Data missing"):
+        if not (incident.get("loss_description") or "").strip():
+            return "High", _get_fraud_rule_description("Data missing")
 
-    # 3) Simple location-based medium risk rule
-    if "location" in incident and incident["location"] != "Bangalore":
-        return "Medium"
+    # 3) Vehicle Year Invalid - vehicle_year > current year
+    if _is_fraud_rule_active("Vehicle Year Invalid"):
+        vehicle_year = vehicle.get("year")
+        if vehicle_year is not None:
+            try:
+                year_val = int(vehicle_year)
+                if year_val > date.today().year:
+                    return "High", _get_fraud_rule_description("Vehicle Year Invalid")
+            except (TypeError, ValueError):
+                pass
 
-    return "Low"
+    return "Low", ""
+
+
+def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[dict] = None) -> bool:
+    """
+    Check if damage photos exist with valid photo_path. Uses fnol_damage_photos.photo_path
+    when complaint_id given - requires non-null, non-empty photo_path.
+    """
+    if complaint_id:
+        return FnolDamagePhoto.objects.filter(
+            complaint_id=complaint_id
+        ).exclude(Q(photo_path__isnull=True) | Q(photo_path="")).exists()
+    docs = documents or {}
+    if docs.get("photos_uploaded"):
+        return True
+    photos = docs.get("photos")
+    if isinstance(photos, list) and len(photos) > 0:
+        return True
+    return False
+
+
+def _get_fraud_evaluation_rules(
+    incident: dict, policy: dict, vehicle: dict, documents: dict,
+    complaint_id: Optional[str] = None,
+) -> list[dict]:
+    """
+    Evaluate each active Fraud Check rule and return pass/fail.
+    Returns list of {rule_type, rule_description, passed}.
+    """
+    vehicle = vehicle or {}
+    documents = documents or {}
+    results = []
+
+    # Early Claim
+    if _is_fraud_rule_active("Early Claim"):
+        desc = _get_fraud_rule_description("Early Claim")
+        early_window_days = _get_early_claim_window_days()
+        start_date = parse_date(policy.get("policy_start_date"))
+        loss_dt = parse_datetime(incident.get("date_time_of_loss"))
+        passed = True
+        if start_date and loss_dt:
+            days_diff = (loss_dt.date() - start_date).days
+            if days_diff < 0 or days_diff < early_window_days:
+                passed = False
+        results.append({"rule_type": "Early Claim", "rule_description": desc, "passed": passed})
+
+    # Data missing
+    if _is_fraud_rule_active("Data missing"):
+        desc = _get_fraud_rule_description("Data missing")
+        passed = bool((incident.get("loss_description") or "").strip())
+        results.append({"rule_type": "Data missing", "rule_description": desc, "passed": passed})
+
+    # Vehicle Year Invalid
+    if _is_fraud_rule_active("Vehicle Year Invalid"):
+        desc = _get_fraud_rule_description("Vehicle Year Invalid")
+        vehicle_year = vehicle.get("year")
+        passed = True
+        if vehicle_year is not None:
+            try:
+                year_val = int(vehicle_year)
+                if year_val > date.today().year:
+                    passed = False
+            except (TypeError, ValueError):
+                pass
+        results.append({"rule_type": "Vehicle Year Invalid", "rule_description": desc, "passed": passed})
+
+    # Missing Damage Photos - check fnol_damage_photos when complaint_id given, else documents
+    if _is_fraud_rule_active("Missing Damage Photos"):
+        desc = _get_fraud_rule_description("Missing Damage Photos")
+        passed = _has_damage_photos(complaint_id=complaint_id, documents=documents)
+        results.append({"rule_type": "Missing Damage Photos", "rule_description": desc, "passed": passed})
+
+    return results
 
 
 def damage_detection(incident: dict) -> int:
@@ -383,9 +488,13 @@ def _run_process_claim_logic(data: dict) -> dict:
     incident = data.get("incident") or {}
     history = data.get("history") or {}
     documents = data.get("documents") or {}
+    vehicle = data.get("vehicle") or {}
     complaint_id = data.get("claim_id", "")
 
     estimated_amount = incident.get("estimated_amount") or 0
+    fraud_rule_results = _get_fraud_evaluation_rules(
+        incident, policy, vehicle, documents, complaint_id=complaint_id or None
+    )
 
     if not product_rule(policy):
         return {
@@ -393,6 +502,7 @@ def _run_process_claim_logic(data: dict) -> dict:
             "decision": "Reject",
             "claim_status": "Rejected",
             "reason": "Policy inactive",
+            "fraud_rule_results": fraud_rule_results,
             "damage_confidence": 0,
             "fraud_score": "Low",
             "evaluation_score": 0,
@@ -401,13 +511,14 @@ def _run_process_claim_logic(data: dict) -> dict:
             "estimated_amount": estimated_amount,
         }
 
-    fraud_score = fraud_check(history, incident, policy)
+    fraud_score, fraud_reason = fraud_check(history, incident, policy, vehicle)
     if fraud_score == "High":
         return {
             "claim_id": complaint_id,
             "decision": "Reject",
             "claim_status": "Rejected",
-            "reason": "High fraud risk",
+            "reason": fraud_reason or "High fraud risk",
+            "fraud_rule_results": fraud_rule_results,
             "damage_confidence": 0,
             "fraud_score": fraud_score,
             "evaluation_score": 0,
@@ -416,12 +527,15 @@ def _run_process_claim_logic(data: dict) -> dict:
             "estimated_amount": estimated_amount,
         }
 
-    if not documents.get("photos_uploaded"):
+    if _is_fraud_rule_active("Missing Damage Photos") and not _has_damage_photos(
+        complaint_id=complaint_id or None, documents=documents
+    ):
         return {
             "claim_id": complaint_id,
             "decision": "Manual Review",
             "claim_status": "Open",
-            "reason": "Photos missing",
+            "reason": _get_fraud_rule_description("Missing Damage Photos"),
+            "fraud_rule_results": fraud_rule_results,
             "damage_confidence": damage_detection(incident),
             "fraud_score": fraud_score,
             "evaluation_score": 0,
@@ -451,12 +565,13 @@ def _run_process_claim_logic(data: dict) -> dict:
         "decision": decision,
         "claim_status": status,
         "estimated_amount": estimated_amount,
+        "fraud_rule_results": fraud_rule_results,
     }
 
 
 def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
     """Build FnolPayload-like dict from FnolClaim for process_claim compatibility."""
-    photos = [p.photo_path for p in claim.damage_photos.all()]
+    photos = [p.photo_path for p in claim.damage_photos.all() if p.photo_path]
     incident_dt = claim.incident_date_time.isoformat() if claim.incident_date_time else None
     return {
         "claim_id": claim.complaint_id,
@@ -475,7 +590,6 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
         },
         "incident": {
             "date_time_of_loss": incident_dt or "",
-            "location": claim.incident_location or "",
             "loss_description": claim.incident_description or "",
             "claim_type": claim.incident_type or "",
             "estimated_amount": 0,  # fnol_claims schema doesn't include this; can be extended
@@ -493,7 +607,18 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
 
 
 def _fnol_claim_to_response(claim: FnolClaim) -> dict:
-    """Convert FnolClaim to API response format."""
+    """Convert FnolClaim to API response format. Includes latest evaluation amounts when available."""
+    latest_eval = (
+        ClaimEvaluationResponse.objects.filter(complaint_id=claim.complaint_id)
+        .order_by("-created_date")
+        .first()
+    )
+    estimated_amount = None
+    claim_amount = None
+    if latest_eval:
+        estimated_amount = float(latest_eval.estimated_amount or 0)
+        claim_amount = float(latest_eval.claim_amount or 0)
+
     return {
         "id": claim.complaint_id,
         "complaint_id": claim.complaint_id,
@@ -507,7 +632,6 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "vehicle_year": claim.vehicle_year,
         "vehicle_model": claim.vehicle_model,
         "vehicle_registration_number": claim.vehicle_registration_number,
-        "incident_location": claim.incident_location,
         "incident_type": claim.incident_type,
         "incident_description": claim.incident_description,
         "incident_date_time": claim.incident_date_time.isoformat() if claim.incident_date_time else None,
@@ -516,6 +640,8 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "damage_photos": [p.photo_path for p in claim.damage_photos.all()],
         "raw_response": _fnol_claim_to_raw_response(claim),
         "status": claim.claim_status.status_name if claim.claim_status else "Open",
+        "estimated_amount": estimated_amount,
+        "claim_amount": claim_amount,
         "created_date": None,
         "created_by": None,
         "updated_date": None,
@@ -714,7 +840,6 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "vehicle_year": vehicle.get("year"),
         "vehicle_model": vehicle.get("model"),
         "vehicle_registration_number": vehicle.get("registration_number"),
-        "incident_location": incident.get("location"),
         "incident_type": incident.get("claim_type"),
         "incident_description": incident.get("loss_description"),
         "incident_date_time": incident_dt,
@@ -800,15 +925,12 @@ def run_fraud_detection(request, complaint_id: str):
     if request.user and request.user.pk:
         user_id = request.user.pk
 
-    fraud_score_numeric = _fraud_band_to_numeric(result.get("fraud_score", ""))
     threshold_val = result.get("threshold")
     threshold_int = int(round((threshold_val or 0) * 100)) if threshold_val is not None else 0
 
     ClaimEvaluationResponse.objects.create(
         complaint_id=complaint_id,
         damage_confidence=result.get("damage_confidence") or 0,
-        fraud_score=fraud_score_numeric,
-        evaluation_score=result.get("evaluation_score") or 0,
         estimated_amount=result.get("estimated_amount") or 0,
         claim_amount=result.get("claim_amount") or result.get("estimated_amount") or 0,
         threshold_value=threshold_int,
