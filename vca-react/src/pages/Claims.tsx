@@ -74,8 +74,8 @@ function fnolToDisplay(fnol: FnolResponse) {
   const r = fnol.raw_response;
   const vehicle = r?.vehicle
     ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}`
-    : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
-      ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
+    : fnol.vehicle_name && fnol.vehicle_model && fnol.vehicle_year
+      ? `${fnol.vehicle_year} ${fnol.vehicle_name} ${fnol.vehicle_model}`
       : "—";
   const normalizedStatus = normalizeStatus((fnol as { status?: string }).status);
 
@@ -86,7 +86,7 @@ function fnolToDisplay(fnol: FnolResponse) {
     customerName: r?.claimant?.driver_name || fnol.policy_holder_name || "—",
     vehicleInfo: vehicle,
     incidentDate: r?.incident?.date_time_of_loss || fnol.incident_date_time || fnol.created_date,
-    claimType: r?.incident?.claim_type || fnol.incident_type || "—",
+    claimType: r?.incident?.claim_type || fnol.claim_type || "—",
     estimatedAmount: r?.incident?.estimated_amount ?? 0,
     statusKey: normalizedStatus,
   };
@@ -198,32 +198,32 @@ export default function Claims() {
           searchPlaceholder="Search claims, policies, customers..."
           searchValue={search}
           onSearchChange={(v) => { setSearch(v); setPage(1); }}
-          // filters={
-          //   <Select value={statusFilter} onValueChange={(v) => { handleStatusChange(v); setPage(1); }}>
-          //     <SelectTrigger className="w-[180px]">
-          //       <SelectValue placeholder="Status" />
-          //     </SelectTrigger>
-          //     <SelectContent>
-          //       <SelectItem value="all">All Status</SelectItem>
-          //       <SelectItem value="auto_approved">Auto Approved</SelectItem>
-          //       <SelectItem value="fraudulent">Fraudulent</SelectItem>
-          //       <SelectItem value="manual_review">Manual Review</SelectItem>
-          //       <SelectItem value="open">Open</SelectItem>
-          //       <SelectItem value="pending">Pending</SelectItem>
-          //       <SelectItem value="pending_damage_detection">
-          //         Pending Damage Detection
-          //       </SelectItem>
-          //     </SelectContent>
-          //   </Select>
-          // }
-          // primaryAction={(
-          //   <Button asChild>
-          //     <Link to="/claims/new">
-          //       <Plus className="mr-2 h-4 w-4" />
-          //       Add New Claim
-          //     </Link>
-          //   </Button>
-          // )}
+          filters={
+            <Select value={statusFilter} onValueChange={(v) => { handleStatusChange(v); setPage(1); }}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="auto_approved">Auto Approved</SelectItem>
+                <SelectItem value="fraudulent">Fraudulent</SelectItem>
+                <SelectItem value="manual_review">Manual Review</SelectItem>
+                <SelectItem value="open">Open</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="pending_damage_detection">
+                  Pending Damage Detection
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          }
+          primaryAction={(
+            <Button asChild>
+              <Link to="/claims/new">
+                <Plus className="mr-2 h-4 w-4" />
+                Add New Claim
+              </Link>
+            </Button>
+          )}
         />
 
         {/* Claims Table */}

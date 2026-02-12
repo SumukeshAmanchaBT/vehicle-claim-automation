@@ -53,6 +53,7 @@ export interface FnolResponse {
   incident_type: string | null;
   incident_description: string | null;
   incident_date_time: string | null;
+  previous_claims_last_12_months?: number;
   fir_document_copy: string | null;
   insurance_document_copy: string | null;
   damage_photos: string[];

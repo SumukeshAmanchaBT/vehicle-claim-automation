@@ -45,22 +45,18 @@ import {
   changeUserRole,
   resetUserPassword,
   deactivateUser,
+  getRoles,
   type UserSummary,
-  type UserRole,
+  type Role,
 } from "@/services/userService";
 import { isAxiosError } from "axios";
-
-const roleLabels: Record<UserRole, string> = {
-  admin: "Admin",
-  user: "User",
-};
 
 function getDisplayName(user: UserSummary) {
   const full = `${user.first_name || ""} ${user.last_name || ""}`.trim();
   return full || user.username;
 }
 
-type SortKey = "user" | "role" | "status" | "claims" | "lastLogin";
+type SortKey = "user" | "role" | "status";
 
 export default function Users() {
   const queryClient = useQueryClient();
@@ -80,11 +76,20 @@ export default function Users() {
   const [newEmail, setNewEmail] = useState("");
   const [newFirstName, setNewFirstName] = useState("");
   const [newLastName, setNewLastName] = useState("");
-  const [newRole, setNewRole] = useState<UserRole>("user");
+  const [newRoleId, setNewRoleId] = useState<number | "none">("none");
+
+  const [isRoleDialogOpen, setIsRoleDialogOpen] = useState(false);
+  const [roleUser, setRoleUser] = useState<UserSummary | null>(null);
+  const [selectedRoleId, setSelectedRoleId] = useState<number | "none">("none");
 
   const { data: users = [], isLoading, error } = useQuery({
     queryKey: ["users"],
     queryFn: listUsers,
+  });
+
+  const { data: roles = [] } = useQuery({
+    queryKey: ["roles"],
+    queryFn: getRoles,
   });
 
   const createMutation = useMutation({
@@ -97,7 +102,7 @@ export default function Users() {
       setNewEmail("");
       setNewFirstName("");
       setNewLastName("");
-      setNewRole("user");
+      setNewRoleId("none");
       toast({ title: "User created successfully" });
     },
     onError: (err) => {
@@ -134,8 +139,8 @@ export default function Users() {
   });
 
   const changeRoleMutation = useMutation({
-    mutationFn: ({ id, role }: { id: number; role: UserRole }) =>
-      changeUserRole(id, { role }),
+    mutationFn: ({ id, role_id }: { id: number; role_id: number | null }) =>
+      changeUserRole(id, { role_id }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
     },
@@ -159,16 +164,16 @@ export default function Users() {
       const matchesSearch =
         getDisplayName(user).toLowerCase().includes(term) ||
         user.email.toLowerCase().includes(term);
-      const role = (user.role ?? "").toString().toLowerCase();
+      const roleName = user.role?.name?.toLowerCase() ?? "";
       const matchesRole =
         roleFilter === "all" ||
-        role === roleFilter ||
-        (roleFilter === "admin" && role === "admin") ||
-        (roleFilter === "user" && (role === "user" || !role));
+        (roleFilter === "with-role" && !!user.role) ||
+        (roleFilter === "without-role" && !user.role) ||
+        (roleFilter === roleName);
       const matchesStatus =
         statusFilter === "all" ||
-        (statusFilter === "active" && user.status === "active") ||
-        (statusFilter === "inactive" && user.status === "inactive");
+        (statusFilter === "active" && user.is_active) ||
+        (statusFilter === "inactive" && !user.is_active);
       return matchesSearch && matchesRole && matchesStatus;
     });
     if (sortKey) {
@@ -179,16 +184,10 @@ export default function Users() {
             cmp = getDisplayName(a).localeCompare(getDisplayName(b));
             break;
           case "role":
-            cmp = (a.role ?? "").localeCompare(b.role ?? "");
+            cmp = (a.role?.name ?? "").localeCompare(b.role?.name ?? "");
             break;
           case "status":
-            cmp = (a.status ?? "").localeCompare(b.status ?? "");
-            break;
-          case "claims":
-            cmp = (a.claims_handled ?? 0) - (b.claims_handled ?? 0);
-            break;
-          case "lastLogin":
-            cmp = new Date(a.last_login ?? 0).getTime() - new Date(b.last_login ?? 0).getTime();
+            cmp = Number(a.is_active) - Number(b.is_active);
             break;
           default:
             break;
@@ -224,7 +223,7 @@ export default function Users() {
       email: newEmail,
       first_name: newFirstName,
       last_name: newLastName,
-      role: newRole,
+      // backend create endpoint still expects legacy role; omit for now
     });
   };
 
@@ -245,16 +244,10 @@ export default function Users() {
     });
   };
 
-  const handleChangeRole = (user: UserSummary) => {
-    const nextRole: UserRole = user.role === "admin" ? "user" : "admin";
-    if (
-      !window.confirm(
-        `Change role for ${getDisplayName(user)} to ${roleLabels[nextRole]}?`
-      )
-    ) {
-      return;
-    }
-    changeRoleMutation.mutate({ id: user.id, role: nextRole });
+  const handleOpenRoleDialog = (user: UserSummary) => {
+    setRoleUser(user);
+    setSelectedRoleId(user.role?.id ?? "none");
+    setIsRoleDialogOpen(true);
   };
 
   const handleResetPassword = (user: UserSummary) => {
@@ -268,9 +261,7 @@ export default function Users() {
   const handleDeactivate = (user: UserSummary) => {
     if (
       !window.confirm(
-        `${user.status === "active" ? "Deactivate" : "Activate"} ${
-          getDisplayName(user)
-        }?`
+        `${user.is_active ? "Deactivate" : "Activate"} ${getDisplayName(user)}?`
       )
     ) {
       return;
@@ -293,17 +284,34 @@ export default function Users() {
           }}
           filters={
             <>
-              <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(1); }}>
-                <SelectTrigger className="w-[140px]">
+              <Select
+                value={roleFilter}
+                onValueChange={(v) => {
+                  setRoleFilter(v);
+                  setPage(1);
+                }}
+              >
+                <SelectTrigger className="w-[160px]">
                   <SelectValue placeholder="Role" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Roles</SelectItem>
-                  <SelectItem value="admin">Admin</SelectItem>
-                  <SelectItem value="user">User</SelectItem>
+                  <SelectItem value="with-role">With Role</SelectItem>
+                  <SelectItem value="without-role">Without Role</SelectItem>
+                  {roles.map((role: Role) => (
+                    <SelectItem key={role.id} value={role.name.toLowerCase()}>
+                      {role.name}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-              <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
+              <Select
+                value={statusFilter}
+                onValueChange={(v) => {
+                  setStatusFilter(v);
+                  setPage(1);
+                }}
+              >
                 <SelectTrigger className="w-[140px]">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
@@ -379,21 +387,7 @@ export default function Users() {
                           />
                         </div>
                       </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="role">Role</Label>
-                        <Select
-                          value={newRole}
-                          onValueChange={(val: UserRole) => setNewRole(val)}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select role" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="admin">Admin</SelectItem>
-                            <SelectItem value="user">User</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
+                      {/* Optional role assignment can be handled via core assign-role API after creation */}
                     </div>
                     <DialogFooter>
                       <Button
@@ -456,7 +450,22 @@ export default function Users() {
                     >
                       Status
                     </SortableTableHead>
-                    
+                    {/* <SortableTableHead
+                      sortKey="claims"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Claims Handled
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="lastLogin"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Last Login
+                    </SortableTableHead> */}
                     <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -482,27 +491,34 @@ export default function Users() {
                     </TableCell>
                     <TableCell>
                       <span className="rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium">
-                        {roleLabels[user.role]}
+                        {user.role?.name ?? "No role"}
                       </span>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Switch
-                          checked={user.status === "active"}
+                          checked={user.is_active}
                           // Backend only supports deactivation; once inactive we keep it off.
-                          disabled={user.status !== "active"}
+                          disabled={!user.is_active}
                           onCheckedChange={(next) => {
-                            if (!next && user.status === "active") {
+                            if (!next && user.is_active) {
                               handleDeactivate(user);
                             }
                           }}
                         />
                         <span className="text-xs text-muted-foreground">
-                          {user.status === "active" ? "Active" : "Inactive"}
+                          {user.is_active ? "Active" : "Inactive"}
                         </span>
                       </div>
                     </TableCell>
-                    
+                    {/* <TableCell className="text-muted-foreground">
+                      {user.claims_handled}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {user.last_login
+                        ? new Date(user.last_login).toLocaleString()
+                        : "-"}
+                    </TableCell> */}
                     <TableCell className="pr-6 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button
@@ -519,7 +535,7 @@ export default function Users() {
                           size="icon"
                           className="text-muted-foreground hover:text-foreground"
                           title="Change role"
-                          onClick={() => handleChangeRole(user)}
+                          onClick={() => handleOpenRoleDialog(user)}
                         >
                           <Shield className="h-4 w-4" />
                         </Button>
@@ -528,11 +544,11 @@ export default function Users() {
                           size="icon"
                           className="text-destructive hover:text-destructive"
                           title={
-                            user.status === "active"
+                            user.is_active
                               ? "Deactivate user"
                               : "User already inactive"
                           }
-                          disabled={user.status !== "active"}
+                          disabled={!user.is_active}
                           onClick={() => handleDeactivate(user)}
                         >
                           <Trash2 className="h-4 w-4" />
@@ -554,6 +570,73 @@ export default function Users() {
                 }}
                 itemLabel="users"
               />
+              {/* Change Role Dialog */}
+              <Dialog open={isRoleDialogOpen} onOpenChange={setIsRoleDialogOpen}>
+                <DialogContent>
+                  <form
+                    onSubmit={(e: React.FormEvent<HTMLFormElement>) => {
+                      e.preventDefault();
+                      if (!roleUser) return;
+                      const role_id =
+                        selectedRoleId === "none" ? null : Number(selectedRoleId);
+                      changeRoleMutation.mutate({
+                        id: roleUser.id,
+                        role_id,
+                      });
+                      setIsRoleDialogOpen(false);
+                    }}
+                  >
+                    <DialogHeader>
+                      <DialogTitle>Assign Role</DialogTitle>
+                      <DialogDescription>
+                        Choose a role to assign to{" "}
+                        {roleUser ? getDisplayName(roleUser) : "this user"}.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="assign-role">Role</Label>
+                        <Select
+                          value={
+                            selectedRoleId === "none"
+                              ? "none"
+                              : String(selectedRoleId)
+                          }
+                          onValueChange={(val) => {
+                            setSelectedRoleId(
+                              val === "none" ? "none" : Number(val)
+                            );
+                          }}
+                        >
+                          <SelectTrigger id="assign-role">
+                            <SelectValue placeholder="Select role" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="none">No Role</SelectItem>
+                            {roles.map((role: Role) => (
+                              <SelectItem key={role.id} value={String(role.id)}>
+                                {role.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsRoleDialogOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="submit" disabled={changeRoleMutation.isPending}>
+                        {changeRoleMutation.isPending ? "Saving..." : "Save"}
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              </Dialog>
             </>
           )}
         </Card>

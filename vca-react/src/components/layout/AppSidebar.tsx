@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   FileText,
   Users,
+  User,
   Settings,
   ShieldCheck,
   BarChart3,
@@ -11,7 +12,10 @@ import {
   Car,
   LogOut,
   Activity,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -44,16 +48,20 @@ const navItems = [
   },
 ];
 
-const adminSections = [
+const adminSections: {
+  title: string;
+  icon: LucideIcon;
+  baseMatch: string[];
+  items: { label: string; href: string; icon?: LucideIcon }[];
+}[] = [
   {
     title: "User Management",
     icon: Users,
     baseMatch: ["/users", "/roles", "/roles/permissions"],
     items: [
-      { label: "Users", href: "/users" },
-      // Stub routes for future expansion
-      { label: "Roles", href: "/roles" },
-      { label: "Role Permissions", href: "/roles/permissions" },
+      { label: "Users", href: "/users", icon: User },
+      { label: "Roles", href: "/roles", icon: ShieldCheck },
+      { label: "Role Permissions", href: "/roles/permissions", icon: Settings },
     ],
   },
   {
@@ -64,7 +72,7 @@ const adminSections = [
       { label: "Damage Configuration", href: "/master-data?section=damage-types" },
       { label: "Claim Configuration", href: "/master-data?section=thresholds" },
       { label: "Fraud Rules", href: "/master-data?section=fraud-rules" },
-      { label: "Pricing Configuration", href: "/master-data?section=pricing" },
+      { label: "Price Config", href: "/master-data?section=PriceConfig" },
     ],
   },
   {
@@ -177,9 +185,11 @@ export function AppSidebar() {
                           <section.icon className="h-4 w-4" />
                           {section.title}
                         </span>
-                        <span className="text-xs text-sidebar-muted">
-                          {open ? "−" : "+"}
-                        </span>
+                        {open ? (
+                          <ChevronUp className="h-4 w-4 text-sidebar-muted" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4 text-sidebar-muted" />
+                        )}
                       </button>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
@@ -198,6 +208,7 @@ export function AppSidebar() {
                                 (url.searchParams.get("section") ||
                                   "damage-types")
                               : true);
+                          const ItemIcon = item.icon;
 
                           return (
                             <NavLink
@@ -205,13 +216,16 @@ export function AppSidebar() {
                               to={item.href}
                               className={() =>
                                 cn(
-                                  "block rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
                                   isActive
-                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                    ? "bg-sidebar-accent text-sidebar-primary"
                                     : "text-sidebar-muted hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
                                 )
                               }
                             >
+                              {ItemIcon && (
+                                <ItemIcon className="h-3.5 w-3.5 shrink-0" />
+                              )}
                               {item.label}
                             </NavLink>
                           );
