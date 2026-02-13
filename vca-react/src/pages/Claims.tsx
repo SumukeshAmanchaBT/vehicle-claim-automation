@@ -37,21 +37,22 @@ const CLAIM_STATUS_META: Record<
   ClaimStatusKey,
   { label: string; badge: BadgeVariant }
 > = {
-  auto_approved: { label: "Auto Approved", badge: "approved" },
+  auto_approved: { label: "Closed Damage Detection", badge: "approved" },
   fraudulent: { label: "Fraudulent", badge: "rejected" },
   manual_review: { label: "Manual Review", badge: "pending" },
   open: { label: "Open", badge: "processing" },
   pending: { label: "Pending", badge: "pending" },
   pending_damage_detection: {
     label: "Pending Damage Detection",
-    badge: "processing",
+    badge: "pending",
   },
 };
 
 function normalizeStatus(raw?: string | null): ClaimStatusKey {
   const value = (raw || "").trim().toLowerCase();
 
-  if (value === "auto approved" || value === "auto_approved") {
+  console.log("Normalizing status:", { raw, value });
+  if (value === "closed damage detection") {
     return "auto_approved";
   }
   if (value === "fraudulent") {

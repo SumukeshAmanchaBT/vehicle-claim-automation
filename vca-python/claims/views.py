@@ -131,7 +131,7 @@ def list_users(request):
             'email': u.email,
             'first_name': u.first_name,
             'last_name': u.last_name,
-            'role': role,
+            'role': 'Admin' if u.is_superuser == 1 else 'Users',
             'status': status_text,
             'claims_handled': claims_handled,
             'last_login': u.last_login,

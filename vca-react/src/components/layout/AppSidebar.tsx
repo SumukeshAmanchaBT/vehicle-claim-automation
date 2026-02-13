@@ -75,12 +75,12 @@ const adminSections: {
       { label: "Price Config", href: "/master-data?section=PriceConfig" },
     ],
   },
-  {
-    title: "Settings",
-    icon: Settings,
-    baseMatch: ["/settings"],
-    items: [{ label: "Settings", href: "/settings" }],
-  },
+  // {
+  //   title: "Settings",
+  //   icon: Settings,
+  //   baseMatch: ["/settings"],
+  //   items: [{ label: "Settings", href: "/settings" }],
+  // },
 ];
 
 export function AppSidebar() {
