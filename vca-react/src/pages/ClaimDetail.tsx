@@ -85,14 +85,20 @@ export default function ClaimDetail() {
     setLoading(true);
     setError(null);
     setFraudResult(null);
-    setDamageDetectionRun(false);
     getFnolById(id)
       .then((data) => {
         if (cancelled) return;
         setFnol(data);
+        const isClosed = (data.status || "").toLowerCase() === "closed damage detection";
+        if (isClosed) {
+          setDamageDetectionRun(true);
+        } else {
+          setDamageDetectionRun(false);
+        }
         return processClaim(data.raw_response);
       })
       .then((result) => {
+        console.log("Process claim result:", result);
         if (!cancelled && result) setAssessment(result);
       })
       .catch((err) => {
@@ -118,11 +124,9 @@ export default function ClaimDetail() {
 
   // Fetch claim evaluation when status is Closed: Auto review or Closed: Manual review
   const statusLower = (fnol?.status || "").toLowerCase();
-  const showEvaluationTab =
-    statusLower === "closed: auto review" || statusLower === "closed: manual review";
 
   useEffect(() => {
-    if (!id || !showEvaluationTab) return;
+    if (!id || !damageDetectionRun) return;
     let cancelled = false;
     setClaimEvaluationLoading(true);
     setClaimEvaluation(null);
@@ -137,7 +141,7 @@ export default function ClaimDetail() {
         if (!cancelled) setClaimEvaluationLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, showEvaluationTab]);
+  }, [id, damageDetectionRun]);
 
   const handleFraudDetection = async () => {
     if (!id) return;
@@ -257,13 +261,17 @@ export default function ClaimDetail() {
 
   // Only use persisted fnol.status (from fnol_claims.claim_status), not live assessment.decision
   const isAutoApproved =
-    (fnol.status || "").toLowerCase() === "auto approved";
+    (fnol.status || "").toLowerCase() === "closed damage detection";
+
+
 
   console.log("Claim status for damage detection check:", fnol.status);
   const statusForCheck = (fnol.status || claimStatus || "").toLowerCase();
 
   const isPendingDamageDetection =
     statusForCheck === "pending damage detection" || statusForCheck === "pending_damage_detection";
+
+
 
   const isFraudDetection = statusForCheck === "fraudulent";
   console.log("Fraud detection done:", isFraudDetection);
@@ -299,10 +307,10 @@ export default function ClaimDetail() {
             </StatusBadge> */}
             {/* <Button variant="outline">Request Documents</Button> */}
             {!isPendingDamageDetection ? (
-              !isFraudDetection && (
+              (!isFraudDetection && !damageDetectionRun) && (
                 <Button
                   onClick={handleFraudDetection}
-                  disabled={fraudDetectionLoading || !fnol || isAutoApproved}
+                  disabled={fraudDetectionLoading || !fnol}
                 >
                   {fraudDetectionLoading ? (
                     <>
@@ -355,34 +363,34 @@ export default function ClaimDetail() {
             {(fraudResult || (!isOpenClaim && assessment) || damageDetectionRun) && (
               <div className="grid gap-4 sm:grid-cols-2">
                 {/* Column 1: Fraud Evaluation – red when fraud detected, green otherwise */}
+
                 <Card
-                  className={`card-elevated border-2 ${
-                    fraudScore >= 50
-                      ? "border-destructive bg-destructive/5"
-                      : "border-success bg-success/5"
-                  }`}
+                  className={`card-elevated border-2 ${fraudScore >= 50
+                    ? "border-destructive bg-destructive/5"
+                    : "border-success bg-success/5"
+                    }`}
                 >
                   <CardContent className="p-4">
                     <div className="flex items-center gap-3">
                       <div
-                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
-                          fraudScore >= 50 ? "bg-destructive/20" : "bg-success/20"
-                        }`}
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${fraudScore >= 50 ? "bg-destructive/20" : "bg-success/20"
+                          }`}
                       >
                         <Shield
-                          className={`h-5 w-5 ${
-                            fraudScore >= 50 ? "text-destructive" : "text-success"
-                          }`}
+                          className={`h-5 w-5 ${fraudScore >= 50 ? "text-destructive" : "text-success"
+                            }`}
                         />
                       </div>
                       <div>
-                        <p className="text-xs text-muted-foreground">Fraud Evaluation</p>
+                        <p className="text-xs text-muted-foreground">
+                          {fraudScore >= 50 ? "Fraud Risk Detected" : "No Fraud Detected"}
+                        </p>
                         <p
-                          className={`text-xl font-bold ${
-                            fraudScore >= 50 ? "text-destructive" : "text-success"
-                          }`}
+                          className={`text-xl font-bold ${fraudScore >= 50 ? "text-destructive" : "text-success"
+                            }`}
                         >
-                          {fraudBand} ({fraudScore}%)
+                          {/* {fraudBand} ({fraudScore}%) */}
+                          {fraudScore >= 50 ? "High Risk" : "Low Risk"}
                         </p>
                       </div>
                     </div>
@@ -415,7 +423,10 @@ export default function ClaimDetail() {
               <TabsList>
                 {/* After Damage Detection: AI Assessment first, then Fraud Evaluation, then Claim Details, Documents */}
                 {damageDetectionRun && (
-                  <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
+                  <>
+                    <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
+                    <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
+                  </>
                 )}
                 {/* After Fraud Evaluation (or when Damage run): Fraud Evaluation before Claim Details */}
                 {!isOpenClaim && (
@@ -423,9 +434,6 @@ export default function ClaimDetail() {
                 )}
                 <TabsTrigger value="details">Claim Details</TabsTrigger>
                 <TabsTrigger value="documents">Documents</TabsTrigger>
-                {showEvaluationTab && (
-                  <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
-                )}
               </TabsList>
 
               <TabsContent value="details">
@@ -486,9 +494,9 @@ export default function ClaimDetail() {
                             <p className="text-sm text-muted-foreground">
                               {submittedDate
                                 ? new Date(submittedDate).toLocaleString(undefined, {
-                                    dateStyle: "short",
-                                    timeStyle: "short",
-                                  })
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })
                                 : "—"}
                             </p>
                           </div>
@@ -498,7 +506,7 @@ export default function ClaimDetail() {
 
                     </div> <br></br>
 
-                    <Separator /> 
+                    <Separator />
 
                     <div className="">
                       <h4 className="text-sm font-medium mb-3">Incident Description</h4>
@@ -677,7 +685,7 @@ export default function ClaimDetail() {
                 </Card>
               </TabsContent>
 
-              {showEvaluationTab && (
+              {damageDetectionRun && (
                 <TabsContent value="claim-evaluation">
                   <Card className="card-elevated">
                     <CardHeader>
