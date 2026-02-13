@@ -205,25 +205,26 @@ export default function Claims() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="auto_approved">Auto Approved</SelectItem>
-                <SelectItem value="fraudulent">Fraudulent</SelectItem>
-                <SelectItem value="manual_review">Manual Review</SelectItem>
                 <SelectItem value="open">Open</SelectItem>
                 <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="fraudulent">Fraudulent</SelectItem>
                 <SelectItem value="pending_damage_detection">
                   Pending Damage Detection
                 </SelectItem>
+                <SelectItem value="manual_review">Manual Review</SelectItem>
+                
+                
               </SelectContent>
             </Select>
           }
-          primaryAction={(
-            <Button asChild>
-              <Link to="/claims/new">
-                <Plus className="mr-2 h-4 w-4" />
-                Add New Claim
-              </Link>
-            </Button>
-          )}
+          // primaryAction={(
+          //   <Button asChild>
+          //     <Link to="/claims/new">
+          //       <Plus className="mr-2 h-4 w-4" />
+          //       Add New Claim
+          //     </Link>
+          //   </Button>
+          // )}
         />
 
         {/* Claims Table */}
