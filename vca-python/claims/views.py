@@ -507,22 +507,27 @@ def _fraud_band_to_numeric(band: str) -> float:
 def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to claim_status table.
-    claim_status: 1=Open, 2=Pending, 3=Fraudulent, 4=Pending Damage Detection,
-                  5=Close and Auto Review, 6=Close and Manual Review
+    Fraud detection does NOT set closed statuses. Based on rule validation only:
+    - Rules passed (all fraud rules pass) -> Pending Damage Detection
+    - Rules failed (any fraud rule fails or Reject) -> Fraudulent
+    claim_status: 3=Fraudulent, 4=Pending Damage Detection
     """
     decision = (result.get("decision") or "").strip()
-    reason = (result.get("reason") or "").strip().lower()
+    fraud_rule_results = result.get("fraud_rule_results") or []
+
+    # Reject (policy inactive, high fraud) -> Fraudulent
     if decision == "Reject":
         return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
-    if decision == "Auto Approve":
-        return ClaimStatus.objects.filter(pk=5).first()  # Close and Auto Review
-    if decision == "Manual Review":
-        if "photos" in reason or "photo" in reason:
-            return ClaimStatus.objects.filter(
-                status_name__iexact="Pending Damage Detection"
-            ).first()
-        return ClaimStatus.objects.filter(pk=6).first()  # Close and Manual Review
-    return ClaimStatus.objects.filter(status_name__iexact="Open").first()
+
+    # Any fraud rule failed -> Fraudulent
+    for rule in fraud_rule_results:
+        if rule.get("passed") is False:
+            return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
+
+    # All rules passed -> Pending Damage Detection (never closed)
+    return ClaimStatus.objects.filter(
+        status_name__iexact="Pending Damage Detection"
+    ).first()
 
 
 def _run_process_claim_logic(data: dict) -> dict:
