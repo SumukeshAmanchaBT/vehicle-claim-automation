@@ -1,3 +1,4 @@
+import json
 import random
 import re
 from datetime import date
@@ -44,6 +45,51 @@ def _is_admin_user(user) -> bool:
     if user.is_staff:
         return True
     return user.groups.filter(name__iexact="admin").exists()
+
+
+def _get_pricing_config_value(key: str, default: float) -> float:
+    """Get numeric config value from PricingConfig by config_key."""
+    try:
+        row = PricingConfig.objects.filter(config_key=key, is_active=True).first()
+        if row and row.config_value:
+            return float(row.config_value)
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return default
+
+
+def estimate_claim_amount_from_config(
+    damages: list, severity: str, base_estimated_amount: float = 0
+) -> float:
+    """
+    Estimate claim amount from PricingConfig based on LLM damages and severity.
+    Formula: (base_amount + damage_count * rate_per_damage) * severity_multiplier
+    Config keys: claim_base_amount, claim_rate_per_damage,
+                 severity_multiplier_minor, severity_multiplier_moderate, severity_multiplier_severe
+    """
+    base = _get_pricing_config_value("claim_base_amount", 10000.0)
+    rate_per_damage = _get_pricing_config_value("claim_rate_per_damage", 2000.0)
+    mult_minor = _get_pricing_config_value("severity_multiplier_minor", 1.0)
+    mult_moderate = _get_pricing_config_value("severity_multiplier_moderate", 1.2)
+    mult_severe = _get_pricing_config_value("severity_multiplier_severe", 1.5)
+
+    severity_lower = (severity or "").strip().lower()
+    if severity_lower == "minor":
+        mult = mult_minor
+    elif severity_lower == "moderate":
+        mult = mult_moderate
+    elif severity_lower == "severe":
+        mult = mult_severe
+    else:
+        mult = mult_moderate  # default
+
+    damage_count = len([d for d in damages if d and str(d).lower() != "none"])
+    if damage_count == 0:
+        damage_count = 1  # at least 1 for "no damage" case
+    amount = (base + damage_count * rate_per_damage) * mult
+    if base_estimated_amount and base_estimated_amount > 0:
+        amount = max(amount, float(base_estimated_amount))
+    return round(amount, 2)
 
 
 @api_view(['POST'])
@@ -462,20 +508,20 @@ def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to claim_status table.
     claim_status: 1=Open, 2=Pending, 3=Fraudulent, 4=Pending Damage Detection,
-                  5=Auto Approved, 6=Manual Review
+                  5=Close and Auto Review, 6=Close and Manual Review
     """
     decision = (result.get("decision") or "").strip()
     reason = (result.get("reason") or "").strip().lower()
     if decision == "Reject":
         return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
     if decision == "Auto Approve":
-        return ClaimStatus.objects.filter(status_name__iexact="Auto Approved").first()
+        return ClaimStatus.objects.filter(pk=5).first()  # Close and Auto Review
     if decision == "Manual Review":
         if "photos" in reason or "photo" in reason:
             return ClaimStatus.objects.filter(
                 status_name__iexact="Pending Damage Detection"
             ).first()
-        return ClaimStatus.objects.filter(status_name__iexact="Manual Review").first()
+        return ClaimStatus.objects.filter(pk=6).first()  # Close and Manual Review
     return ClaimStatus.objects.filter(status_name__iexact="Open").first()
 
 
@@ -615,9 +661,13 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
     )
     estimated_amount = None
     claim_amount = None
+    llm_damages = None
+    llm_severity = None
     if latest_eval:
         estimated_amount = float(latest_eval.estimated_amount or 0)
         claim_amount = float(latest_eval.claim_amount or 0)
+        llm_damages = latest_eval.llm_damages  # JSON string
+        llm_severity = latest_eval.llm_severity
 
     BASE_URL = "media/vehicle_damage/"
 
@@ -649,6 +699,8 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "status": claim.claim_status.status_name if claim.claim_status else "Open",
         "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
+        "llm_damages": llm_damages,
+        "llm_severity": llm_severity,
         "created_date": None,
         "created_by": None,
         "updated_date": None,
@@ -734,6 +786,46 @@ def get_fnol(request, pk: str):
     obj = get_object_or_404(FnolClaim, complaint_id=pk)
     data = _fnol_claim_to_response(obj)
     return Response(data)
+
+
+@api_view(['GET'])
+def get_claim_evaluation(request, complaint_id: str):
+    """
+    Return the latest claim evaluation response for a complaint_id.
+    Includes damage_confidence, estimated_amount, claim_amount, decision, claim_status,
+    reason, llm_damages, llm_severity (from damage assessment).
+    """
+    latest = (
+        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
+        .order_by("-created_date")
+        .first()
+    )
+    if not latest:
+        return Response(
+            {"error": f"No evaluation found for complaint_id: {complaint_id}"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    damages = None
+    if latest.llm_damages:
+        try:
+            damages = json.loads(latest.llm_damages)
+        except (json.JSONDecodeError, TypeError):
+            damages = None
+    return Response({
+        "complaint_id": latest.complaint_id,
+        "damage_confidence": float(latest.damage_confidence or 0),
+        "estimated_amount": float(latest.estimated_amount or 0),
+        "claim_amount": float(latest.claim_amount or 0),
+        "threshold_value": latest.threshold_value,
+        "claim_type": latest.claim_type,
+        "decision": latest.decision,
+        "claim_status": latest.claim_status,
+        "reason": latest.reason,
+        "llm_damages": damages,
+        "llm_severity": latest.llm_severity,
+        "created_date": latest.created_date.isoformat() if latest.created_date else None,
+        "updated_date": latest.updated_date.isoformat() if latest.updated_date else None,
+    })
 
 
 @api_view(["GET", "POST"])

@@ -39,9 +39,14 @@ import {
   getClaimRules,
   getClaimTypes,
   getDamageCodes,
+  getPricingConfigs,
+  createPricingConfig,
+  updatePricingConfig,
+  deletePricingConfig,
   type ClaimRuleMaster,
   type ClaimTypeMaster,
   type DamageCodeMaster,
+  type PricingConfigMaster,
 } from "@/lib/api";
 
 export default function MasterData() {
@@ -81,6 +86,22 @@ export default function MasterData() {
   const [editRuleGroup, setEditRuleGroup] = useState("");
   const [editRuleDescription, setEditRuleDescription] = useState("");
   const [editRuleExpression, setEditRuleExpression] = useState("");
+
+  const [pricingConfigs, setPricingConfigs] = useState<PricingConfigMaster[]>([]);
+  const [pricingDialogOpen, setPricingDialogOpen] = useState(false);
+  const [newConfigKey, setNewConfigKey] = useState("");
+  const [newConfigName, setNewConfigName] = useState("");
+  const [newConfigValue, setNewConfigValue] = useState("");
+  const [newConfigType, setNewConfigType] = useState("string");
+  const [newConfigDescription, setNewConfigDescription] = useState("");
+  const [pricingEditDialogOpen, setPricingEditDialogOpen] = useState(false);
+  const [editingPricing, setEditingPricing] = useState<PricingConfigMaster | null>(null);
+  const [editConfigKey, setEditConfigKey] = useState("");
+  const [editConfigName, setEditConfigName] = useState("");
+  const [editConfigValue, setEditConfigValue] = useState("");
+  const [editConfigType, setEditConfigType] = useState("string");
+  const [editConfigDescription, setEditConfigDescription] = useState("");
+  const [editConfigActive, setEditConfigActive] = useState(true);
 
   const sectionParam =
     new URLSearchParams(location.search).get("section") ?? "damage-types";
@@ -174,6 +195,39 @@ export default function MasterData() {
     return sortedRules.slice(start, start + rulePageSize);
   }, [sortedRules, rulePage, rulePageSize]);
 
+  // Pricing config: search, sort, pagination
+  const [pricingSearch, setPricingSearch] = useState("");
+  const [pricingSortKey, setPricingSortKey] = useState<"key" | "name" | "value" | "type" | "status" | null>("key");
+  const [pricingSortDir, setPricingSortDir] = useState<SortDirection>("asc");
+  const [pricingPage, setPricingPage] = useState(1);
+  const [pricingPageSize, setPricingPageSize] = useState(10);
+
+  const filteredPricing = useMemo(() => {
+    const term = pricingSearch.toLowerCase();
+    return pricingConfigs.filter(
+      (p) =>
+        p.config_key?.toLowerCase().includes(term) ||
+        p.config_name?.toLowerCase().includes(term) ||
+        p.config_value?.toLowerCase().includes(term),
+    );
+  }, [pricingConfigs, pricingSearch]);
+  const sortedPricing = useMemo(() => {
+    if (!pricingSortKey) return filteredPricing;
+    return [...filteredPricing].sort((a, b) => {
+      let cmp = 0;
+      if (pricingSortKey === "key") cmp = (a.config_key ?? "").localeCompare(b.config_key ?? "");
+      else if (pricingSortKey === "name") cmp = (a.config_name ?? "").localeCompare(b.config_name ?? "");
+      else if (pricingSortKey === "value") cmp = (a.config_value ?? "").localeCompare(b.config_value ?? "");
+      else if (pricingSortKey === "type") cmp = (a.config_type ?? "").localeCompare(b.config_type ?? "");
+      else if (pricingSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
+      return pricingSortDir === "desc" ? -cmp : cmp;
+    });
+  }, [filteredPricing, pricingSortKey, pricingSortDir]);
+  const paginatedPricing = useMemo(() => {
+    const start = (pricingPage - 1) * pricingPageSize;
+    return sortedPricing.slice(start, start + pricingPageSize);
+  }, [sortedPricing, pricingPage, pricingPageSize]);
+
   useEffect(() => {
     setActiveTab(sectionParam);
   }, [sectionParam]);
@@ -181,14 +235,16 @@ export default function MasterData() {
   useEffect(() => {
     async function loadMasterData() {
       try {
-        const [damage, types, rules] = await Promise.all([
+        const [damage, types, rules, pricing] = await Promise.all([
           getDamageCodes(),
           getClaimTypes(),
           getClaimRules(),
+          getPricingConfigs(),
         ]);
         setDamageTypes(damage);
         setClaimTypes(types);
         setClaimRules(rules);
+        setPricingConfigs(pricing);
       } catch (error) {
         console.error(error);
         toast({
@@ -482,6 +538,110 @@ export default function MasterData() {
       const updated = await updateClaimRule(rule.rule_id, { is_active: next });
       setClaimRules((prev) =>
         prev.map((r) => (r.rule_id === updated.rule_id ? updated : r)),
+      );
+    } catch (error) {
+      console.error(error);
+      toast({ title: "Failed to update status", variant: "destructive" });
+    }
+  };
+
+  const handleCreatePricingConfig = async () => {
+    if (!newConfigKey.trim() || !newConfigName.trim()) {
+      toast({
+        title: "Missing fields",
+        description: "Config key and config name are required.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const created = await createPricingConfig({
+        config_key: newConfigKey.trim(),
+        config_name: newConfigName.trim(),
+        config_value: newConfigValue.trim(),
+        config_type: newConfigType,
+        description: newConfigDescription.trim(),
+        is_active: true,
+      });
+      setPricingConfigs((prev) => [...prev, created]);
+      toast({ title: "Pricing config created" });
+      setPricingDialogOpen(false);
+      setNewConfigKey("");
+      setNewConfigName("");
+      setNewConfigValue("");
+      setNewConfigType("string");
+      setNewConfigDescription("");
+    } catch (error) {
+      console.error(error);
+      toast({
+        title: "Failed to create pricing config",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const openEditPricingConfig = (config: PricingConfigMaster) => {
+    setEditingPricing(config);
+    setEditConfigKey(config.config_key);
+    setEditConfigName(config.config_name);
+    setEditConfigValue(config.config_value);
+    setEditConfigType(config.config_type);
+    setEditConfigDescription(config.description ?? "");
+    setEditConfigActive(config.is_active);
+    setPricingEditDialogOpen(true);
+  };
+
+  const handleUpdatePricingConfig = async () => {
+    if (!editingPricing) return;
+    if (!editConfigKey.trim() || !editConfigName.trim()) {
+      toast({
+        title: "Invalid values",
+        description: "Config key and config name are required.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const updated = await updatePricingConfig(editingPricing.config_id, {
+        config_key: editConfigKey.trim(),
+        config_name: editConfigName.trim(),
+        config_value: editConfigValue.trim(),
+        config_type: editConfigType,
+        description: editConfigDescription.trim(),
+        is_active: editConfigActive,
+      });
+      setPricingConfigs((prev) =>
+        prev.map((p) => (p.config_id === updated.config_id ? updated : p)),
+      );
+      toast({ title: "Pricing config updated" });
+      setPricingEditDialogOpen(false);
+      setEditingPricing(null);
+    } catch (error) {
+      console.error(error);
+      toast({ title: "Failed to update pricing config", variant: "destructive" });
+    }
+  };
+
+  const handleDeletePricingConfig = async (id: number) => {
+    if (!window.confirm("Delete this pricing config?")) return;
+    try {
+      await deletePricingConfig(id);
+      setPricingConfigs((prev) => prev.filter((p) => p.config_id !== id));
+      toast({ title: "Pricing config deleted" });
+    } catch (error) {
+      console.error(error);
+      toast({
+        title: "Failed to delete pricing config",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleTogglePricingConfigActive = async (config: PricingConfigMaster, next: boolean) => {
+    try {
+      const updated = await updatePricingConfig(config.config_id, { is_active: next });
+      setPricingConfigs((prev) =>
+        prev.map((p) => (p.config_id === updated.config_id ? updated : p)),
       );
     } catch (error) {
       console.error(error);
@@ -1198,39 +1358,151 @@ export default function MasterData() {
             </DialogContent>
           </Dialog>
 
+          <Dialog open={pricingEditDialogOpen} onOpenChange={setPricingEditDialogOpen}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Edit Pricing Config</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-config-key">Config Key</Label>
+                  <Input
+                    id="edit-config-key"
+                    value={editConfigKey}
+                    onChange={(e) => setEditConfigKey(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-config-name">Config Name</Label>
+                  <Input
+                    id="edit-config-name"
+                    value={editConfigName}
+                    onChange={(e) => setEditConfigName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-config-value">Config Value</Label>
+                  <Input
+                    id="edit-config-value"
+                    value={editConfigValue}
+                    onChange={(e) => setEditConfigValue(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-config-type">Config Type</Label>
+                  <select
+                    id="edit-config-type"
+                    value={editConfigType}
+                    onChange={(e) => setEditConfigType(e.target.value)}
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="decimal">decimal</option>
+                    <option value="json">json</option>
+                    <option value="boolean">boolean</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-config-description">Description</Label>
+                  <Input
+                    id="edit-config-description"
+                    value={editConfigDescription}
+                    onChange={(e) => setEditConfigDescription(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="edit-config-active"
+                    checked={editConfigActive}
+                    onCheckedChange={setEditConfigActive}
+                  />
+                  <Label htmlFor="edit-config-active">Active</Label>
+                </div>
+              </div>
+              <DialogFooter className="mt-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setPricingEditDialogOpen(false);
+                    setEditingPricing(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button type="button" onClick={handleUpdatePricingConfig}>
+                  Save
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
           <TabsContent value="PriceConfig">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Price Configuration</CardTitle>
-                <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
+                <Dialog open={pricingDialogOpen} onOpenChange={setPricingDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
                       <Plus className="mr-2 h-4 w-4" />
-                      Add Pricing config values
+                      Add Config
                     </Button>
                   </DialogTrigger>
                   <DialogContent>
                     <DialogHeader>
-                      <DialogTitle>Add Pricing config values</DialogTitle>
+                      <DialogTitle>Add Pricing Config</DialogTitle>
                     </DialogHeader>
                     <div className="space-y-4">
                       <div className="space-y-2">
-                        <Label htmlFor="claim-type-name">Claim Type Name</Label>
+                        <Label htmlFor="config-key">Config Key</Label>
                         <Input
-                          id="claim-type-name"
-                          value={newClaimTypeName}
-                          onChange={(e) => setNewClaimTypeName(e.target.value)}
-                          placeholder="e.g. SIMPLE"
+                          id="config-key"
+                          value={newConfigKey}
+                          onChange={(e) => setNewConfigKey(e.target.value)}
+                          placeholder="e.g. max_claim_amount"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="claim-type-risk">Pricing Value in $</Label>
+                        <Label htmlFor="config-name">Config Name</Label>
                         <Input
-                          id="claim-type-risk"
-                          type="number"
-                          value={newClaimTypeRisk}
-                          onChange={(e) => setNewClaimTypeRisk(e.target.value)}
-                          placeholder="e.g. 25"
+                          id="config-name"
+                          value={newConfigName}
+                          onChange={(e) => setNewConfigName(e.target.value)}
+                          placeholder="e.g. Maximum Claim Amount"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="config-value">Config Value</Label>
+                        <Input
+                          id="config-value"
+                          value={newConfigValue}
+                          onChange={(e) => setNewConfigValue(e.target.value)}
+                          placeholder="e.g. 50000"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="config-type">Config Type</Label>
+                        <select
+                          id="config-type"
+                          value={newConfigType}
+                          onChange={(e) => setNewConfigType(e.target.value)}
+                          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        >
+                          <option value="string">string</option>
+                          <option value="number">number</option>
+                          <option value="decimal">decimal</option>
+                          <option value="json">json</option>
+                          <option value="boolean">boolean</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="config-description">Description</Label>
+                        <Input
+                          id="config-description"
+                          value={newConfigDescription}
+                          onChange={(e) => setNewConfigDescription(e.target.value)}
+                          placeholder="Optional description"
                         />
                       </div>
                     </div>
@@ -1238,11 +1510,11 @@ export default function MasterData() {
                       <Button
                         type="button"
                         variant="outline"
-                        onClick={() => setClaimTypeDialogOpen(false)}
+                        onClick={() => setPricingDialogOpen(false)}
                       >
                         Cancel
                       </Button>
-                      <Button type="button" onClick={handleCreateClaimType}>
+                      <Button type="button" onClick={handleCreatePricingConfig}>
                         Save
                       </Button>
                     </DialogFooter>
@@ -1251,110 +1523,139 @@ export default function MasterData() {
               </CardHeader>
               <CardContent className="p-0">
                 <TableToolbar
-                  searchPlaceholder="Search claim types..."
-                  searchValue={claimTypeSearch}
-                  onSearchChange={(v) => { setClaimTypeSearch(v); setClaimTypePage(1); }}
+                  searchPlaceholder="Search configs..."
+                  searchValue={pricingSearch}
+                  onSearchChange={(v) => { setPricingSearch(v); setPricingPage(1); }}
                   className="border-0 border-b rounded-none shadow-none"
                 />
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/50 hover:bg-muted/50">
                       <SortableTableHead
-                        sortKey="name"
-                        currentSortKey={claimTypeSortKey}
-                        direction={claimTypeSortDir}
+                        sortKey="key"
+                        currentSortKey={pricingSortKey}
+                        direction={pricingSortDir}
                         onSort={(k) => {
-                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
-                          setClaimTypePage(1);
+                          if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          setPricingPage(1);
                         }}
                         className="pl-6"
                       >
-                        Claim Type
+                        Config Key
                       </SortableTableHead>
                       <SortableTableHead
-                        sortKey="risk"
-                        currentSortKey={claimTypeSortKey}
-                        direction={claimTypeSortDir}
+                        sortKey="name"
+                        currentSortKey={pricingSortKey}
+                        direction={pricingSortDir}
                         onSort={(k) => {
-                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
-                          setClaimTypePage(1);
+                          if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          setPricingPage(1);
                         }}
                       >
-                        Price Value ($)
+                        Config Name
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="value"
+                        currentSortKey={pricingSortKey}
+                        direction={pricingSortDir}
+                        onSort={(k) => {
+                          if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          setPricingPage(1);
+                        }}
+                      >
+                        Value
+                      </SortableTableHead>
+                      <SortableTableHead
+                        sortKey="type"
+                        currentSortKey={pricingSortKey}
+                        direction={pricingSortDir}
+                        onSort={(k) => {
+                          if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          setPricingPage(1);
+                        }}
+                      >
+                        Type
                       </SortableTableHead>
                       <SortableTableHead
                         sortKey="status"
-                        currentSortKey={claimTypeSortKey}
-                        direction={claimTypeSortDir}
+                        currentSortKey={pricingSortKey}
+                        direction={pricingSortDir}
                         onSort={(k) => {
-                          if (claimTypeSortKey === k) setClaimTypeSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setClaimTypeSortKey(k as "name" | "risk" | "status"); setClaimTypeSortDir("asc"); }
-                          setClaimTypePage(1);
+                          if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          setPricingPage(1);
                         }}
                       >
                         Status
                       </SortableTableHead>
-                      {/* <TableHead className="pr-6 text-right">Created At</TableHead> */}
                       <TableHead className="pr-6 text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {loading ? (
                       <TableRow>
-                        <TableCell className="pl-6" colSpan={5}>
-                          Loading claim types...
+                        <TableCell className="pl-6" colSpan={6}>
+                          Loading pricing configs...
                         </TableCell>
                       </TableRow>
-                    ) : filteredClaimTypes.length === 0 ? (
+                    ) : filteredPricing.length === 0 ? (
                       <TableRow>
-                        <TableCell className="pl-6" colSpan={5}>
-                          No claim types configured.
+                        <TableCell className="pl-6" colSpan={6}>
+                          No pricing configs configured.
                         </TableCell>
                       </TableRow>
                     ) : (
-                      paginatedClaimTypes.map((type) => (
-                        <TableRow key={type.claim_type_id}>
+                      paginatedPricing.map((config) => (
+                        <TableRow key={config.config_id}>
                           <TableCell className="pl-6 font-medium">
-                            {type.claim_type_name}
+                            {config.config_key}
                           </TableCell>
-                          <TableCell>{Math.round(type.risk_percentage)}</TableCell>
+                          <TableCell>{config.config_name}</TableCell>
+                          <TableCell className="max-w-[120px] truncate">{config.config_value}</TableCell>
+                          <TableCell>{config.config_type}</TableCell>
                           <TableCell>
                             <Switch
-                              checked={type.is_active}
+                              checked={config.is_active}
                               onCheckedChange={(next) =>
-                                handleToggleClaimTypeActive(type, next)
+                                handleTogglePricingConfigActive(config, next)
                               }
                             />
                           </TableCell>
-                          {/* <TableCell className="pr-6 text-right text-xs text-muted-foreground">
-                            {new Date(type.created_date).toLocaleString()}
-                          </TableCell> */}
                           <TableCell className="pr-6 text-right">
-                            <div className="flex items-center justify-end gap-1 ">
+                            <div className="flex items-center justify-end gap-1">
                               <Button
                                 variant="default"
                                 size="icon"
-                                onClick={() => openEditClaimType(type)}
+                                onClick={() => openEditPricingConfig(config)}
                               >
                                 <Edit2 className="h-4 w-4" />
                               </Button>
                               <Button
                                 variant="default"
                                 size="icon"
-                                onClick={() => handleDeleteClaimType(type.claim_type_id)}
+                                onClick={() => handleDeletePricingConfig(config.config_id)}
                               >
-                                <Trash2 className="h-4 w-4 " />
+                                <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>
                           </TableCell>
                         </TableRow>
                       ))
                     )}
-
                   </TableBody>
                 </Table>
+                <DataTablePagination
+                  totalCount={sortedPricing.length}
+                  page={pricingPage}
+                  pageSize={pricingPageSize}
+                  onPageChange={setPricingPage}
+                  onPageSizeChange={(s) => { setPricingPageSize(s); setPricingPage(1); }}
+                  itemLabel="configs"
+                />
               </CardContent>
             </Card>
           </TabsContent>

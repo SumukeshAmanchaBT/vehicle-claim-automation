@@ -31,14 +31,16 @@ import {
 } from "lucide-react";
 import {
   getFnolById,
+  getClaimEvaluation,
   processClaim,
   runFraudDetection,
+  runDamageAssessment,
   type FnolPayload,
   type FnolResponse,
   type ProcessClaimResponse,
+  type ClaimEvaluationResponse,
 } from "@/lib/api";
-import API_BASE_URL from "@/lib/httpClient";
-import API_MEDIA_URL from "@/lib/httpClient";
+import { API_BASE_URL, API_MEDIA_URL } from "@/lib/httpClient";
 
 const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat("en-IN", {
@@ -68,10 +70,13 @@ export default function ClaimDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fraudDetectionLoading, setFraudDetectionLoading] = useState(false);
+  const [damageDetectionLoading, setDamageDetectionLoading] = useState(false);
   const [fraudSuccessModalOpen, setFraudSuccessModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
   const [fraudResult, setFraudResult] = useState<ProcessClaimResponse | null>(null);
   const [damageDetectionRun, setDamageDetectionRun] = useState(false);
+  const [claimEvaluation, setClaimEvaluation] = useState<ClaimEvaluationResponse | null>(null);
+  const [claimEvaluationLoading, setClaimEvaluationLoading] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -110,6 +115,29 @@ export default function ClaimDetail() {
     }
   }, [fnol, activeTab]);
 
+  // Fetch claim evaluation when status is Closed: Auto review or Closed: Manual review
+  const statusLower = (fnol?.status || "").toLowerCase();
+  const showEvaluationTab =
+    statusLower === "closed: auto review" || statusLower === "closed: manual review";
+
+  useEffect(() => {
+    if (!id || !showEvaluationTab) return;
+    let cancelled = false;
+    setClaimEvaluationLoading(true);
+    setClaimEvaluation(null);
+    getClaimEvaluation(id)
+      .then((data) => {
+        if (!cancelled) setClaimEvaluation(data);
+      })
+      .catch(() => {
+        if (!cancelled) setClaimEvaluation(null);
+      })
+      .finally(() => {
+        if (!cancelled) setClaimEvaluationLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [id, showEvaluationTab]);
+
   const handleFraudDetection = async () => {
     if (!id) return;
     setFraudDetectionLoading(true);
@@ -126,6 +154,41 @@ export default function ClaimDetail() {
       setError(err instanceof Error ? err.message : "Fraud detection failed");
     } finally {
       setFraudDetectionLoading(false);
+    }
+  };
+
+  const handleDamageDetection = async () => {
+    if (!id || !fnol) return;
+    const rawPhotos =
+      fnol.raw_response?.documents?.photos ?? fnol.damage_photos ?? [];
+    const imageUrls = rawPhotos
+      .map((obj: string | { image?: { url?: string } }) => {
+        const url =
+          typeof obj === "string"
+            ? obj
+            : (obj as { image?: { url?: string } })?.image?.url;
+        if (!url) return null;
+        if (url.startsWith("http")) return url;
+        const origin = API_BASE_URL ? new URL(API_BASE_URL).origin : "";
+        return `${API_MEDIA_URL}${url}`;
+      })
+      .filter(Boolean) as string[];
+
+    if (imageUrls.length === 0) {
+      setError("No images attached to process damage detection.");
+      return;
+    }
+
+    setDamageDetectionLoading(true);
+    setError(null);
+    try {
+      await runDamageAssessment(id, imageUrls);
+      setDamageDetectionRun(true);
+      setActiveTab("assessment");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Damage detection failed");
+    } finally {
+      setDamageDetectionLoading(false);
     }
   };
 
@@ -193,12 +256,14 @@ export default function ClaimDetail() {
   const isAutoApproved =
     (fnol.status || "").toLowerCase() === "auto approved";
 
-  // Damage Detection button only active when claim status is "Pending Damage Detection"
   console.log("Claim status for damage detection check:", fnol.status);
-  console.log("Claim status for damage detection check:", claimStatus);
   const statusForCheck = (fnol.status || claimStatus || "").toLowerCase();
+
   const isPendingDamageDetection =
     statusForCheck === "pending damage detection" || statusForCheck === "pending_damage_detection";
+
+  const isFraudDetection = statusForCheck === "fraudulent";
+  console.log("Fraud detection done:", isFraudDetection);
 
   console.log("Is pending damage detection:", isPendingDamageDetection);
   // Open claim: show Claim Details + Documents only; hide AI Assessment, Fraud Evaluation tab, overview cards
@@ -230,31 +295,39 @@ export default function ClaimDetail() {
               {decision}
             </StatusBadge> */}
             {/* <Button variant="outline">Request Documents</Button> */}
-
-            <Button
-              onClick={handleFraudDetection}
-              disabled={fraudDetectionLoading || !fnol || isAutoApproved}
-            >
-              {fraudDetectionLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Validating...
-                </>
-              ) : (
-                "Fraud Detection"
-              )}
-            </Button>
-
-            <Button
-              variant="destructive"
-              disabled={!isPendingDamageDetection || isAutoApproved}
-              onClick={() => {
-                setDamageDetectionRun(true);
-                setActiveTab("assessment");
-              }}
-            >
-              Damage Detection
-            </Button>
+            {!isPendingDamageDetection ? (
+              !isFraudDetection && (
+                <Button
+                  onClick={handleFraudDetection}
+                  disabled={fraudDetectionLoading || !fnol || isAutoApproved}
+                >
+                  {fraudDetectionLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Validating...
+                    </>
+                  ) : (
+                    "Fraud Detection"
+                  )}
+                </Button>
+              )
+            ) : (
+              <Button
+                variant="destructive"
+                disabled={!isPendingDamageDetection || damageDetectionLoading}
+                onClick={handleDamageDetection}
+              >
+                {damageDetectionLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Assessing...
+                  </>
+                ) : (
+                  "Damage Detection"
+                )}
+              </Button>
+            )
+            }
           </div>
         </div>
 
@@ -343,6 +416,9 @@ export default function ClaimDetail() {
                   <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
                 )}
                 <TabsTrigger value="documents">Documents</TabsTrigger>
+                {showEvaluationTab && (
+                  <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
+                )}
               </TabsList>
 
               <TabsContent value="details">
@@ -570,6 +646,110 @@ export default function ClaimDetail() {
                 </Card>
               </TabsContent>
 
+              {showEvaluationTab && (
+                <TabsContent value="claim-evaluation">
+                  <Card className="card-elevated">
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        Claim Evaluation Response
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      {claimEvaluationLoading ? (
+                        <div className="flex items-center justify-center py-12">
+                          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : claimEvaluation ? (
+                        <div className="space-y-6">
+                          <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Complaint ID</p>
+                              <p className="text-sm font-medium mt-1">{claimEvaluation.complaint_id}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Damage Confidence</p>
+                              <p className="text-sm font-medium mt-1">{claimEvaluation.damage_confidence}%</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Estimated Amount</p>
+                              <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.estimated_amount)}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Claim Amount</p>
+                              <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.claim_amount)}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Threshold Value</p>
+                              <p className="text-sm font-medium mt-1">{claimEvaluation.threshold_value ?? "—"}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Claim Type</p>
+                              <p className="text-sm font-medium mt-1">{claimEvaluation.claim_type ?? "—"}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Decision</p>
+                              <p className="text-sm font-medium mt-1">{claimEvaluation.decision ?? "—"}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Claim Status</p>
+                              <p className="text-sm font-medium mt-1">{claimEvaluation.claim_status ?? "—"}</p>
+                            </div>
+                            {claimEvaluation.reason && (
+                              <div className="rounded-lg border p-4 sm:col-span-2">
+                                <p className="text-xs text-muted-foreground">Reason</p>
+                                <p className="text-sm font-medium mt-1">{claimEvaluation.reason}</p>
+                              </div>
+                            )}
+                            {claimEvaluation.llm_damages && claimEvaluation.llm_damages.length > 0 && (
+                              <div className="rounded-lg border p-4 sm:col-span-2">
+                                <p className="text-xs text-muted-foreground">LLM Damages</p>
+                                <div className="flex flex-wrap gap-2 mt-2">
+                                  {claimEvaluation.llm_damages.map((d) => (
+                                    <span
+                                      key={d}
+                                      className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
+                                    >
+                                      {d}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {claimEvaluation.llm_severity && (
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">LLM Severity</p>
+                                <p className="text-sm font-medium mt-1">{claimEvaluation.llm_severity}</p>
+                              </div>
+                            )}
+                            {claimEvaluation.created_date && (
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Created Date</p>
+                                <p className="text-sm font-medium mt-1">
+                                  {new Date(claimEvaluation.created_date).toLocaleString()}
+                                </p>
+                              </div>
+                            )}
+                            {claimEvaluation.updated_date && (
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Updated Date</p>
+                                <p className="text-sm font-medium mt-1">
+                                  {new Date(claimEvaluation.updated_date).toLocaleString()}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-muted-foreground py-8 text-center">
+                          No evaluation data found for this claim.
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              )}
+
               {!isOpenClaim && (
                 <TabsContent value="fraud-evaluation">
                   <Card className="card-elevated">
@@ -585,6 +765,7 @@ export default function ClaimDetail() {
                       </p>
                       {(() => {
                         const rules = fraudResult?.fraud_rule_results ?? assessment?.fraud_rule_results ?? [];
+                        console.log("Parsed fraud rules to display:", rules);
                         if (rules.length === 0) {
                           return (
                             <p className="text-sm text-muted-foreground py-8 text-center">

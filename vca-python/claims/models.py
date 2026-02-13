@@ -81,6 +81,17 @@ class ClaimEvaluationResponse(models.Model):
     decision = models.CharField(max_length=20, null=True, blank=True)
     claim_status = models.CharField(max_length=20, null=True, blank=True)
     reason = models.TextField(null=True, blank=True)
+    llm_damages = models.TextField(
+        null=True,
+        blank=True,
+        help_text="LLM damage detection result as JSON array (e.g. [\"scratch\",\"dent\"]).",
+    )
+    llm_severity = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text="LLM severity classification: minor, moderate, severe, None, unknown.",
+    )
 
     created_date = models.DateTimeField(auto_now_add=True)
     created_by = models.IntegerField(null=True, blank=True)
