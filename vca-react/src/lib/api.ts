@@ -80,6 +80,47 @@ export async function runFraudDetection(
   );
 }
 
+export interface DamageAssessmentResponse {
+  damages: string[];
+  severity: string;
+}
+
+/** POST /api/llm/damage_assessment - Run damage assessment with claim ID and images */
+export async function runDamageAssessment(
+  claimId: string,
+  images: string[]
+): Promise<DamageAssessmentResponse> {
+  return fetchApi<DamageAssessmentResponse>("/llm/damage_assessment", {
+    method: "POST",
+    data: { claim_id: claimId, images },
+  });
+}
+
+export interface ClaimEvaluationResponse {
+  complaint_id: string;
+  damage_confidence: number;
+  estimated_amount: number;
+  claim_amount: number;
+  threshold_value: number;
+  claim_type: string;
+  decision: string;
+  claim_status: string;
+  reason: string | null;
+  llm_damages: string[] | null;
+  llm_severity: string | null;
+  created_date: string | null;
+  updated_date: string | null;
+}
+
+/** GET /api/fnol/:complaintId/evaluation - Get claim evaluation response */
+export async function getClaimEvaluation(
+  complaintId: string
+): Promise<ClaimEvaluationResponse> {
+  return fetchApi<ClaimEvaluationResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/evaluation`
+  );
+}
+
 /** ****************************
  * Master data APIs
  * **************************** */
@@ -214,5 +255,55 @@ export async function updateClaimRule(
 
 export async function deleteClaimRule(id: number): Promise<void> {
   await fetchApi<void>(`/masters/claim-rules/${id}`, { method: "DELETE" });
+}
+
+// Pricing config
+export interface PricingConfigMaster {
+  config_id: number;
+  config_key: string;
+  config_name: string;
+  config_value: string;
+  config_type: string;
+  description: string;
+  is_active: boolean;
+  created_date: string;
+  created_by: string | null;
+  updated_date: string;
+  updated_by: string | null;
+}
+
+export async function getPricingConfigs(): Promise<PricingConfigMaster[]> {
+  return fetchApi<PricingConfigMaster[]>("/masters/pricing-config");
+}
+
+export async function createPricingConfig(
+  payload: Pick<
+    PricingConfigMaster,
+    "config_key" | "config_name" | "config_value" | "config_type" | "description" | "is_active"
+  >
+): Promise<PricingConfigMaster> {
+  return fetchApi<PricingConfigMaster>("/masters/pricing-config", {
+    method: "POST",
+    data: payload,
+  });
+}
+
+export async function updatePricingConfig(
+  id: number,
+  payload: Partial<
+    Pick<
+      PricingConfigMaster,
+      "config_key" | "config_name" | "config_value" | "config_type" | "description" | "is_active"
+    >
+  >
+): Promise<PricingConfigMaster> {
+  return fetchApi<PricingConfigMaster>(`/masters/pricing-config/${id}`, {
+    method: "PATCH",
+    data: payload,
+  });
+}
+
+export async function deletePricingConfig(id: number): Promise<void> {
+  await fetchApi<void>(`/masters/pricing-config/${id}`, { method: "DELETE" });
 }
 
