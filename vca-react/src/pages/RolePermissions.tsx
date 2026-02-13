@@ -339,7 +339,7 @@ export default function RolePermissions() {
                   ))}
                 </SelectContent>
               </Select>
-              <Select
+              {/* <Select
                 value={statusFilter}
                 onValueChange={(v) => {
                   setStatusFilter(v);
@@ -354,7 +354,7 @@ export default function RolePermissions() {
                   <SelectItem value="active">Active</SelectItem>
                   <SelectItem value="inactive">Inactive</SelectItem>
                 </SelectContent>
-              </Select>
+              </Select> */}
             </div>
           }
           primaryAction={
@@ -484,7 +484,7 @@ export default function RolePermissions() {
                 >
                   Active
                 </SortableTableHead>
-                <TableHead>Assigned to Role</TableHead>
+                {/* <TableHead>Assigned to Role</TableHead> */}
                 <SortableTableHead
                   sortKey="created_date"
                   currentSortKey={sortKey}
@@ -553,7 +553,7 @@ export default function RolePermissions() {
                           disabled={updateMutation.isPending}
                         />
                       </TableCell>
-                      <TableCell>
+                      {/* <TableCell>
                         <div className="flex items-center gap-2">
                           <Checkbox
                             checked={isAssigned}
@@ -569,7 +569,7 @@ export default function RolePermissions() {
                             {selectedRoleId ? "Assigned" : "Select role"}
                           </span>
                         </div>
-                      </TableCell>
+                      </TableCell> */}
                       <TableCell className="text-sm text-muted-foreground">
                         {permission.created_date
                           ? new Date(

@@ -28,6 +28,7 @@ import {
   Eye,
   Loader2,
   FileText,
+  Clock,
 } from "lucide-react";
 import {
   getFnolById,
@@ -233,6 +234,8 @@ export default function ClaimDetail() {
     (r as { Incident_type?: string }).Incident_type ??
     incident.claim_type;
   const incidentDescription = fnol.incident_description ?? incident.loss_description;
+  // Submitted = claim creation date from API; fallback to incident date if not returned yet
+  const submittedDate = fnol.created_date || incidentDate;
 
   const photos = documents.photos ?? fnol.damage_photos ?? [];
   const aiConfidence = assessment?.damage_confidence ?? 0;
@@ -348,56 +351,58 @@ export default function ClaimDetail() {
         <div className="grid gap-6 lg:grid-cols-3">
           {/* Main Content */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Overview Cards: Fraud Evaluation after Fraud Detection; Estimated + AI Damage % after Damage Detection */}
-            {(fraudResult || damageDetectionRun) && (
-              <div className="grid gap-4 sm:grid-cols-3">
-                {damageDetectionRun && (
-                  <Card className="card-elevated">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-                          <DollarSign className="h-5 w-5 text-primary" />
-                        </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">Estimated</p>
-                          <p className="text-xl font-bold">
-                            {formatCurrency(incident.estimated_amount ?? 0)}
-                          </p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-                {damageDetectionRun && (
-                  <Card className="card-elevated">
-                    <CardContent className="p-4">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success/10">
-                          <Brain className="h-5 w-5 text-success" />
-                        </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">AI Damage Assessment %</p>
-                          <p className="text-xl font-bold">{aiConfidence}%</p>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
-                {fraudResult && (
-                  <Card className="card-elevated">
-                    <CardContent className="p-4">
+            {/* Two-column overview cards: Fraud Evaluation (red if fraud, green otherwise) + AI Assessment */}
+            {(fraudResult || (!isOpenClaim && assessment) || damageDetectionRun) && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                {/* Column 1: Fraud Evaluation – red when fraud detected, green otherwise */}
+                <Card
+                  className={`card-elevated border-2 ${
+                    fraudScore >= 50
+                      ? "border-destructive bg-destructive/5"
+                      : "border-success bg-success/5"
+                  }`}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-center gap-3">
                       <div
-                        className={`flex h-10 w-10 items-center justify-center rounded-lg ${fraudScore >= 50 ? "bg-destructive/10" : fraudScore >= 30 ? "bg-warning/10" : "bg-success/10"
-                          }`}
+                        className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                          fraudScore >= 50 ? "bg-destructive/20" : "bg-success/20"
+                        }`}
                       >
                         <Shield
-                          className={`h-5 w-5 ${fraudScore >= 50 ? "text-destructive" : fraudScore >= 30 ? "text-warning" : "text-success"
-                            }`}
+                          className={`h-5 w-5 ${
+                            fraudScore >= 50 ? "text-destructive" : "text-success"
+                          }`}
                         />
                       </div>
-                      <div className="mt-2">
+                      <div>
                         <p className="text-xs text-muted-foreground">Fraud Evaluation</p>
-                        <p className="text-xl font-bold">{fraudBand} ({fraudScore}%)</p>
+                        <p
+                          className={`text-xl font-bold ${
+                            fraudScore >= 50 ? "text-destructive" : "text-success"
+                          }`}
+                        >
+                          {fraudBand} ({fraudScore}%)
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                {/* Column 2: AI Assessment – visible only after Damage Detection is run */}
+                {damageDetectionRun && (
+                  <Card className="card-elevated">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                          <Brain className="h-5 w-5 text-primary" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-muted-foreground">AI Damage Assessment</p>
+                          <p className="text-xl font-bold">{aiConfidence}%</p>
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            Est. {formatCurrency(incident.estimated_amount ?? 0)}
+                          </p>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
@@ -408,13 +413,15 @@ export default function ClaimDetail() {
             {/* Tabs */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4 p-4 w-full">
               <TabsList>
-                <TabsTrigger value="details">Claim Details</TabsTrigger>
-                {!isOpenClaim && (
-                  <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
-                )}
+                {/* After Damage Detection: AI Assessment first, then Fraud Evaluation, then Claim Details, Documents */}
                 {damageDetectionRun && (
                   <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
                 )}
+                {/* After Fraud Evaluation (or when Damage run): Fraud Evaluation before Claim Details */}
+                {!isOpenClaim && (
+                  <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
+                )}
+                <TabsTrigger value="details">Claim Details</TabsTrigger>
                 <TabsTrigger value="documents">Documents</TabsTrigger>
                 {showEvaluationTab && (
                   <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
@@ -426,8 +433,10 @@ export default function ClaimDetail() {
                   <CardHeader>
                     <CardTitle className="text-base">Incident Information</CardTitle>
                   </CardHeader>
-                  <CardContent className="space-y-6">
-                    <div className="grid gap-6 sm:grid-cols-2">
+                  <CardContent className="pl-4 space-y-6">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+
+                      {/* LEFT COLUMN */}
                       <div className="space-y-4">
                         <div className="flex items-start gap-3">
                           <Calendar className="h-4 w-4 mt-1 text-muted-foreground" />
@@ -440,43 +449,65 @@ export default function ClaimDetail() {
                             </p>
                           </div>
                         </div>
-                        <div className="flex items-start gap-3">
-                          <MapPin className="h-4 w-4 mt-1 text-muted-foreground" />
+
+                        {/* <div className="flex items-start gap-3">
+                          <Clock className="h-4 w-4 mt-1 text-muted-foreground" />
                           <div>
-                            <p className="text-sm font-medium">Location</p>
+                            <p className="text-sm font-medium">Submitted</p>
                             <p className="text-sm text-muted-foreground">
-                              {incidentLocation || "—"}
+                              {submittedDate
+                                ? new Date(submittedDate).toLocaleString(undefined, {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })
+                                : "—"}
+                            </p>
+                          </div>
+                        </div> */}
+
+                        <div className="flex items-start gap-3">
+                          <User className="h-4 w-4 mt-1 text-muted-foreground" />
+                          <div>
+                            <p className="text-sm font-medium">Incident Type</p>
+                            <p className="text-sm text-muted-foreground">
+                              {incidentType || "—"}
                             </p>
                           </div>
                         </div>
                       </div>
-                      {/* Additional incident meta (submitted, created by, etc.) can be added here if needed */}
-                    </div>
 
-                    <Separator />
+                      {/* RIGHT COLUMN */}
+                      <div className="space-y-4">
 
-                    <div>
+                        <div className="flex items-start gap-3">
+                          <Clock className="h-4 w-4 mt-1 text-muted-foreground" />
+                          <div>
+                            <p className="text-sm font-medium">Submitted</p>
+                            <p className="text-sm text-muted-foreground">
+                              {submittedDate
+                                ? new Date(submittedDate).toLocaleString(undefined, {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })
+                                : "—"}
+                            </p>
+                          </div>
+                        </div>
+
+                      </div>
+
+                    </div> <br></br>
+
+                    <Separator /> 
+
+                    <div className="">
                       <h4 className="text-sm font-medium mb-3">Incident Description</h4>
                       <p className="text-sm text-muted-foreground mb-3">
                         {incidentDescription || "—"}
                       </p>
-                      {/* {damageTypes.length > 0 && (
-                        <>
-                          <h4 className="text-sm font-medium mb-2">Damage Types</h4>
-                          <div className="flex flex-wrap gap-2">
-                            {damageTypes.map((type) => (
-                              <span
-                                key={type}
-                                className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
-                              >
-                                {type}
-                              </span>
-                            ))}
-                          </div>
-                        </>
-                      )} */}
                     </div>
                   </CardContent>
+
                 </Card>
               </TabsContent>
 
@@ -903,13 +934,19 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
+                  <span className="text-muted-foreground">Coverage</span>
+                  <span className="font-medium">
+                    {fnol.coverage_type || policy.coverage_type || "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-muted-foreground">Policy Status</span>
                   <span className="font-medium">
                     {fnol.policy_status || policy.policy_status || "—"}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Start Date</span>
+                  <span className="text-muted-foreground">Policy Start</span>
                   <span>
                     {fnol.policy_start_date
                       ? new Date(fnol.policy_start_date).toLocaleDateString()
@@ -917,15 +954,13 @@ export default function ClaimDetail() {
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">End Date</span>
+                  <span className="text-muted-foreground">Policy End</span>
                   <span>
                     {fnol.policy_end_date
                       ? new Date(fnol.policy_end_date).toLocaleDateString()
                       : "—"}
                   </span>
                 </div>
-
-
               </CardContent>
             </Card>
 
@@ -953,10 +988,10 @@ export default function ClaimDetail() {
                     {fnol.vehicle_registration_number || vehicle.registration_number || "—"}
                   </span>
                 </div>
-                <div className="flex justify-between">
+                {/* <div className="flex justify-between">
                   <span className="text-muted-foreground">Coverage</span>
                   <span>{fnol.coverage_type || policy.coverage_type || "—"}</span>
-                </div>
+                </div> */}
               </CardContent>
             </Card>
 

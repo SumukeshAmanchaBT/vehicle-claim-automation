@@ -701,10 +701,10 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "claim_amount": claim_amount,
         "llm_damages": llm_damages,
         "llm_severity": llm_severity,
-        "created_date": None,
-        "created_by": None,
-        "updated_date": None,
-        "updated_by": None,
+        "created_date": claim.created_date.isoformat() if getattr(claim, "created_date", None) else None,
+        "created_by": getattr(claim, "created_by", None),
+        "updated_date": claim.updated_date.isoformat() if getattr(claim, "updated_date", None) else None,
+        "updated_by": getattr(claim, "updated_by", None),
     }
 
 

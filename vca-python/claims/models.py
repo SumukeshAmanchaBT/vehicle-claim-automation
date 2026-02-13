@@ -31,6 +31,10 @@ class FnolClaim(models.Model):
         db_column="claim_status",
         related_name="fnol_claims",
     )
+    created_date = models.DateTimeField(null=True, blank=True, db_column="created_date")
+    created_by = models.CharField(max_length=150, null=True, blank=True, db_column="created_by")
+    updated_date = models.DateTimeField(null=True, blank=True, db_column="updated_date")
+    updated_by = models.CharField(max_length=150, null=True, blank=True, db_column="updated_by")
 
     class Meta:
         db_table = "fnol_claims"
