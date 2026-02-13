@@ -337,7 +337,7 @@ export default function Roles() {
                 >
                   Name
                 </SortableTableHead>
-                <SortableTableHead
+               {/* <SortableTableHead
                   sortKey="description"
                   currentSortKey={sortKey}
                   direction={sortDir}
@@ -345,14 +345,14 @@ export default function Roles() {
                 >
                   Description
                 </SortableTableHead>
-                <SortableTableHead
+                 <SortableTableHead
                   sortKey="permission_count"
                   currentSortKey={sortKey}
                   direction={sortDir}
                   onSort={handleSort}
                 >
                   Permissions
-                </SortableTableHead>
+                </SortableTableHead> */}
                 <SortableTableHead
                   sortKey="status"
                   currentSortKey={sortKey}
@@ -407,10 +407,10 @@ export default function Roles() {
                       {(page - 1) * pageSize + index + 1}
                     </TableCell>
                     <TableCell className="font-medium">{role.name}</TableCell>
-                    <TableCell className="max-w-xs truncate text-muted-foreground">
+                    {/* <TableCell className="max-w-xs truncate text-muted-foreground">
                       {role.description || "—"}
-                    </TableCell>
-                    <TableCell>{role.permission_count}</TableCell>
+                    </TableCell> */}
+                    {/* <TableCell>{role.permission_count}</TableCell> */}
                     <TableCell>
                       <Switch
                         checked={role.is_active}
