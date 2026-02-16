@@ -181,4 +181,21 @@ export async function deactivateUser(
   return res.data;
 }
 
+export async function activateUser(
+  id: number
+): Promise<UserSummary> {
+  const res = await httpClient.post<UserSummary>(`/users/${id}/activate/`);
+  return res.data;
+}
+
+/** Soft delete: sets is_delete=1 so user is hidden from lists. */
+export async function softDeleteUser(
+  id: number
+): Promise<{ message: string }> {
+  const res = await httpClient.post<{ message: string }>(
+    `/users/${id}/soft-delete/`
+  );
+  return res.data;
+}
+
 

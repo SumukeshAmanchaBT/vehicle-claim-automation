@@ -2,13 +2,14 @@
 API views for User, Role, and Permission management.
 """
 from django.contrib.auth.models import User
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import Role, Permission, RolePermission, UserRole
+from .models import Role, Permission, RolePermission, UserRole, UserProfile
 from .serializers import (
     RoleSerializer,
     RoleCreateUpdateSerializer,
@@ -163,7 +164,18 @@ def role_permissions_assign(request, role_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_list_with_roles(request):
-    users = User.objects.all().order_by("username")
+    # Exclude only when BOTH auth_user.is_delete=1 AND profile.is_delete=1 (so setting auth_user.is_delete=0 restores visibility)
+    auth_table = User._meta.db_table
+    profile_table = UserProfile._meta.db_table
+    users = User.objects.filter(
+        Q(userprofile__isnull=True) | Q(userprofile__is_delete=False) | Q(userprofile__is_delete=True)
+    ).order_by("username")
+    try:
+        users = users.extra(where=[
+            f"(COALESCE({auth_table}.is_delete, 0) = 0) OR ({profile_table}.id IS NULL) OR ({profile_table}.is_delete = 0)"
+        ])
+    except Exception:
+        pass
     payload = []
     for u in users:
         try:
