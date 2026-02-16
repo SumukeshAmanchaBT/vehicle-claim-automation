@@ -45,6 +45,8 @@ import {
   changeUserRole,
   resetUserPassword,
   deactivateUser,
+  activateUser,
+  softDeleteUser,
   getRoles,
   type UserSummary,
   type Role,
@@ -158,6 +160,22 @@ export default function Users() {
     },
   });
 
+  const activateMutation = useMutation({
+    mutationFn: (id: number) => activateUser(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      toast({ title: "User activated" });
+    },
+  });
+
+  const softDeleteMutation = useMutation({
+    mutationFn: (id: number) => softDeleteUser(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["users"] });
+      toast({ title: "User removed from list" });
+    },
+  });
+
   const filteredUsers = useMemo(() => {
     let list = users.filter((user) => {
       const term = search.toLowerCase();
@@ -261,12 +279,27 @@ export default function Users() {
   const handleDeactivate = (user: UserSummary) => {
     if (
       !window.confirm(
-        `${user.is_active ? "Deactivate" : "Activate"} ${getDisplayName(user)}?`
+        `Deactivate ${getDisplayName(user)}? They will no longer be able to sign in.`
       )
     ) {
       return;
     }
     deactivateMutation.mutate(user.id);
+  };
+
+  const handleActivate = (user: UserSummary) => {
+    activateMutation.mutate(user.id);
+  };
+
+  const handleSoftDelete = (user: UserSummary) => {
+    if (
+      !window.confirm(
+        `Delete ${getDisplayName(user)}? They will be removed from the user list.`
+      )
+    ) {
+      return;
+    }
+    softDeleteMutation.mutate(user.id);
   };
 
   return (
@@ -498,10 +531,10 @@ export default function Users() {
                       <div className="flex items-center gap-2">
                         <Switch
                           checked={user.is_active}
-                          // Backend only supports deactivation; once inactive we keep it off.
-                          disabled={!user.is_active}
                           onCheckedChange={(next) => {
-                            if (!next && user.is_active) {
+                            if (next && !user.is_active) {
+                              handleActivate(user);
+                            } else if (!next && user.is_active) {
                               handleDeactivate(user);
                             }
                           }}
@@ -543,13 +576,8 @@ export default function Users() {
                           variant="ghost"
                           size="icon"
                           className="text-destructive hover:text-destructive"
-                          title={
-                            user.is_active
-                              ? "Deactivate user"
-                              : "User already inactive"
-                          }
-                          disabled={!user.is_active}
-                          onClick={() => handleDeactivate(user)}
+                          title="Delete user (remove from list)"
+                          onClick={() => handleSoftDelete(user)}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>

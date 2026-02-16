@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User, Group
+from django.db import connection
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
@@ -15,6 +16,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+from core.models import UserProfile
 from .models import (
     ClaimRuleMaster,
     ClaimTypeMaster,
@@ -106,14 +108,34 @@ def create_user(request):
         return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     user = serializer.save()
+    UserProfile.objects.get_or_create(user=user, defaults={"is_delete": False})
+    _set_auth_user_is_delete(user.pk, 0)
     return Response({"user": UserSerializer(user).data, "message": "User created."}, status=status.HTTP_201_CREATED)
+
+
+def _user_not_deleted_queryset():
+    """Exclude users only when BOTH auth_user.is_delete=1 AND profile.is_delete=1. Show if is_delete=0 in auth_user (restored) or profile not deleted."""
+    auth_table = User._meta.db_table
+    profile_table = UserProfile._meta.db_table
+    # Join user_profile so we can reference it in WHERE (all users: no profile OR profile with any is_delete)
+    qs = User.objects.filter(
+        Q(userprofile__isnull=True) | Q(userprofile__is_delete=False) | Q(userprofile__is_delete=True)
+    )
+    try:
+        # Show when: auth says not deleted OR no profile OR profile says not deleted (so restored users with auth_user.is_delete=0 appear)
+        qs = qs.extra(where=[
+            f"(COALESCE({auth_table}.is_delete, 0) = 0) OR ({profile_table}.id IS NULL) OR ({profile_table}.is_delete = 0)"
+        ])
+    except Exception:
+        pass
+    return qs
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_users(request):
-    # Any authenticated user can view all users
-    users = User.objects.all()
+    # Any authenticated user can view all users (exclude soft-deleted)
+    users = _user_not_deleted_queryset()
     payload = []
     for u in users:
         role = u.groups.first().name if u.groups.exists() else 'User'
@@ -199,6 +221,48 @@ def deactivate_user(request, pk):
     user.is_active = False
     user.save()
     return Response({"message": "User deactivated."}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def activate_user(request, pk):
+    if not _is_admin_user(request.user):
+        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+
+    user = get_object_or_404(User, pk=pk)
+    user.is_active = True
+    user.save()
+    return Response({"message": "User activated."}, status=status.HTTP_200_OK)
+
+
+def _set_auth_user_is_delete(user_id: int, value: int) -> None:
+    """Update auth_user.is_delete in DB (column may exist without being on Django User model)."""
+    table = User._meta.db_table
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {table} SET is_delete = %s WHERE id = %s",
+                [value, user_id],
+            )
+    except Exception:
+        pass
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def soft_delete_user(request, pk):
+    """Soft delete: set is_delete=1 in auth_user and UserProfile so user is hidden from lists. Also set is_active=False."""
+    if not _is_admin_user(request.user):
+        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+
+    user = get_object_or_404(User, pk=pk)
+    profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"is_delete": False})
+    profile.is_delete = True
+    profile.save()
+    user.is_active = False
+    user.save()
+    _set_auth_user_is_delete(user.pk, 1)
+    return Response({"message": "User soft-deleted."}, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

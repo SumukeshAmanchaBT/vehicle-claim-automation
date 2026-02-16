@@ -75,3 +75,18 @@ class UserRole(models.Model):
 
     def __str__(self):
         return f"{self.user.username} -> {self.role.name}"
+
+
+class UserProfile(models.Model):
+    """
+    Extended user profile for soft delete. is_delete=0 (default) means active;
+    is_delete=1 means soft-deleted (user hidden from lists).
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="userprofile")
+    is_delete = models.BooleanField(default=False, db_column="is_delete")
+
+    class Meta:
+        db_table = "user_profile"
+
+    def __str__(self):
+        return f"{self.user.username} (is_delete={self.is_delete})"
