@@ -8,9 +8,12 @@ from .views import (
     role_permissions_assign,
     user_list_with_roles,
     user_assign_role,
+    current_user_me,
 )
 
 urlpatterns = [
+    # Current user (role + permissions) - for testing "which permissions do I have?"
+    path("me/", current_user_me, name="current_user_me"),
     # Roles
     path("roles/", role_list, name="role_list"),
     path("roles/<int:pk>/", role_detail, name="role_detail"),

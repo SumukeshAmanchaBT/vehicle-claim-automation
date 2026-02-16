@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import Role, Permission, RolePermission, UserRole, UserProfile
+from .permissions import is_admin, has_permission
 from .serializers import (
     RoleSerializer,
     RoleCreateUpdateSerializer,
@@ -25,27 +26,11 @@ def _get_username(request):
 
 
 def _is_admin(user):
-    """Check if user is admin (staff, Admin role via UserRole, or Django Group)."""
-    if user.is_staff:
-        return True
-    try:
-        if user.user_role.role.name.lower() == "admin":
-            return True
-    except (UserRole.DoesNotExist, AttributeError):
-        pass
-    return user.groups.filter(name__iexact="admin").exists()
+    return is_admin(user)
 
 
 def _has_permission(user, codename):
-    """Check if user has the given permission via their role."""
-    try:
-        return Permission.objects.filter(
-            role_permissions__role=user.user_role.role,
-            codename=codename,
-            is_active=True
-        ).exists()
-    except (UserRole.DoesNotExist, AttributeError):
-        return False
+    return has_permission(user, codename)
 
 
 # ---------- Role APIs ----------
@@ -54,11 +39,13 @@ def _has_permission(user, codename):
 @permission_classes([IsAuthenticated])
 def role_list(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "roles.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - roles.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = Role.objects.all().order_by("name")
         return Response(RoleSerializer(qs, many=True).data)
 
-    if not _is_admin(request.user):
-        return Response({"error": "Admin required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "roles.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - roles.update required"}, status=status.HTTP_403_FORBIDDEN)
 
     serializer = RoleCreateUpdateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -72,17 +59,20 @@ def role_detail(request, pk):
     obj = get_object_or_404(Role, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "roles.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - roles.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(RoleSerializer(obj).data)
 
-    if not _is_admin(request.user):
-        return Response({"error": "Admin required"}, status=status.HTTP_403_FORBIDDEN)
-
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "roles.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - roles.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = RoleCreateUpdateSerializer(obj, data=request.data, partial=(request.method == "PATCH"))
         serializer.is_valid(raise_exception=True)
         serializer.save(updated_by=_get_username(request))
         return Response(RoleSerializer(obj).data)
 
+    if not (has_permission(request.user, "roles.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - roles.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -93,11 +83,13 @@ def role_detail(request, pk):
 @permission_classes([IsAuthenticated])
 def permission_list(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "role_permissions.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - role_permissions.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = Permission.objects.all().order_by("module", "codename")
         return Response(PermissionSerializer(qs, many=True).data)
 
-    if not _is_admin(request.user):
-        return Response({"error": "Admin required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "role_permissions.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - role_permissions.update required"}, status=status.HTTP_403_FORBIDDEN)
 
     serializer = PermissionSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -111,17 +103,20 @@ def permission_detail(request, pk):
     obj = get_object_or_404(Permission, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "role_permissions.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - role_permissions.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(PermissionSerializer(obj).data)
 
-    if not _is_admin(request.user):
-        return Response({"error": "Admin required"}, status=status.HTTP_403_FORBIDDEN)
-
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "role_permissions.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - role_permissions.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = PermissionSerializer(obj, data=request.data, partial=(request.method == "PATCH"))
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(PermissionSerializer(obj).data)
 
+    if not (has_permission(request.user, "role_permissions.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - role_permissions.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -131,6 +126,8 @@ def permission_detail(request, pk):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def role_permissions_list(request, role_id):
+    if not (has_permission(request.user, "role_permissions.view") or is_admin(request.user)):
+        return Response({"error": "Forbidden - role_permissions.view required"}, status=status.HTTP_403_FORBIDDEN)
     role = get_object_or_404(Role, pk=role_id)
     qs = RolePermission.objects.filter(role=role).select_related("permission")
     return Response(RolePermissionSerializer(qs, many=True).data)
@@ -139,8 +136,8 @@ def role_permissions_list(request, role_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def role_permissions_assign(request, role_id):
-    if not _is_admin(request.user):
-        return Response({"error": "Admin required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "role_permissions.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - role_permissions.update required"}, status=status.HTTP_403_FORBIDDEN)
 
     role = get_object_or_404(Role, pk=role_id)
     serializer = RolePermissionAssignSerializer(data=request.data)
@@ -159,11 +156,48 @@ def role_permissions_assign(request, role_id):
     return Response(RolePermissionSerializer(qs, many=True).data)
 
 
+# ---------- Current user (for testing permissions) ----------
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def current_user_me(request):
+    """Return the logged-in user with role and permissions. Use this to verify which permissions a user has."""
+    user = request.user
+    try:
+        role = user.user_role.role
+        role_data = {"id": role.id, "name": role.name, "description": role.description}
+        perms = list(
+            Permission.objects.filter(
+                role_permissions__role=role,
+                is_active=True,
+            ).values("id", "codename", "name", "module")
+        )
+    except UserRole.DoesNotExist:
+        role_data = None
+        perms = []
+
+    return Response({
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "is_active": user.is_active,
+        "role": role_data,
+        "permissions": perms,
+    })
+
+
 # ---------- User with Role APIs ----------
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_list_with_roles(request):
+    if not (has_permission(request.user, "users.view") or is_admin(request.user)):
+        return Response(
+            {"error": "Forbidden - users.view permission or Admin role required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     # Exclude only when BOTH auth_user.is_delete=1 AND profile.is_delete=1 (so setting auth_user.is_delete=0 restores visibility)
     auth_table = User._meta.db_table
     profile_table = UserProfile._meta.db_table
@@ -207,8 +241,8 @@ def user_list_with_roles(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def user_assign_role(request, user_id):
-    if not _is_admin(request.user):
-        return Response({"error": "Admin required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.update required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=user_id)
     role_id = request.data.get("role_id")

@@ -52,6 +52,7 @@ import {
   type Role,
 } from "@/services/userService";
 import { isAxiosError } from "axios";
+import { useAuth } from "@/contexts/AuthContext";
 
 function getDisplayName(user: UserSummary) {
   const full = `${user.first_name || ""} ${user.last_name || ""}`.trim();
@@ -63,6 +64,12 @@ type SortKey = "user" | "role" | "status";
 export default function Users() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { hasPermission, isAdmin } = useAuth();
+  const canViewUsers = hasPermission("users.view");
+  const canAddUser = hasPermission("users.add");
+  const canUpdateUser = hasPermission("users.update");
+  const canDeleteUser = hasPermission("users.delete");
+
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -87,6 +94,7 @@ export default function Users() {
   const { data: users = [], isLoading, error } = useQuery({
     queryKey: ["users"],
     queryFn: listUsers,
+    enabled: canViewUsers,
   });
 
   const { data: roles = [] } = useQuery({
@@ -302,6 +310,20 @@ export default function Users() {
     softDeleteMutation.mutate(user.id);
   };
 
+  if (!canViewUsers) {
+    return (
+      <AppLayout title="Users List" subtitle="Manage system users and permissions">
+        <Card className="border-amber-500/50 bg-amber-500/5">
+          <CardContent className="pt-6">
+            <p className="text-muted-foreground">
+              You don’t have permission to view users. Your role must have the &quot;View Users&quot; permission.
+            </p>
+          </CardContent>
+        </Card>
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout
       title="Users List"
@@ -357,6 +379,7 @@ export default function Users() {
             </>
           }
           primaryAction={
+            canAddUser ? (
             <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
               <DialogTrigger asChild>
                 <Button>
@@ -438,8 +461,9 @@ export default function Users() {
                       </Button>
                     </DialogFooter>
                   </form>
-                </DialogContent>
-              </Dialog>
+              </DialogContent>
+            </Dialog>
+            ) : null
           }
         />
 
@@ -554,33 +578,39 @@ export default function Users() {
                     </TableCell> */}
                     <TableCell className="pr-6 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground hover:text-foreground"
-                          title="Edit user"
-                          onClick={() => handleEditUserInline(user)}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-muted-foreground hover:text-foreground"
-                          title="Change role"
-                          onClick={() => handleOpenRoleDialog(user)}
-                        >
-                          <Shield className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive hover:text-destructive"
-                          title="Delete user (remove from list)"
-                          onClick={() => handleSoftDelete(user)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        {canUpdateUser && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-muted-foreground hover:text-foreground"
+                              title="Edit user"
+                              onClick={() => handleEditUserInline(user)}
+                            >
+                              <Edit2 className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-muted-foreground hover:text-foreground"
+                              title="Change role"
+                              onClick={() => handleOpenRoleDialog(user)}
+                            >
+                              <Shield className="h-4 w-4" />
+                            </Button>
+                          </>
+                        )}
+                        {canDeleteUser && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive"
+                            title="Delete user (remove from list)"
+                            onClick={() => handleSoftDelete(user)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>

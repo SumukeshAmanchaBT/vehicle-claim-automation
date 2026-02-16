@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from core.models import UserProfile
+from core.permissions import has_permission, is_admin
 from .models import (
     ClaimRuleMaster,
     ClaimTypeMaster,
@@ -43,10 +44,8 @@ from .serializers import (
 
 
 def _is_admin_user(user) -> bool:
-    """True if user can perform admin actions: Django staff or in 'Admin' group."""
-    if user.is_staff:
-        return True
-    return user.groups.filter(name__iexact="admin").exists()
+    """True if user is admin (uses core.permissions so UserRole and Django Group are respected)."""
+    return is_admin(user)
 
 
 def _get_pricing_config_value(key: str, default: float) -> float:
@@ -97,9 +96,9 @@ def estimate_claim_amount_from_config(
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_user(request):
-    if not _is_admin_user(request.user):
+    if not (has_permission(request.user, "users.add") or is_admin(request.user)):
         return Response(
-            {"error": "Forbidden - Admin role or staff required to create users"},
+            {"error": "Forbidden - users.add permission or Admin role required"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -134,7 +133,11 @@ def _user_not_deleted_queryset():
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_users(request):
-    # Any authenticated user can view all users (exclude soft-deleted)
+    if not (has_permission(request.user, "users.view") or is_admin(request.user)):
+        return Response(
+            {"error": "Forbidden - users.view permission or Admin role required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     users = _user_not_deleted_queryset()
     payload = []
     for u in users:
@@ -165,11 +168,9 @@ def list_users(request):
 @api_view(['PATCH', 'PUT'])
 @permission_classes([IsAuthenticated])
 def edit_user(request, pk):
-    # Users can edit their own profile, staff can edit anyone
     user = get_object_or_404(User, pk=pk)
-    
-    if user.id != request.user.id and not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - can only edit your own profile"}, status=status.HTTP_403_FORBIDDEN)
+    if user.id != request.user.id and not (has_permission(request.user, "users.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.update permission or Admin role required to edit others"}, status=status.HTTP_403_FORBIDDEN)
     
     serializer = UserUpdateSerializer(user, data=request.data, partial=True)
     if not serializer.is_valid():
@@ -181,8 +182,8 @@ def edit_user(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def change_role(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.update permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ChangeRoleSerializer(data=request.data)
@@ -198,8 +199,8 @@ def change_role(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def reset_password(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.update permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ResetPasswordSerializer(data=request.data)
@@ -214,8 +215,8 @@ def reset_password(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def deactivate_user(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.delete permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     user.is_active = False
@@ -226,8 +227,8 @@ def deactivate_user(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def activate_user(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.delete permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     user.is_active = True
@@ -252,8 +253,8 @@ def _set_auth_user_is_delete(user_id: int, value: int) -> None:
 @permission_classes([IsAuthenticated])
 def soft_delete_user(request, pk):
     """Soft delete: set is_delete=1 in auth_user and UserProfile so user is hidden from lists. Also set is_active=False."""
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.delete permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"is_delete": False})
@@ -901,9 +902,13 @@ def get_claim_evaluation(request, complaint_id: str):
 @permission_classes([IsAuthenticated])
 def claim_type_master_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "claim_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - claim_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = ClaimTypeMaster.objects.all().order_by("claim_type_id")
         return Response(ClaimTypeMasterSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "claim_config.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - claim_config.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = ClaimTypeMasterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -917,9 +922,13 @@ def claim_type_master_detail(request, pk: int):
     obj = get_object_or_404(ClaimTypeMaster, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "claim_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - claim_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(ClaimTypeMasterSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "claim_config.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - claim_config.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = ClaimTypeMasterSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -929,6 +938,8 @@ def claim_type_master_detail(request, pk: int):
         # Note: model doesn't have updated_by; keeping created_by stable
         return Response(ClaimTypeMasterSerializer(obj).data)
 
+    if not (has_permission(request.user, "claim_config.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - claim_config.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -937,9 +948,13 @@ def claim_type_master_detail(request, pk: int):
 @permission_classes([IsAuthenticated])
 def claim_rule_master_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "fraud_rules.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - fraud_rules.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = ClaimRuleMaster.objects.all().order_by("rule_id")
         return Response(ClaimRuleMasterSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "fraud_rules.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - fraud_rules.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = ClaimRuleMasterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -953,9 +968,13 @@ def claim_rule_master_detail(request, pk: int):
     obj = get_object_or_404(ClaimRuleMaster, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "fraud_rules.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - fraud_rules.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(ClaimRuleMasterSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "fraud_rules.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - fraud_rules.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = ClaimRuleMasterSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -964,6 +983,8 @@ def claim_rule_master_detail(request, pk: int):
         obj = serializer.save(created_by=obj.created_by or updated_by)
         return Response(ClaimRuleMasterSerializer(obj).data)
 
+    if not (has_permission(request.user, "fraud_rules.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - fraud_rules.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -972,9 +993,13 @@ def claim_rule_master_detail(request, pk: int):
 @permission_classes([IsAuthenticated])
 def damage_code_master_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "damage_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - damage_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = DamageCodeMaster.objects.all().order_by("damage_id")
         return Response(DamageCodeMasterSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "damage_config.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - damage_config.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = DamageCodeMasterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -988,9 +1013,13 @@ def damage_code_master_detail(request, pk: int):
     obj = get_object_or_404(DamageCodeMaster, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "damage_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - damage_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(DamageCodeMasterSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "damage_config.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - damage_config.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = DamageCodeMasterSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -999,6 +1028,8 @@ def damage_code_master_detail(request, pk: int):
         obj = serializer.save(created_by=obj.created_by or updated_by)
         return Response(DamageCodeMasterSerializer(obj).data)
 
+    if not (has_permission(request.user, "damage_config.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - damage_config.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1007,9 +1038,13 @@ def damage_code_master_detail(request, pk: int):
 @permission_classes([IsAuthenticated])
 def pricing_config_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "price_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - price_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = PricingConfig.objects.all().order_by("config_key")
         return Response(PricingConfigSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "price_config.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - price_config.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = PricingConfigSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -1023,9 +1058,13 @@ def pricing_config_detail(request, pk: int):
     obj = get_object_or_404(PricingConfig, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "price_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - price_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(PricingConfigSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "price_config.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - price_config.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = PricingConfigSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -1034,6 +1073,8 @@ def pricing_config_detail(request, pk: int):
         obj = serializer.save(updated_by=updated_by)
         return Response(PricingConfigSerializer(obj).data)
 
+    if not (has_permission(request.user, "price_config.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - price_config.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 

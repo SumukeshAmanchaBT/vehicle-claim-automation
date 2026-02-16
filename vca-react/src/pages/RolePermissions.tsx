@@ -13,13 +13,6 @@ import {
 } from "@/components/ui/table";
 import { Switch } from "@/components/ui/switch";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -50,22 +43,31 @@ import {
   type Role,
   type Permission,
 } from "@/services/userService";
+import { useAuth } from "@/contexts/AuthContext";
 
 type SortKey = "name" | "module" | "status" | "created_date";
 
 export default function RolePermissions() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
+  const canViewRolePermissions = hasPermission("role_permissions.view");
+  const canUpdateRolePermissions = hasPermission("role_permissions.update");
+  const canDeleteRolePermissions = hasPermission("role_permissions.delete");
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sortKey, setSortKey] = useState<SortKey | null>("name");
   const [sortDir, setSortDir] = useState<SortDirection>("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [selectedRoleId, setSelectedRoleId] = useState<number | null>(null);
+  /** Role filter: "all" = both Admin & User columns, "admin" or "user" = single role */
+  const [roleFilter, setRoleFilter] = useState<"all" | "admin" | "user">("all");
   const [selectedPermissionIds, setSelectedPermissionIds] = useState<
     number[]
   >([]);
+  const [adminPermissionIds, setAdminPermissionIds] = useState<number[]>([]);
+  const [userPermissionIds, setUserPermissionIds] = useState<number[]>([]);
 
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -88,6 +90,11 @@ export default function RolePermissions() {
     queryFn: getRoles,
   });
 
+  const adminRole = roles.find((r) => r.name.toLowerCase() === "admin");
+  const userRole = roles.find((r) => r.name.toLowerCase() === "user");
+  const adminRoleId = adminRole?.id ?? null;
+  const userRoleId = userRole?.id ?? null;
+
   const {
     data: permissions = [],
     isLoading,
@@ -97,19 +104,31 @@ export default function RolePermissions() {
     queryFn: listPermissions,
   });
 
-  const { data: rolePermissions = [] } = useQuery({
-    queryKey: ["roles", selectedRoleId, "permissions"],
-    queryFn: () => getRolePermissions(selectedRoleId as number),
-    enabled: selectedRoleId != null,
+  const fetchAdmin = roleFilter === "all" || roleFilter === "admin";
+  const fetchUser = roleFilter === "all" || roleFilter === "user";
+
+  const { data: adminRolePermissions = [] } = useQuery({
+    queryKey: ["roles", adminRoleId, "permissions"],
+    queryFn: () => getRolePermissions(adminRoleId!),
+    enabled: fetchAdmin && adminRoleId != null,
+  });
+
+  const { data: userRolePermissions = [] } = useQuery({
+    queryKey: ["roles", userRoleId, "permissions"],
+    queryFn: () => getRolePermissions(userRoleId!),
+    enabled: fetchUser && userRoleId != null,
   });
 
   useEffect(() => {
-    if (rolePermissions && rolePermissions.length > 0) {
-      setSelectedPermissionIds(rolePermissions.map((p) => p.id));
-    } else {
-      setSelectedPermissionIds([]);
+    if (roleFilter === "admin" && adminRolePermissions.length >= 0) {
+      setSelectedPermissionIds(adminRolePermissions.map((p) => p.permission));
+    } else if (roleFilter === "user" && userRolePermissions.length >= 0) {
+      setSelectedPermissionIds(userRolePermissions.map((p) => p.permission));
+    } else if (roleFilter === "all") {
+      setAdminPermissionIds(adminRolePermissions.map((p) => p.permission));
+      setUserPermissionIds(userRolePermissions.map((p) => p.permission));
     }
-  }, [rolePermissions]);
+  }, [roleFilter, adminRolePermissions, userRolePermissions]);
 
   const createMutation = useMutation({
     mutationFn: createPermission,
@@ -144,9 +163,8 @@ export default function RolePermissions() {
     }) => updatePermission(id, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["permissions"] });
-      queryClient.invalidateQueries({
-        queryKey: ["roles", selectedRoleId, "permissions"],
-      });
+      if (adminRoleId) queryClient.invalidateQueries({ queryKey: ["roles", adminRoleId, "permissions"] });
+      if (userRoleId) queryClient.invalidateQueries({ queryKey: ["roles", userRoleId, "permissions"] });
       toast({ title: "Permission updated successfully" });
       setIsEditOpen(false);
       setEditingPermission(null);
@@ -164,9 +182,8 @@ export default function RolePermissions() {
     mutationFn: (id: number) => deletePermission(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["permissions"] });
-      queryClient.invalidateQueries({
-        queryKey: ["roles", selectedRoleId, "permissions"],
-      });
+      if (adminRoleId) queryClient.invalidateQueries({ queryKey: ["roles", adminRoleId, "permissions"] });
+      if (userRoleId) queryClient.invalidateQueries({ queryKey: ["roles", userRoleId, "permissions"] });
       toast({ title: "Permission deleted successfully" });
     },
     onError: () => {
@@ -179,14 +196,10 @@ export default function RolePermissions() {
   });
 
   const assignMutation = useMutation({
-    mutationFn: (permissionIds: number[]) =>
-      assignRolePermissions(selectedRoleId as number, {
-        permission_ids: permissionIds,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: ["roles", selectedRoleId, "permissions"],
-      });
+    mutationFn: ({ roleId, permissionIds }: { roleId: number; permissionIds: number[] }) =>
+      assignRolePermissions(roleId, { permission_ids: permissionIds }),
+    onSuccess: (_, { roleId }) => {
+      queryClient.invalidateQueries({ queryKey: ["roles", roleId, "permissions"] });
       toast({ title: "Permissions assigned to role successfully" });
     },
     onError: () => {
@@ -293,16 +306,40 @@ export default function RolePermissions() {
     deleteMutation.mutate(permission.id);
   };
 
+  const singleRoleId = roleFilter === "admin" ? adminRoleId : roleFilter === "user" ? userRoleId : null;
+
   const handleSaveAssignments = () => {
-    if (!selectedRoleId) {
+    if (singleRoleId == null) {
       toast({
         variant: "destructive",
-        title: "Select a role first",
+        title: "Select a single role (Admin or User) to save",
       });
       return;
     }
-    assignMutation.mutate(selectedPermissionIds);
+    assignMutation.mutate({ roleId: singleRoleId, permissionIds: selectedPermissionIds });
   };
+
+  const handleToggleForRole = (roleId: number, permissionId: number, assigned: boolean) => {
+    if (roleId === adminRoleId) {
+      const next = assigned ? [...adminPermissionIds, permissionId] : adminPermissionIds.filter((id) => id !== permissionId);
+      setAdminPermissionIds(next);
+      assignMutation.mutate({ roleId, permissionIds: next });
+    } else if (roleId === userRoleId) {
+      const next = assigned ? [...userPermissionIds, permissionId] : userPermissionIds.filter((id) => id !== permissionId);
+      setUserPermissionIds(next);
+      assignMutation.mutate({ roleId, permissionIds: next });
+    }
+  };
+
+  if (!canViewRolePermissions) {
+    return (
+      <AppLayout title="Role Permissions" subtitle="Configure feature-level permissions for each role">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          You do not have permission to view role permissions.
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout
@@ -318,46 +355,44 @@ export default function RolePermissions() {
             setPage(1);
           }}
           filters={
-            <div className="flex gap-2">
-              <Select
-                value={selectedRoleId ? String(selectedRoleId) : "none"}
-                onValueChange={(v) => {
-                  const id = v === "none" ? null : Number(v);
-                  setSelectedRoleId(id);
-                  setPage(1);
-                }}
-              >
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Select role" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">All Roles</SelectItem>
-                  {roles.map((role) => (
-                    <SelectItem key={role.id} value={String(role.id)}>
-                      {role.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {/* <Select
-                value={statusFilter}
-                onValueChange={(v) => {
-                  setStatusFilter(v);
-                  setPage(1);
-                }}
-              >
-                <SelectTrigger className="w-[140px]">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select> */}
+            <div className="flex flex-wrap items-center gap-4">
+              <span className="text-sm text-muted-foreground">Show grid for:</span>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={roleFilter === "all"}
+                    onCheckedChange={(checked) => {
+                      if (checked) setRoleFilter("all");
+                      setPage(1);
+                    }}
+                  />
+                  <span className="text-sm">All roles</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={roleFilter === "admin"}
+                    onCheckedChange={(checked) => {
+                      if (checked) setRoleFilter("admin");
+                      setPage(1);
+                    }}
+                  />
+                  <span className="text-sm">Admin</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <Checkbox
+                    checked={roleFilter === "user"}
+                    onCheckedChange={(checked) => {
+                      if (checked) setRoleFilter("user");
+                      setPage(1);
+                    }}
+                  />
+                  <span className="text-sm">User</span>
+                </label>
+              </div>
             </div>
           }
           primaryAction={
+            canUpdateRolePermissions ? (
             <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
               <DialogTrigger asChild>
                 <Button onClick={handleOpenAdd} disabled={createMutation.isPending}>
@@ -451,6 +486,7 @@ export default function RolePermissions() {
                 </form>
               </DialogContent>
             </Dialog>
+            ) : null
           }
         />
 
@@ -484,7 +520,16 @@ export default function RolePermissions() {
                 >
                   Active
                 </SortableTableHead>
-                {/* <TableHead>Assigned to Role</TableHead> */}
+                {roleFilter === "all" ? (
+                  <>
+                    <TableHead className="w-[140px]">Assigned to Admin</TableHead>
+                    <TableHead className="w-[140px]">Assigned to User</TableHead>
+                  </>
+                ) : (
+                  <TableHead className="w-[140px]">
+                    Assigned to {roleFilter === "admin" ? "Admin" : "User"}
+                  </TableHead>
+                )}
                 <SortableTableHead
                   sortKey="created_date"
                   currentSortKey={sortKey}
@@ -500,7 +545,7 @@ export default function RolePermissions() {
               {isLoading ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={roleFilter === "all" ? 10 : 9}
                     className="py-12 text-center text-muted-foreground"
                   >
                     Loading permissions...
@@ -509,7 +554,7 @@ export default function RolePermissions() {
               ) : error ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={roleFilter === "all" ? 10 : 9}
                     className="py-12 text-center text-destructive"
                   >
                     Failed to load permissions. Please try again.
@@ -518,7 +563,7 @@ export default function RolePermissions() {
               ) : filteredPermissions.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={8}
+                    colSpan={roleFilter === "all" ? 10 : 9}
                     className="py-12 text-center text-muted-foreground"
                   >
                     No permissions found.
@@ -526,9 +571,7 @@ export default function RolePermissions() {
                 </TableRow>
               ) : (
                 paginatedPermissions.map((permission, index) => {
-                  const isAssigned = selectedPermissionIds.includes(
-                    permission.id
-                  );
+                  const isAssignedSingle = selectedPermissionIds.includes(permission.id);
                   return (
                     <TableRow key={permission.id} className="group">
                       <TableCell className="pl-6 font-medium">
@@ -550,26 +593,56 @@ export default function RolePermissions() {
                               payload: { is_active: next },
                             })
                           }
-                          disabled={updateMutation.isPending}
+                          disabled={updateMutation.isPending || !canUpdateRolePermissions}
                         />
                       </TableCell>
-                      {/* <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Checkbox
-                            checked={isAssigned}
-                            disabled={!selectedRoleId || assignMutation.isPending}
-                            onCheckedChange={(value) =>
-                              toggleAssigned(
-                                permission.id,
-                                Boolean(value) as boolean
-                              )
-                            }
-                          />
-                          <span className="text-xs text-muted-foreground">
-                            {selectedRoleId ? "Assigned" : "Select role"}
-                          </span>
-                        </div>
-                      </TableCell> */}
+                      {roleFilter === "all" ? (
+                        <>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                checked={adminPermissionIds.includes(permission.id)}
+                                disabled={!adminRoleId || assignMutation.isPending || !canUpdateRolePermissions}
+                                onCheckedChange={(value) =>
+                                  handleToggleForRole(adminRoleId!, permission.id, Boolean(value))
+                                }
+                              />
+                              <span className="text-xs text-muted-foreground">
+                                {adminPermissionIds.includes(permission.id) ? "Yes" : "No"}
+                              </span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                checked={userPermissionIds.includes(permission.id)}
+                                disabled={!userRoleId || assignMutation.isPending || !canUpdateRolePermissions}
+                                onCheckedChange={(value) =>
+                                  handleToggleForRole(userRoleId!, permission.id, Boolean(value))
+                                }
+                              />
+                              <span className="text-xs text-muted-foreground">
+                                {userPermissionIds.includes(permission.id) ? "Yes" : "No"}
+                              </span>
+                            </div>
+                          </TableCell>
+                        </>
+                      ) : (
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              checked={isAssignedSingle}
+                              disabled={singleRoleId == null || assignMutation.isPending || !canUpdateRolePermissions}
+                              onCheckedChange={(value) =>
+                                toggleAssigned(permission.id, Boolean(value) as boolean)
+                              }
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              {singleRoleId ? (isAssignedSingle ? "Yes" : "No") : "Select role above"}
+                            </span>
+                          </div>
+                        </TableCell>
+                      )}
                       <TableCell className="text-sm text-muted-foreground">
                         {permission.created_date
                           ? new Date(
@@ -583,24 +656,28 @@ export default function RolePermissions() {
                       </TableCell>
                       <TableCell className="pr-6 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="text-primary hover:text-primary"
-                            title="Edit permission"
-                            onClick={() => handleEditPermission(permission)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="text-destructive hover:text-destructive"
-                            title="Delete permission"
-                            onClick={() => handleDeletePermission(permission)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          {canUpdateRolePermissions && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-primary hover:text-primary"
+                              title="Edit permission"
+                              onClick={() => handleEditPermission(permission)}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {canDeleteRolePermissions && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-destructive hover:text-destructive"
+                              title="Delete permission"
+                              onClick={() => handleDeletePermission(permission)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>
@@ -611,17 +688,21 @@ export default function RolePermissions() {
           </Table>
           <div className="flex items-center justify-between px-4 py-3 border-t bg-muted/40">
             <div className="text-xs text-muted-foreground">
-              {selectedRoleId
-                ? "Select permissions and click Save to assign to the role."
-                : "Select a role to assign permissions."}
+              {roleFilter === "all"
+                ? "Check boxes to assign permissions to Admin or User. Changes save automatically."
+                : singleRoleId
+                  ? "Select permissions and click Save to assign to the role."
+                  : "Select a role (All roles, Admin, or User) to view and assign permissions."}
             </div>
-            <Button
-              size="sm"
-              onClick={handleSaveAssignments}
-              disabled={!selectedRoleId || assignMutation.isPending}
-            >
-              {assignMutation.isPending ? "Saving..." : "Save Permissions"}
-            </Button>
+            {roleFilter !== "all" && canUpdateRolePermissions && (
+              <Button
+                size="sm"
+                onClick={handleSaveAssignments}
+                disabled={singleRoleId == null || assignMutation.isPending}
+              >
+                {assignMutation.isPending ? "Saving..." : "Save Permissions"}
+              </Button>
+            )}
           </div>
           {/* Edit Permission Dialog */}
           <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
