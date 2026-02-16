@@ -45,6 +45,16 @@ export interface Permission {
 export interface PermissionAssignRequest {
   permission_ids: number[];
 }
+
+/** Response shape from GET /core/roles/:id/permissions/ (role-permission join rows) */
+export interface RolePermissionRow {
+  id: number;
+  role: number;
+  permission: number;
+  permission_codename: string;
+  permission_name: string;
+  module: string;
+}
 export interface CreateUserRequest {
   username: string;
   password: string;
@@ -55,6 +65,23 @@ export interface CreateUserRequest {
 
 export interface ResetPasswordRequest {
   new_password: string;
+}
+
+/** Current user with role and permissions (for testing "which permissions do I have?") */
+export interface CurrentUserMe {
+  id: number;
+  username: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  is_active: boolean;
+  role: { id: number; name: string; description: string } | null;
+  permissions: { id: number; codename: string; name: string; module: string }[];
+}
+
+export async function getCurrentUserMe(): Promise<CurrentUserMe> {
+  const res = await httpClient.get<CurrentUserMe>("/core/me/");
+  return res.data;
 }
 
 export async function listUsers(): Promise<UserSummary[]> {
@@ -144,8 +171,8 @@ export async function deletePermission(id: number): Promise<void> {
 
 export async function getRolePermissions(
   roleId: number
-): Promise<Permission[]> {
-  const res = await httpClient.get<Permission[]>(
+): Promise<RolePermissionRow[]> {
+  const res = await httpClient.get<RolePermissionRow[]>(
     `/core/roles/${roleId}/permissions/`
   );
   return res.data;

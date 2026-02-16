@@ -38,6 +38,7 @@ import {
 } from "@/components/data-table";
 import { Pencil, Trash2, Plus } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   getRoles,
   createRole,
@@ -51,6 +52,11 @@ type SortKey = "name" | "description" | "permission_count" | "status" | "created
 export default function Roles() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { hasPermission } = useAuth();
+  const canViewRoles = hasPermission("roles.view");
+  const canUpdateRole = hasPermission("roles.update");
+  const canDeleteRole = hasPermission("roles.delete");
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("active");
   const [sortKey, setSortKey] = useState<SortKey | null>("name");
@@ -214,6 +220,16 @@ export default function Roles() {
     deleteMutation.mutate(role.id);
   };
 
+  if (!canViewRoles) {
+    return (
+      <AppLayout title="Role List" subtitle="Manage application roles">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          You do not have permission to view roles.
+        </div>
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout
       title="Role List"
@@ -245,7 +261,7 @@ export default function Roles() {
               </SelectContent>
             </Select>
           }
-          primaryAction={(
+          primaryAction={canUpdateRole ? (
             <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
               <DialogTrigger asChild>
                 <Button
@@ -321,7 +337,7 @@ export default function Roles() {
                 </form>
               </DialogContent>
             </Dialog>
-          )}
+          ) : null}
         />
 
         <Card className="card-elevated overflow-hidden border-none">
@@ -417,7 +433,7 @@ export default function Roles() {
                         onCheckedChange={(next) =>
                           handleToggleStatus(role, next)
                         }
-                        disabled={updateMutation.isPending}
+                        disabled={updateMutation.isPending || !canUpdateRole}
                       />
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm">
@@ -431,24 +447,28 @@ export default function Roles() {
                     </TableCell>
                     <TableCell className="pr-6 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-primary hover:text-primary"
-                          title="Edit role"
-                          onClick={() => handleEditRole(role)}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive hover:text-destructive"
-                          title="Delete role"
-                          onClick={() => handleDelete(role)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        {canUpdateRole && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-primary hover:text-primary"
+                            title="Edit role"
+                            onClick={() => handleEditRole(role)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {canDeleteRole && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive"
+                            title="Delete role"
+                            onClick={() => handleDelete(role)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>

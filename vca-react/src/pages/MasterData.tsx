@@ -48,11 +48,26 @@ import {
   type DamageCodeMaster,
   type PricingConfigMaster,
 } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function MasterData() {
   const { toast } = useToast();
   const location = useLocation();
   const navigate = useNavigate();
+  const { hasPermission } = useAuth();
+
+  const canViewDamageConfig = hasPermission("damage_config.view");
+  const canUpdateDamageConfig = hasPermission("damage_config.update");
+  const canDeleteDamageConfig = hasPermission("damage_config.delete");
+  const canViewClaimConfig = hasPermission("claim_config.view");
+  const canUpdateClaimConfig = hasPermission("claim_config.update");
+  const canDeleteClaimConfig = hasPermission("claim_config.delete");
+  const canViewFraudRules = hasPermission("fraud_rules.view");
+  const canUpdateFraudRules = hasPermission("fraud_rules.update");
+  const canDeleteFraudRules = hasPermission("fraud_rules.delete");
+  const canViewPriceConfig = hasPermission("price_config.view");
+  const canUpdatePriceConfig = hasPermission("price_config.update");
+  const canDeletePriceConfig = hasPermission("price_config.delete");
 
   const [damageTypes, setDamageTypes] = useState<DamageCodeMaster[]>([]);
   const [claimTypes, setClaimTypes] = useState<ClaimTypeMaster[]>([]);
@@ -649,6 +664,22 @@ export default function MasterData() {
     }
   };
 
+  const canViewAnyMaster =
+    canViewDamageConfig || canViewClaimConfig || canViewFraudRules || canViewPriceConfig;
+
+  if (!canViewAnyMaster) {
+    return (
+      <AppLayout
+        title="Master Data"
+        subtitle="Configure damage types, thresholds, and automation rules"
+      >
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+          You do not have permission to view master data.
+        </div>
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout
       title="Master Data"
@@ -672,10 +703,12 @@ export default function MasterData() {
            <TabsTrigger value="automation">Automation Settings</TabsTrigger> 
           </TabsList> */}
 
+          {canViewDamageConfig && (
           <TabsContent value="damage-types">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Damage Configuration</CardTitle>
+                {canUpdateDamageConfig && (
                 <Dialog open={damageDialogOpen} onOpenChange={setDamageDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -742,6 +775,7 @@ export default function MasterData() {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
+                )}
               </CardHeader>
               <CardContent className="p-0">
                 <TableToolbar
@@ -820,26 +854,31 @@ export default function MasterData() {
                               onCheckedChange={(next) =>
                                 handleToggleDamageActive(type, next)
                               }
+                              disabled={!canUpdateDamageConfig}
                             />
                           </TableCell>
                           <TableCell className="pr-6 text-right">
                             <div className="flex items-center justify-end gap-1 ">
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => openEditDamageType(type)}
-                              >
-                                <Edit2 className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() =>
-                                  handleDeleteDamageType(type.damage_id)
-                                }
-                              >
-                                <Trash2 className="h-4 w-4 " />
-                              </Button>
+                              {canUpdateDamageConfig && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => openEditDamageType(type)}
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {canDeleteDamageConfig && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() =>
+                                    handleDeleteDamageType(type.damage_id)
+                                  }
+                                >
+                                  <Trash2 className="h-4 w-4 " />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -858,11 +897,14 @@ export default function MasterData() {
               </CardContent>
             </Card>
           </TabsContent>
+          )}
 
+          {canViewClaimConfig && (
           <TabsContent value="thresholds">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Claim Configuration</CardTitle>
+                {canUpdateClaimConfig && (
                 <Dialog open={claimTypeDialogOpen} onOpenChange={setClaimTypeDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -909,6 +951,7 @@ export default function MasterData() {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
+                )}
               </CardHeader>
               <CardContent className="p-0">
                 <TableToolbar
@@ -987,6 +1030,7 @@ export default function MasterData() {
                               onCheckedChange={(next) =>
                                 handleToggleClaimTypeActive(type, next)
                               }
+                              disabled={!canUpdateClaimConfig}
                             />
                           </TableCell>
                           <TableCell className="pr-6 text-right text-xs text-muted-foreground">
@@ -994,20 +1038,24 @@ export default function MasterData() {
                           </TableCell>
                           <TableCell className="pr-6 text-right">
                             <div className="flex items-center justify-end gap-1 ">
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => openEditClaimType(type)}
-                              >
-                                <Edit2 className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => handleDeleteClaimType(type.claim_type_id)}
-                              >
-                                <Trash2 className="h-4 w-4 " />
-                              </Button>
+                              {canUpdateClaimConfig && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => openEditClaimType(type)}
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {canDeleteClaimConfig && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => handleDeleteClaimType(type.claim_type_id)}
+                                >
+                                  <Trash2 className="h-4 w-4 " />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -1019,11 +1067,14 @@ export default function MasterData() {
               </CardContent>
             </Card>
           </TabsContent>
+          )}
 
+          {canViewFraudRules && (
           <TabsContent value="fraud-rules">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Fraud Rules</CardTitle>
+                {canUpdateFraudRules && (
                 <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -1087,6 +1138,7 @@ export default function MasterData() {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
+                )}
               </CardHeader>
               <CardContent className="p-0">
                 <TableToolbar
@@ -1179,24 +1231,29 @@ export default function MasterData() {
                               onCheckedChange={(next) =>
                                 handleToggleRuleActive(rule, next)
                               }
+                              disabled={!canUpdateFraudRules}
                             />
                           </TableCell>
                           <TableCell className="pr-6 text-right">
                             <div className="flex items-center justify-end gap-1">
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => openEditRule(rule)}
-                              >
-                                <Edit2 className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => handleDeleteRule(rule.rule_id)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              {canUpdateFraudRules && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => openEditRule(rule)}
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {canDeleteFraudRules && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => handleDeleteRule(rule.rule_id)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -1215,6 +1272,7 @@ export default function MasterData() {
               </CardContent>
             </Card>
           </TabsContent>
+          )}
 
           {/* Edit dialogs */}
           <Dialog open={damageEditDialogOpen} onOpenChange={setDamageEditDialogOpen}>
@@ -1438,10 +1496,12 @@ export default function MasterData() {
             </DialogContent>
           </Dialog>
 
+          {canViewPriceConfig && (
           <TabsContent value="PriceConfig">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Price Configuration</CardTitle>
+                {canUpdatePriceConfig && (
                 <Dialog open={pricingDialogOpen} onOpenChange={setPricingDialogOpen}>
                   <DialogTrigger asChild>
                     <Button size="sm">
@@ -1520,6 +1580,7 @@ export default function MasterData() {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
+                )}
               </CardHeader>
               <CardContent className="p-0">
                 <TableToolbar
@@ -1623,24 +1684,29 @@ export default function MasterData() {
                               onCheckedChange={(next) =>
                                 handleTogglePricingConfigActive(config, next)
                               }
+                              disabled={!canUpdatePriceConfig}
                             />
                           </TableCell>
                           <TableCell className="pr-6 text-right">
                             <div className="flex items-center justify-end gap-1">
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => openEditPricingConfig(config)}
-                              >
-                                <Edit2 className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                variant="default"
-                                size="icon"
-                                onClick={() => handleDeletePricingConfig(config.config_id)}
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </Button>
+                              {canUpdatePriceConfig && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => openEditPricingConfig(config)}
+                                >
+                                  <Edit2 className="h-4 w-4" />
+                                </Button>
+                              )}
+                              {canDeletePriceConfig && (
+                                <Button
+                                  variant="default"
+                                  size="icon"
+                                  onClick={() => handleDeletePricingConfig(config.config_id)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>
@@ -1659,6 +1725,7 @@ export default function MasterData() {
               </CardContent>
             </Card>
           </TabsContent>
+          )}
         </Tabs>
       </div>
     </AppLayout>

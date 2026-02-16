@@ -25,26 +25,31 @@ const navItems = [
     title: "Dashboard",
     href: "/",
     icon: LayoutDashboard,
+    permission: "dashboard.view",
   },
   {
     title: "Claims",
     href: "/claims",
     icon: FileText,
+    permission: "claims.view",
   },
   {
     title: "Fraud Detection",
     href: "/fraud",
     icon: ShieldCheck,
+    permission: "fraud.view",
   },
   {
     title: "Damage Detection",
     href: "/damage-detection",
     icon: Activity,
+    permission: "damage.view",
   },
   {
     title: "Reports",
     href: "/reports",
     icon: BarChart3,
+    permission: "reports.view",
   },
 ];
 
@@ -69,10 +74,10 @@ const adminSections: {
     icon: Database,
     baseMatch: ["/master-data"],
     items: [
-      { label: "Damage Configuration", href: "/master-data?section=damage-types" },
-      { label: "Claim Configuration", href: "/master-data?section=thresholds" },
-      { label: "Fraud Rules", href: "/master-data?section=fraud-rules" },
-      { label: "Price Config", href: "/master-data?section=PriceConfig" },
+      { label: "Damage Configuration", href: "/master-data?section=damage-types", permission: "damage_config.view" },
+      { label: "Claim Configuration", href: "/master-data?section=thresholds", permission: "claim_config.view" },
+      { label: "Fraud Rules", href: "/master-data?section=fraud-rules", permission: "fraud_rules.view" },
+      { label: "Price Config", href: "/master-data?section=PriceConfig", permission: "price_config.view" },
     ],
   },
   // {
@@ -86,7 +91,16 @@ const adminSections: {
 export function AppSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, hasPermission, isAdmin, me } = useAuth();
+  const canViewUsers = hasPermission("users.view") || isAdmin();
+  const canViewRoles = hasPermission("roles.view") || isAdmin();
+  const canViewRolePermissions = hasPermission("role_permissions.view") || isAdmin();
+  const canViewMasterData =
+    isAdmin() ||
+    hasPermission("damage_config.view") ||
+    hasPermission("claim_config.view") ||
+    hasPermission("fraud_rules.view") ||
+    hasPermission("price_config.view");
   const [userMgmtOpen, setUserMgmtOpen] = useState(
     location.pathname.startsWith("/users") ||
       location.pathname.startsWith("/roles"),
@@ -120,23 +134,29 @@ export function AppSidebar() {
         {/* Navigation */}
         <nav className="flex-1 space-y-1 overflow-y-auto p-4 custom-scrollbar">
           <div className="space-y-1">
-            {navItems.map((item) =>
-              <NavLink
-                key={item.href}
-                to={item.href}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent"
-                  )
-                }
-              >
-                <item.icon className="h-4 w-4" />
-                {item.title}
-              </NavLink>
-            )}
+            {navItems
+              .filter((item) => {
+                // Show only items for which the user's role has the permission assigned.
+                if (!me) return true;
+                return hasPermission(item.permission);
+              })
+              .map((item) => (
+                <NavLink
+                  key={item.href}
+                  to={item.href}
+                  className={({ isActive }) =>
+                    cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                      isActive
+                        ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                        : "text-sidebar-foreground hover:bg-sidebar-accent"
+                    )
+                  }
+                >
+                  <item.icon className="h-4 w-4" />
+                  {item.title}
+                </NavLink>
+              ))}
           </div>
 
           {/* Administration section */}
@@ -145,7 +165,14 @@ export function AppSidebar() {
               Administration
             </p>
             <div className="space-y-1">
-              {adminSections.map((section) => {
+              {adminSections
+                .filter((section) => {
+                  if (section.title === "User Management")
+                    return canViewUsers || canViewRoles || canViewRolePermissions;
+                  if (section.title === "Master Data") return canViewMasterData;
+                  return true;
+                })
+                .map((section) => {
                 const isMaster = section.title === "Master Data";
                 const isUserMgmt = section.title === "User Management";
                 const isSettings = section.title === "Settings";
@@ -194,42 +221,55 @@ export function AppSidebar() {
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <div className="mt-1 space-y-0.5 pl-9">
-                        {section.items.map((item) => {
-                          const url = new URL(
-                            item.href,
-                            window.location.origin,
-                          );
-                          const isActive =
-                            location.pathname === url.pathname &&
-                            (isMaster
-                              ? // for master data, also consider section param
-                                (searchParams.get("section") ||
-                                  "damage-types") ===
-                                (url.searchParams.get("section") ||
-                                  "damage-types")
-                              : true);
-                          const ItemIcon = item.icon;
+                        {section.items
+                          .filter((item) => {
+                            if (section.title === "User Management") {
+                              if (item.href === "/users") return canViewUsers;
+                              if (item.href === "/roles") return canViewRoles;
+                              if (item.href === "/roles/permissions") return canViewRolePermissions;
+                              return true;
+                            }
+                            if (section.title === "Master Data" && "permission" in item) {
+                              return isAdmin() || hasPermission(item.permission);
+                            }
+                            return true;
+                          })
+                          .map((item) => {
+                            const url = new URL(
+                              item.href,
+                              window.location.origin,
+                            );
+                            const isActive =
+                              location.pathname === url.pathname &&
+                              (isMaster
+                                ? // for master data, also consider section param
+                                  (searchParams.get("section") ||
+                                    "damage-types") ===
+                                    (url.searchParams.get("section") ||
+                                      "damage-types")
+                                : true);
+                            const ItemIcon = item.icon;
 
-                          return (
-                            <NavLink
-                              key={item.href}
-                              to={item.href}
-                              className={() =>
-                                cn(
-                                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
-                                  isActive
-                                    ? "bg-sidebar-accent text-sidebar-primary"
-                                    : "text-sidebar-muted hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
-                                )
-                              }
-                            >
-                              {ItemIcon && (
-                                <ItemIcon className="h-3.5 w-3.5 shrink-0" />
-                              )}
-                              {item.label}
-                            </NavLink>
-                          );
-                        })}
+                            return (
+                              <NavLink
+                                key={item.href}
+                                to={item.href}
+                                className={() =>
+                                  cn(
+                                    "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
+                                    isActive
+                                      ? "bg-sidebar-accent text-sidebar-primary"
+                                      : "text-sidebar-muted hover:text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                  )
+                                }
+                              >
+                                {ItemIcon && (
+                                  <ItemIcon className="h-3.5 w-3.5 shrink-0" />
+                                )}
+                                {item.label}
+                              </NavLink>
+                            );
+                          })}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
@@ -257,7 +297,7 @@ export function AppSidebar() {
                   : "Guest"}
               </p>
               <p className="text-xs text-sidebar-muted truncate">
-                {user ? (user.role === "admin" ? "Administrator" : "User") : ""}
+                {user ? (isAdmin() ? "Administrator" : "User") : ""}
               </p>
             </div>
             <button

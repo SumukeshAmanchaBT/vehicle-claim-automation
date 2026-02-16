@@ -6,32 +6,55 @@ from django.core.management.base import BaseCommand
 from core.models import Role, Permission, RolePermission
 
 
+# 1-5: Main pages (view only)
+# 6: users (view=grid, add=button, update=icon, delete=icon)
+# 7: roles (view, update, delete)
+# 8: role_permissions (view, update, delete)
+# Master: damage_config, claim_config, fraud_rules, price_config (view, update, delete each)
 DEFAULT_PERMISSIONS = [
+    ("dashboard.view", "View Dashboard", "dashboard"),
     ("claims.view", "View Claims", "claims"),
-    ("claims.create", "Create Claims", "claims"),
-    ("claims.approve", "Approve Claims", "claims"),
-    ("claims.reject", "Reject Claims", "claims"),
-    ("masters.view", "View Masters", "masters"),
-    ("masters.edit", "Edit Masters", "masters"),
+    ("fraud.view", "View Fraud Detection", "fraud"),
+    ("damage.view", "View Damage Detection", "damage"),
+    ("reports.view", "View Reports", "reports"),
     ("users.view", "View Users", "users"),
-    ("users.create", "Create Users", "users"),
-    ("users.edit", "Edit Users", "users"),
-    ("users.manage_roles", "Manage User Roles", "users"),
+    ("users.add", "Add User", "users"),
+    ("users.update", "Update User", "users"),
+    ("users.delete", "Delete User", "users"),
+    ("roles.view", "View Roles", "roles"),
+    ("roles.update", "Update Role", "roles"),
+    ("roles.delete", "Delete Role", "roles"),
+    ("role_permissions.view", "View Role Permissions", "role_permissions"),
+    ("role_permissions.update", "Update Role Permissions", "role_permissions"),
+    ("role_permissions.delete", "Delete Role Permissions", "role_permissions"),
+    ("damage_config.view", "View Damage Configuration", "masters"),
+    ("damage_config.update", "Update Damage Configuration", "masters"),
+    ("damage_config.delete", "Delete Damage Configuration", "masters"),
+    ("claim_config.view", "View Claim Configuration", "masters"),
+    ("claim_config.update", "Update Claim Configuration", "masters"),
+    ("claim_config.delete", "Delete Claim Configuration", "masters"),
+    ("fraud_rules.view", "View Fraud Rules", "masters"),
+    ("fraud_rules.update", "Update Fraud Rules", "masters"),
+    ("fraud_rules.delete", "Delete Fraud Rules", "masters"),
+    ("price_config.view", "View Price Config", "masters"),
+    ("price_config.update", "Update Price Config", "masters"),
+    ("price_config.delete", "Delete Price Config", "masters"),
 ]
 
 DEFAULT_ROLES = [
     ("Admin", "Full access to all features", [
-        "claims.view", "claims.create", "claims.approve", "claims.reject",
-        "masters.view", "masters.edit",
-        "users.view", "users.create", "users.edit", "users.manage_roles",
+        "dashboard.view", "claims.view", "fraud.view", "damage.view", "reports.view",
+        "users.view", "users.add", "users.update", "users.delete",
+        "roles.view", "roles.update", "roles.delete",
+        "role_permissions.view", "role_permissions.update", "role_permissions.delete",
+        "damage_config.view", "damage_config.update", "damage_config.delete",
+        "claim_config.view", "claim_config.update", "claim_config.delete",
+        "fraud_rules.view", "fraud_rules.update", "fraud_rules.delete",
+        "price_config.view", "price_config.update", "price_config.delete",
     ]),
-    ("User", "Standard user - view and create claims", [
-        "claims.view", "claims.create",
-        "masters.view",
-    ]),
-    ("Viewer", "View-only access", [
-        "claims.view",
-        "masters.view",
+    ("User", "View-only access", [
+        "dashboard.view", "claims.view", "fraud.view", "damage.view", "reports.view",
+        "damage_config.view", "claim_config.view", "fraud_rules.view", "price_config.view",
     ]),
 ]
 
