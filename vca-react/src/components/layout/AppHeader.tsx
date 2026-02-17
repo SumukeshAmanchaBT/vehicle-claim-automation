@@ -20,9 +20,9 @@ export function AppHeader({ title, subtitle }: AppHeaderProps) {
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-6">
       <div>
-        <h1 className="text-xl font-semibold text-foreground">{title}</h1>
+        <h3 className="text-xl font-semibold text-muted-foreground text-foreground">{title}</h3>
         {subtitle && (
-          <p className="text-sm text-muted-foreground">{subtitle}</p>
+          <h2 className="text-sm "> {subtitle}</h2>
         )}
       </div>
 

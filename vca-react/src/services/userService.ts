@@ -204,7 +204,11 @@ export async function resetUserPassword(
 export async function deactivateUser(
   id: number
 ): Promise<UserSummary> {
-  const res = await httpClient.post<UserSummary>(`/users/${id}/deactivate/`);
+  // User management endpoints now live under /core/users/.
+  // Deactivation is exposed as a custom action on the core users viewset.
+  const res = await httpClient.post<UserSummary>(
+    `/core/users/${id}/deactivate/`
+  );
   return res.data;
 }
 
