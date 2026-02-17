@@ -10,7 +10,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import Role, Permission, RolePermission, UserRole, UserProfile
-from .permissions import is_admin, has_permission
+from .permissions import is_admin, has_permission, has_user_update_permission
 from .serializers import (
     RoleSerializer,
     RoleCreateUpdateSerializer,
@@ -241,8 +241,8 @@ def user_list_with_roles(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def user_assign_role(request, user_id):
-    if not (has_permission(request.user, "users.update") or is_admin(request.user)):
-        return Response({"error": "Forbidden - users.update required"}, status=status.HTTP_403_FORBIDDEN)
+    if not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=user_id)
     role_id = request.data.get("role_id")
