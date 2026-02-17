@@ -1,5 +1,5 @@
 import { httpClient } from "@/lib/httpClient";
-
+ 
 export interface UserSummary {
   id: number;
   username: string;
@@ -10,7 +10,7 @@ export interface UserSummary {
   role: Role | null;
   permissions: Permission[];
 }
-
+ 
 export interface Role {
   id: number;
   name: string;
@@ -22,15 +22,15 @@ export interface Role {
   updated_date: string;
   updated_by: string | null;
 }
-
+ 
 export interface RoleCreateRequest {
   name: string;
   description: string;
   is_active: boolean;
 }
-
+ 
 export type RoleUpdateRequest = Partial<RoleCreateRequest>;
-
+ 
 export interface Permission {
   id: number;
   codename: string;
@@ -41,11 +41,11 @@ export interface Permission {
   created_date: string;
   created_by: string | null;
 }
-
+ 
 export interface PermissionAssignRequest {
   permission_ids: number[];
 }
-
+ 
 /** Response shape from GET /core/roles/:id/permissions/ (role-permission join rows) */
 export interface RolePermissionRow {
   id: number;
@@ -62,11 +62,11 @@ export interface CreateUserRequest {
   first_name: string;
   last_name: string;
 }
-
+ 
 export interface ResetPasswordRequest {
   new_password: string;
 }
-
+ 
 /** Current user with role and permissions (for testing "which permissions do I have?") */
 export interface CurrentUserMe {
   id: number;
@@ -78,29 +78,29 @@ export interface CurrentUserMe {
   role: { id: number; name: string; description: string } | null;
   permissions: { id: number; codename: string; name: string; module: string }[];
 }
-
+ 
 export async function getCurrentUserMe(): Promise<CurrentUserMe> {
   const res = await httpClient.get<CurrentUserMe>("/core/me/");
   return res.data;
 }
-
+ 
 export async function listUsers(): Promise<UserSummary[]> {
   const res = await httpClient.get<UserSummary[]>("/core/users/");
   return res.data;
 }
-
+ 
 /** Backend create-user response shape */
 interface CreateUserResponse {
   user: UserSummary;
   message: string;
 }
-
+ 
 export async function createUser(payload: CreateUserRequest): Promise<UserSummary> {
   const res = await httpClient.post<CreateUserResponse>("/users/create", payload);
   const data = res.data as CreateUserResponse;
   return data.user ?? (data as unknown as UserSummary);
 }
-
+ 
 export async function updateUser(
   id: number,
   payload: Partial<Pick<CreateUserRequest, "email" | "first_name" | "last_name">>
@@ -108,7 +108,7 @@ export async function updateUser(
   const res = await httpClient.patch<UserSummary>(`/users/${id}/`, payload);
   return res.data;
 }
-
+ 
 export async function changeUserRole(
   id: number,
   payload: { role_id: number | null }
@@ -119,17 +119,17 @@ export async function changeUserRole(
   );
   return res.data;
 }
-
+ 
 export async function getRoles(): Promise<Role[]> {
   const res = await httpClient.get<Role[]>(`/core/roles/`);
   return res.data;
 }
-
+ 
 export async function createRole(payload: RoleCreateRequest): Promise<Role> {
   const res = await httpClient.post<Role>("/core/roles/", payload);
   return res.data;
 }
-
+ 
 export async function updateRole(
   id: number,
   payload: RoleUpdateRequest
@@ -137,23 +137,23 @@ export async function updateRole(
   const res = await httpClient.patch<Role>(`/core/roles/${id}/`, payload);
   return res.data;
 }
-
+ 
 export async function deleteRole(id: number): Promise<void> {
   await httpClient.delete<void>(`/core/roles/${id}/`);
 }
-
+ 
 export async function listPermissions(): Promise<Permission[]> {
   const res = await httpClient.get<Permission[]>("/core/permissions/");
   return res.data;
 }
-
+ 
 export async function createPermission(
   payload: Omit<Permission, "id" | "created_date" | "created_by">
 ): Promise<Permission> {
   const res = await httpClient.post<Permission>("/core/permissions/", payload);
   return res.data;
 }
-
+ 
 export async function updatePermission(
   id: number,
   payload: Partial<Omit<Permission, "id" | "created_date" | "created_by">>
@@ -164,11 +164,11 @@ export async function updatePermission(
   );
   return res.data;
 }
-
+ 
 export async function deletePermission(id: number): Promise<void> {
   await httpClient.delete<void>(`/core/permissions/${id}/`);
 }
-
+ 
 export async function getRolePermissions(
   roleId: number
 ): Promise<RolePermissionRow[]> {
@@ -177,7 +177,7 @@ export async function getRolePermissions(
   );
   return res.data;
 }
-
+ 
 export async function assignRolePermissions(
   roleId: number,
   payload: PermissionAssignRequest
@@ -187,9 +187,9 @@ export async function assignRolePermissions(
     payload
   );
 }
-
-
-
+ 
+ 
+ 
 export async function resetUserPassword(
   id: number,
   payload: ResetPasswordRequest
@@ -200,25 +200,21 @@ export async function resetUserPassword(
   );
   return res.data;
 }
-
+ 
 export async function deactivateUser(
   id: number
 ): Promise<UserSummary> {
-  // User management endpoints now live under /core/users/.
-  // Deactivation is exposed as a custom action on the core users viewset.
-  const res = await httpClient.post<UserSummary>(
-    `/core/users/${id}/deactivate/`
-  );
+  const res = await httpClient.post<UserSummary>(`/users/${id}/deactivate/`);
   return res.data;
 }
-
+ 
 export async function activateUser(
   id: number
 ): Promise<UserSummary> {
   const res = await httpClient.post<UserSummary>(`/users/${id}/activate/`);
   return res.data;
 }
-
+ 
 /** Soft delete: sets is_delete=1 so user is hidden from lists. */
 export async function softDeleteUser(
   id: number
@@ -228,5 +224,4 @@ export async function softDeleteUser(
   );
   return res.data;
 }
-
-
+ 
