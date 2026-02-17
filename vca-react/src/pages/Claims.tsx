@@ -21,7 +21,9 @@ import {
 } from "@/components/ui/select";
 import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { Loader2, ZoomIn, Plus } from "lucide-react";
-import { getFnolList, type FnolResponse } from "@/lib/api";
+import { useToast } from "@/components/ui/use-toast";
+import { getFnolList, saveFnol, type FnolResponse } from "@/lib/api";
+import type { FnolPayload } from "@/models/fnol";
 
 type BadgeVariant = "approved" | "pending" | "rejected" | "processing" | "default";
 
@@ -47,6 +49,62 @@ const CLAIM_STATUS_META: Record<
     badge: "pending",
   },
 };
+
+/** Build one mock FNOL payload with a dynamic claim_id (used once per "Fetch FNOL Data" click). */
+function getMockFnolPayload(claimId: string): FnolPayload {
+  const now = new Date();
+  const policyNum = `POL${claimId.replace(/[^0-9]/g, "").padStart(6, "0") || "100001"}`;
+  return {
+    claim_id: claimId,
+    policy: {
+      policy_number: policyNum,
+      policy_status: "Active",
+      coverage_type: "Comprehensive",
+      policy_start_date: "2025-01-01",
+      policy_end_date: "2026-12-31",
+    },
+    vehicle: {
+      registration_number: "KA01AB1234",
+      make: "Hyundai",
+      model: "Creta",
+      year: 2023,
+    },
+    incident: {
+      date_time_of_loss: now.toISOString(),
+      loss_description: "Own damage - bumper and left fender",
+      claim_type: "Own Damage",
+      estimated_amount: 45000,
+    },
+    claimant: {
+      driver_name: "Ravi Kumars",
+      driving_license_number: "DL-001-2020",
+      license_valid_till: "2028-05-15",
+    },
+    documents: {
+      rc_copy_uploaded: true,
+      dl_copy_uploaded: true,
+      photos_uploaded: true,
+      fir_uploaded: true,
+      photos: ["/uploads/damage1.jpg"],
+    },
+    history: { previous_claims_last_12_months: 0 },
+  };
+}
+
+/** Derive next claim ID from existing claims (e.g. CLM-0001, CLM-0002, ...). */
+function getNextClaimId(claims: FnolResponse[]): string {
+  const prefix = "CLM-";
+  const numbers = claims
+    .map((c) => {
+      const id = c.complaint_id || "";
+      if (!id.startsWith(prefix)) return 0;
+      const num = parseInt(id.slice(prefix.length), 10);
+      return Number.isNaN(num) ? 0 : num;
+    })
+    .filter((n) => n > 0);
+  const nextNum = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
+  return `${prefix}${String(nextNum).padStart(4, "0")}`;
+}
 
 function normalizeStatus(raw?: string | null): ClaimStatusKey {
   const value = (raw || "").trim().toLowerCase();
@@ -94,12 +152,14 @@ function fnolToDisplay(fnol: FnolResponse) {
 }
 
 export default function Claims() {
+  const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusFilter = searchParams.get("status") || "all";
   const [search, setSearch] = useState("");
   const [claims, setClaims] = useState<FnolResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fetchFnolLoading, setFetchFnolLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -192,6 +252,31 @@ export default function Claims() {
     });
   };
 
+  const handleFetchFnolData = async () => {
+    setFetchFnolLoading(true);
+    try {
+      const claimId = getNextClaimId(claims);
+      const payload = getMockFnolPayload(claimId);
+      await saveFnol(payload);
+      const data = await getFnolList();
+      setClaims(data);
+      setError(null);
+      toast({
+        title: "FNOL data saved",
+        description: `Claim ${claimId} saved to fnol_claims. List refreshed.`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to save FNOL data";
+      toast({
+        variant: "destructive",
+        title: "Fetch FNOL Data failed",
+        description: message,
+      });
+    } finally {
+      setFetchFnolLoading(false);
+    }
+  };
+
   return (
     <AppLayout title="Claims List" subtitle="Manage and process insurance claims">
       <div className="space-y-6 animate-fade-in">
@@ -218,12 +303,26 @@ export default function Claims() {
           //     </SelectContent>
           //   </Select>
           //}
+          // primaryAction={(
+          //   <Button asChild>
+          //     <Link to="/claims/new">
+          //       <Plus className="mr-2 h-4 w-4" />
+          //       FNOL Response
+          //     </Link>
+          //   </Button>
+          // )}
+
           primaryAction={(
-            <Button asChild>
-              <Link to="/claims/new">
+            <Button
+              onClick={handleFetchFnolData}
+              disabled={fetchFnolLoading}
+            >
+              {fetchFnolLoading ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
                 <Plus className="mr-2 h-4 w-4" />
-                FNOL Response
-              </Link>
+              )}
+              Fetch FNOL Data
             </Button>
           )}
         />
@@ -246,11 +345,11 @@ export default function Claims() {
               <Table>
                 <TableHeader className="table-header-bg">
                   <TableRow className="bg-muted/50 hover:bg-muted/50">
-                    <SortableTableHead sortKey="claimNumber" currentSortKey={sortKey} direction={sortDir} onSort={handleSort} className="pl-6">Claim ID #</SortableTableHead>
-                    <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy Number</SortableTableHead>
-                    <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Customer info</SortableTableHead>
-                    <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Type</SortableTableHead>
-                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Date</SortableTableHead>
+                    <SortableTableHead sortKey="claimNumber" currentSortKey={sortKey} direction={sortDir} onSort={handleSort} className="pl-6">Claim No #</SortableTableHead>
+                    <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy No</SortableTableHead>
+                    <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Insured /Customer</SortableTableHead>
+                    <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Type</SortableTableHead>
+                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Date of Accident</SortableTableHead>
                     <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Stage</SortableTableHead>
                     <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>

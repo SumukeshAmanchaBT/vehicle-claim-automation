@@ -67,7 +67,8 @@ export default function Users() {
   const { hasPermission, isAdmin } = useAuth();
   const canViewUsers = hasPermission("users.view");
   const canAddUser = hasPermission("users.add");
-  const canUpdateUser = hasPermission("users.update");
+  // Edit user icon: show only when user has users.edit so unchecking "Update User" (users.edit) in Role Permissions hides it. Seed includes users.edit for Admin.
+  const canUpdateUser = hasPermission("users.edit");
   const canDeleteUser = hasPermission("users.delete");
  
   const [search, setSearch] = useState("");
@@ -90,6 +91,13 @@ export default function Users() {
   const [isRoleDialogOpen, setIsRoleDialogOpen] = useState(false);
   const [roleUser, setRoleUser] = useState<UserSummary | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<number | "none">("none");
+
+  // Edit user dialog state
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editUser, setEditUser] = useState<UserSummary | null>(null);
+  const [editEmail, setEditEmail] = useState("");
+  const [editFirstName, setEditFirstName] = useState("");
+  const [editLastName, setEditLastName] = useState("");
  
   const { data: users = [], isLoading, error } = useQuery({
     queryKey: ["users"],
@@ -145,6 +153,16 @@ export default function Users() {
     }) => updateUser(id, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
+      setIsEditOpen(false);
+      setEditUser(null);
+      toast({ title: "User updated successfully" });
+    },
+    onError: (err) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to update user",
+        description: isAxiosError(err) && err.message ? err.message : "Please try again.",
+      });
     },
   });
  
@@ -253,19 +271,24 @@ export default function Users() {
     });
   };
  
-  const handleEditUserInline = (user: UserSummary) => {
-    const nextEmail = window.prompt("Email", user.email);
-    if (nextEmail === null) return;
-    const nextFirst = window.prompt("First name", user.first_name || "");
-    if (nextFirst === null) return;
-    const nextLast = window.prompt("Last name", user.last_name || "");
-    if (nextLast === null) return;
+  const handleOpenEditDialog = (user: UserSummary) => {
+    setEditUser(user);
+    setEditEmail(user.email);
+    setEditFirstName(user.first_name || "");
+    setEditLastName(user.last_name || "");
+    setIsEditOpen(true);
+  };
+
+  const handleSaveEditUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editUser) return;
+    if (!editEmail.trim()) return;
     updateMutation.mutate({
-      id: user.id,
+      id: editUser.id,
       payload: {
-        email: nextEmail,
-        first_name: nextFirst,
-        last_name: nextLast,
+        email: editEmail.trim(),
+        first_name: editFirstName.trim(),
+        last_name: editLastName.trim(),
       },
     });
   };
@@ -585,7 +608,7 @@ export default function Users() {
                               size="icon"
                               className="text-muted-foreground hover:text-foreground"
                               title="Edit user"
-                              onClick={() => handleEditUserInline(user)}
+                              onClick={() => handleOpenEditDialog(user)}
                             >
                               <Edit2 className="h-4 w-4" />
                             </Button>
@@ -690,6 +713,82 @@ export default function Users() {
                       </Button>
                       <Button type="submit" disabled={changeRoleMutation.isPending}>
                         {changeRoleMutation.isPending ? "Saving..." : "Save"}
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              </Dialog>
+
+              {/* Edit User Dialog */}
+              <Dialog open={isEditOpen} onOpenChange={(open) => {
+                setIsEditOpen(open);
+                if (!open) {
+                  setEditUser(null);
+                  setEditEmail("");
+                  setEditFirstName("");
+                  setEditLastName("");
+                }
+              }}>
+                <DialogContent>
+                  <form onSubmit={handleSaveEditUser}>
+                    <DialogHeader>
+                      <DialogTitle>Edit User</DialogTitle>
+                      <DialogDescription>
+                        Update user account details.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="edit-username">Username</Label>
+                        <Input
+                          id="edit-username"
+                          value={editUser?.username ?? ""}
+                          disabled
+                          className="bg-muted"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="edit-email">Email</Label>
+                        <Input
+                          id="edit-email"
+                          type="email"
+                          value={editEmail}
+                          onChange={(e) => setEditEmail(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="edit-first_name">First name</Label>
+                          <Input
+                            id="edit-first_name"
+                            value={editFirstName}
+                            onChange={(e) => setEditFirstName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="edit-last_name">Last name</Label>
+                          <Input
+                            id="edit-last_name"
+                            value={editLastName}
+                            onChange={(e) => setEditLastName(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsEditOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        disabled={updateMutation.isPending}
+                      >
+                        {updateMutation.isPending ? "Saving..." : "Update"}
                       </Button>
                     </DialogFooter>
                   </form>

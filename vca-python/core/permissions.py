@@ -33,3 +33,8 @@ def has_permission(user, codename: str) -> bool:
         ).exists()
     except (UserRole.DoesNotExist, AttributeError):
         return False
+
+
+def has_user_update_permission(user) -> bool:
+    """True if user can update other users (either users.update or users.edit)."""
+    return has_permission(user, "users.update") or has_permission(user, "users.edit")

@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from core.models import UserProfile
-from core.permissions import has_permission, is_admin
+from core.permissions import has_permission, has_user_update_permission, is_admin
 from .models import (
     ClaimRuleMaster,
     ClaimTypeMaster,
@@ -169,8 +169,8 @@ def list_users(request):
 @permission_classes([IsAuthenticated])
 def edit_user(request, pk):
     user = get_object_or_404(User, pk=pk)
-    if user.id != request.user.id and not (has_permission(request.user, "users.update") or is_admin(request.user)):
-        return Response({"error": "Forbidden - users.update permission or Admin role required to edit others"}, status=status.HTTP_403_FORBIDDEN)
+    if user.id != request.user.id and not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit permission or Admin role required to edit others"}, status=status.HTTP_403_FORBIDDEN)
     
     serializer = UserUpdateSerializer(user, data=request.data, partial=True)
     if not serializer.is_valid():
@@ -182,8 +182,8 @@ def edit_user(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def change_role(request, pk):
-    if not (has_permission(request.user, "users.update") or is_admin(request.user)):
-        return Response({"error": "Forbidden - users.update permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ChangeRoleSerializer(data=request.data)
@@ -199,8 +199,8 @@ def change_role(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def reset_password(request, pk):
-    if not (has_permission(request.user, "users.update") or is_admin(request.user)):
-        return Response({"error": "Forbidden - users.update permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ResetPasswordSerializer(data=request.data)
