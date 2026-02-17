@@ -91,6 +91,17 @@ export default function Users() {
   const [roleUser, setRoleUser] = useState<UserSummary | null>(null);
   const [selectedRoleId, setSelectedRoleId] = useState<number | "none">("none");
 
+  // Edit user dialog state
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editUser, setEditUser] = useState<UserSummary | null>(null);
+  const [editEmail, setEditEmail] = useState("");
+  const [editFirstName, setEditFirstName] = useState("");
+  const [editLastName, setEditLastName] = useState("");
+
+  // Deactivate (delete) user dialog state
+  const [isDeactivateOpen, setIsDeactivateOpen] = useState(false);
+  const [userToDeactivate, setUserToDeactivate] = useState<UserSummary | null>(null);
+
   const { data: users = [], isLoading, error } = useQuery({
     queryKey: ["users"],
     queryFn: listUsers,
@@ -145,6 +156,16 @@ export default function Users() {
     }) => updateUser(id, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
+      setIsEditOpen(false);
+      setEditUser(null);
+      toast({ title: "User updated successfully" });
+    },
+    onError: (err) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to update user",
+        description: isAxiosError(err) && err.message ? err.message : "Please try again.",
+      });
     },
   });
 
@@ -165,6 +186,21 @@ export default function Users() {
     mutationFn: (id: number) => deactivateUser(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["users"] });
+      setIsDeactivateOpen(false);
+      setUserToDeactivate(null);
+      toast({ title: "User deactivated successfully" });
+    },
+    onError: (err) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to deactivate user",
+        description:
+          isAxiosError(err) && err.response?.data
+            ? String((err.response.data as { detail?: string })?.detail ?? err.message)
+            : isAxiosError(err) && err.message
+              ? err.message
+              : "Please try again.",
+      });
     },
   });
 
@@ -253,19 +289,23 @@ export default function Users() {
     });
   };
 
-  const handleEditUserInline = (user: UserSummary) => {
-    const nextEmail = window.prompt("Email", user.email);
-    if (nextEmail === null) return;
-    const nextFirst = window.prompt("First name", user.first_name || "");
-    if (nextFirst === null) return;
-    const nextLast = window.prompt("Last name", user.last_name || "");
-    if (nextLast === null) return;
+  const handleOpenEditDialog = (user: UserSummary) => {
+    setEditUser(user);
+    setEditEmail(user.email ?? "");
+    setEditFirstName(user.first_name ?? "");
+    setEditLastName(user.last_name ?? "");
+    setIsEditOpen(true);
+  };
+
+  const handleEditUserSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editUser) return;
     updateMutation.mutate({
-      id: user.id,
+      id: editUser.id,
       payload: {
-        email: nextEmail,
-        first_name: nextFirst,
-        last_name: nextLast,
+        email: editEmail,
+        first_name: editFirstName,
+        last_name: editLastName,
       },
     });
   };
@@ -284,6 +324,7 @@ export default function Users() {
     resetPasswordMutation.mutate({ id: user.id, newPassword });
   };
 
+<<<<<<< Updated upstream
   const handleDeactivate = (user: UserSummary) => {
     if (
       !window.confirm(
@@ -293,6 +334,16 @@ export default function Users() {
       return;
     }
     deactivateMutation.mutate(user.id);
+=======
+  const handleOpenDeactivateDialog = (user: UserSummary) => {
+    setUserToDeactivate(user);
+    setIsDeactivateOpen(true);
+  };
+
+  const handleConfirmDeactivate = () => {
+    if (!userToDeactivate) return;
+    deactivateMutation.mutate(userToDeactivate.id);
+>>>>>>> Stashed changes
   };
 
   const handleActivate = (user: UserSummary) => {
@@ -555,11 +606,18 @@ export default function Users() {
                       <div className="flex items-center gap-2">
                         <Switch
                           checked={user.is_active}
+<<<<<<< Updated upstream
                           onCheckedChange={(next) => {
                             if (next && !user.is_active) {
                               handleActivate(user);
                             } else if (!next && user.is_active) {
                               handleDeactivate(user);
+=======
+                          disabled={!user.is_active}
+                          onCheckedChange={(next) => {
+                            if (!next && user.is_active) {
+                              handleOpenDeactivateDialog(user);
+>>>>>>> Stashed changes
                             }
                           }}
                         />
@@ -578,6 +636,7 @@ export default function Users() {
                     </TableCell> */}
                     <TableCell className="pr-6 text-right">
                       <div className="flex items-center justify-end gap-1">
+<<<<<<< Updated upstream
                         {canUpdateUser && (
                           <>
                             <Button
@@ -611,6 +670,40 @@ export default function Users() {
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         )}
+=======
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground"
+                          title="Edit user"
+                          onClick={() => handleOpenEditDialog(user)}
+                        >
+                          <Edit2 className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-muted-foreground hover:text-foreground"
+                          title="Change role"
+                          onClick={() => handleOpenRoleDialog(user)}
+                        >
+                          <Shield className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive hover:text-destructive"
+                          title={
+                            user.is_active
+                              ? "Deactivate user"
+                              : "User already inactive"
+                          }
+                          disabled={!user.is_active}
+                          onClick={() => handleOpenDeactivateDialog(user)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+>>>>>>> Stashed changes
                       </div>
                     </TableCell>
                   </TableRow>
@@ -693,6 +786,115 @@ export default function Users() {
                       </Button>
                     </DialogFooter>
                   </form>
+                </DialogContent>
+              </Dialog>
+
+              {/* Edit User Dialog */}
+              <Dialog open={isEditOpen} onOpenChange={(open) => {
+                if (!open) {
+                  setIsEditOpen(false);
+                  setEditUser(null);
+                }
+              }}>
+                <DialogContent>
+                  <form onSubmit={handleEditUserSubmit}>
+                    <DialogHeader>
+                      <DialogTitle>Edit User</DialogTitle>
+                      <DialogDescription>
+                        Update details for {editUser ? getDisplayName(editUser) : "this user"}.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      {editUser && (
+                        <div className="space-y-2">
+                          <Label>Username</Label>
+                          <Input value={editUser.username} disabled className="bg-muted" />
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        <Label htmlFor="edit-email">Email</Label>
+                        <Input
+                          id="edit-email"
+                          type="email"
+                          value={editEmail}
+                          onChange={(e) => setEditEmail(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="edit-first_name">First name</Label>
+                          <Input
+                            id="edit-first_name"
+                            value={editFirstName}
+                            onChange={(e) => setEditFirstName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="edit-last_name">Last name</Label>
+                          <Input
+                            id="edit-last_name"
+                            value={editLastName}
+                            onChange={(e) => setEditLastName(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setIsEditOpen(false)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button type="submit" disabled={updateMutation.isPending}>
+                        {updateMutation.isPending ? "Saving..." : "Save"}
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                </DialogContent>
+              </Dialog>
+
+              {/* Deactivate (Delete) User confirmation dialog */}
+              <Dialog
+                open={isDeactivateOpen}
+                onOpenChange={(open) => {
+                  if (!open) {
+                    setIsDeactivateOpen(false);
+                    setUserToDeactivate(null);
+                  }
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Deactivate user</DialogTitle>
+                    <DialogDescription>
+                      Are you sure you want to deactivate{" "}
+                      <strong>{userToDeactivate ? getDisplayName(userToDeactivate) : ""}</strong>
+                      ? They will no longer be able to sign in.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <DialogFooter>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setIsDeactivateOpen(false);
+                        setUserToDeactivate(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      disabled={deactivateMutation.isPending}
+                      onClick={handleConfirmDeactivate}
+                    >
+                      {deactivateMutation.isPending ? "Deactivating..." : "Deactivate"}
+                    </Button>
+                  </DialogFooter>
                 </DialogContent>
               </Dialog>
             </>

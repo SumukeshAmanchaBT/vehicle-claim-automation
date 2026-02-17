@@ -199,33 +199,33 @@ export default function Claims() {
           searchPlaceholder="Search claims, policies, customers..."
           searchValue={search}
           onSearchChange={(v) => { setSearch(v); setPage(1); }}
-          filters={
-            <Select value={statusFilter} onValueChange={(v) => { handleStatusChange(v); setPage(1); }}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="open">Open</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="fraudulent">Fraudulent</SelectItem>
-                <SelectItem value="pending_damage_detection">
-                  Pending Damage Detection
-                </SelectItem>
-                <SelectItem value="manual_review">Manual Review</SelectItem>
+          // filters={
+          //   <Select value={statusFilter} onValueChange={(v) => { handleStatusChange(v); setPage(1); }}>
+          //     <SelectTrigger className="w-[180px]">
+          //       <SelectValue placeholder="Status" />
+          //     </SelectTrigger>
+          //     <SelectContent>
+          //       <SelectItem value="all">All Status</SelectItem>
+          //       <SelectItem value="open">Open</SelectItem>
+          //       <SelectItem value="pending">Pending</SelectItem>
+          //       <SelectItem value="fraudulent">Fraudulent</SelectItem>
+          //       <SelectItem value="pending_damage_detection">
+          //         Pending Damage Detection
+          //       </SelectItem>
+          //       <SelectItem value="manual_review">Manual Review</SelectItem>
                 
                 
-              </SelectContent>
-            </Select>
-          }
-          // primaryAction={(
-          //   <Button asChild>
-          //     <Link to="/claims/new">
-          //       <Plus className="mr-2 h-4 w-4" />
-          //       Add New Claim
-          //     </Link>
-          //   </Button>
-          // )}
+          //     </SelectContent>
+          //   </Select>
+          //}
+          primaryAction={(
+            <Button asChild>
+              <Link to="/claims/new">
+                <Plus className="mr-2 h-4 w-4" />
+                FNOL Response
+              </Link>
+            </Button>
+          )}
         />
 
         {/* Claims Table */}
@@ -246,12 +246,12 @@ export default function Claims() {
               <Table>
                 <TableHeader className="table-header-bg">
                   <TableRow className="bg-muted/50 hover:bg-muted/50">
-                    <SortableTableHead sortKey="claimNumber" currentSortKey={sortKey} direction={sortDir} onSort={handleSort} className="pl-6">Claim #</SortableTableHead>
-                    <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy</SortableTableHead>
-                    <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Customer</SortableTableHead>
+                    <SortableTableHead sortKey="claimNumber" currentSortKey={sortKey} direction={sortDir} onSort={handleSort} className="pl-6">Claim ID #</SortableTableHead>
+                    <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy Number</SortableTableHead>
+                    <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Customer info</SortableTableHead>
                     <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Type</SortableTableHead>
                     <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Date</SortableTableHead>
-                    <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Status</SortableTableHead>
+                    <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Stage</SortableTableHead>
                     <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
