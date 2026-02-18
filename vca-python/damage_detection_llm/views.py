@@ -180,14 +180,40 @@ def damage_assessment(request):
 
     try:
         damages, severity = run_damage_assessment(input_path)
-        response_data = {"damages": damages, "severity": severity}
+        severity_str = (severity or "").strip()[:20] if severity else ""
 
-        # Persist LLM response, estimate price from PricingConfig, update claim status when claim_id provided
+        # Always include claim_amount: compute from PricingConfig (base + damages * rate) * severity multiplier
+        try:
+            from claims.views import estimate_claim_amount_from_config
+
+            base_amount = 0.0
+            if claim_id and isinstance(claim_id, str) and claim_id.strip():
+                from claims.models import ClaimEvaluationResponse
+
+                latest = (
+                    ClaimEvaluationResponse.objects.filter(complaint_id=claim_id.strip())
+                    .order_by("-created_date")
+                    .first()
+                )
+                if latest:
+                    base_amount = float(latest.estimated_amount or 0)
+            claim_amount = estimate_claim_amount_from_config(
+                damages or [], severity_str, base_amount
+            )
+        except Exception:
+            claim_amount = 0.0
+
+        response_data = {
+            "damages": damages if damages is not None else [],
+            "severity": severity or "unknown",
+            "claim_amount": float(claim_amount),
+        }
+
+        # Persist LLM response and update claim status when claim_id provided
         if claim_id and isinstance(claim_id, str) and claim_id.strip():
             complaint_id = claim_id.strip()
             try:
                 from claims.models import ClaimEvaluationResponse, FnolClaim
-                from claims.views import estimate_claim_amount_from_config
 
                 latest = (
                     ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
@@ -196,17 +222,22 @@ def damage_assessment(request):
                 )
                 if latest:
                     damages_json = json.dumps(damages) if damages else None
-                    severity_str = str(severity)[:20] if severity else None
                     latest.llm_damages = damages_json
                     latest.llm_severity = severity_str
-
-                    # Estimate claim_amount from PricingConfig based on damages and severity
-                    base_amount = float(latest.estimated_amount or 0)
-                    claim_amount = estimate_claim_amount_from_config(
-                        damages or [], severity_str or "", base_amount
-                    )
                     latest.claim_amount = claim_amount
-                    response_data["claim_amount"] = claim_amount
+
+                    # Update threshold_value from claim_type_master based on claim_amount (so it's not static 25)
+                    try:
+                        from claims.views import _get_claim_type_threshold
+
+                        thr, claim_type_name = _get_claim_type_threshold(
+                            {"estimated_amount": claim_amount}
+                        )
+                        latest.threshold_value = int(round((thr or 0) * 100))
+                        if claim_type_name:
+                            latest.claim_type = claim_type_name[:20]
+                    except Exception:
+                        pass
 
                     # Determine decision and claim_status from LLM: ID 5=Close+Auto, ID 6=Close+Manual
                     severity_lower = (severity_str or "").strip().lower()
@@ -224,6 +255,8 @@ def damage_assessment(request):
                             "llm_damages",
                             "llm_severity",
                             "claim_amount",
+                            "threshold_value",
+                            "claim_type",
                             "decision",
                             "claim_status",
                             "updated_date",

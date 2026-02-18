@@ -59,12 +59,34 @@ def _get_pricing_config_value(key: str, default: float) -> float:
     return default
 
 
+def _flatten_damage_count(damages: list) -> int:
+    """
+    Count total damage type occurrences from LLM damages (list of lists or list of strings).
+    E.g. [["dent", "scratch"], ["intense-damage"]] -> 3; [["dent"]] -> 1.
+    """
+    count = 0
+    for d in damages or []:
+        if d is None:
+            continue
+        if isinstance(d, list):
+            for item in d:
+                s = (item or "").strip().lower()
+                if s and s != "none":
+                    count += 1
+        else:
+            s = str(d).strip().lower()
+            if s and s != "none":
+                count += 1
+    return max(count, 1)  # at least 1 for "no damage" case
+
+
 def estimate_claim_amount_from_config(
     damages: list, severity: str, base_estimated_amount: float = 0
 ) -> float:
     """
     Estimate claim amount from PricingConfig based on LLM damages and severity.
     Formula: (base_amount + damage_count * rate_per_damage) * severity_multiplier
+    damage_count = total number of damage types (flattened from list-of-lists).
     Config keys: claim_base_amount, claim_rate_per_damage,
                  severity_multiplier_minor, severity_multiplier_moderate, severity_multiplier_severe
     """
@@ -84,9 +106,7 @@ def estimate_claim_amount_from_config(
     else:
         mult = mult_moderate  # default
 
-    damage_count = len([d for d in damages if d and str(d).lower() != "none"])
-    if damage_count == 0:
-        damage_count = 1  # at least 1 for "no damage" case
+    damage_count = _flatten_damage_count(damages)
     amount = (base + damage_count * rate_per_damage) * mult
     if base_estimated_amount and base_estimated_amount > 0:
         amount = max(amount, float(base_estimated_amount))
@@ -424,6 +444,22 @@ def fraud_check(
             except (TypeError, ValueError):
                 pass
 
+    # 4) Liability Admission - liability_admission = TRUE (risk)
+    if _is_fraud_rule_active("Liability Admission") and incident.get("liability_admission"):
+        return "High", _get_fraud_rule_description("Liability Admission")
+
+    # 5) Injury Indicator - injury_indicator = TRUE (risk)
+    if _is_fraud_rule_active("Injury Indicator") and incident.get("injury_indicator"):
+        return "High", _get_fraud_rule_description("Injury Indicator")
+
+    # 6) Commercial Vehicle - commercial_vehicle = TRUE (risk)
+    if _is_fraud_rule_active("Commercial Vehicle") and incident.get("commercial_vehicle"):
+        return "High", _get_fraud_rule_description("Commercial Vehicle")
+
+    # 7) Dashcam CCTV Evidence - dashcam_cctv_evidence = TRUE (risk trigger as per rule_expression)
+    if _is_fraud_rule_active("Dashcam CCTV Evidence") and incident.get("dashcam_cctv_evidence"):
+        return "High", _get_fraud_rule_description("Dashcam CCTV Evidence")
+
     return "Low", ""
 
 
@@ -495,6 +531,30 @@ def _get_fraud_evaluation_rules(
         desc = _get_fraud_rule_description("Missing Damage Photos")
         passed = _has_damage_photos(complaint_id=complaint_id, documents=documents)
         results.append({"rule_type": "Missing Damage Photos", "rule_description": desc, "passed": passed})
+
+    # Liability Admission - TRUE = risk → passed when False
+    if _is_fraud_rule_active("Liability Admission"):
+        desc = _get_fraud_rule_description("Liability Admission")
+        passed = not bool(incident.get("liability_admission"))
+        results.append({"rule_type": "Liability Admission", "rule_description": desc, "passed": passed})
+
+    # Dashcam CCTV Evidence - TRUE triggers rule → passed when False
+    if _is_fraud_rule_active("Dashcam CCTV Evidence"):
+        desc = _get_fraud_rule_description("Dashcam CCTV Evidence")
+        passed = not bool(incident.get("dashcam_cctv_evidence"))
+        results.append({"rule_type": "Dashcam CCTV Evidence", "rule_description": desc, "passed": passed})
+
+    # Injury Indicator - TRUE = risk → passed when False
+    if _is_fraud_rule_active("Injury Indicator"):
+        desc = _get_fraud_rule_description("Injury Indicator")
+        passed = not bool(incident.get("injury_indicator"))
+        results.append({"rule_type": "Injury Indicator", "rule_description": desc, "passed": passed})
+
+    # Commercial Vehicle - TRUE = risk → passed when False
+    if _is_fraud_rule_active("Commercial Vehicle"):
+        desc = _get_fraud_rule_description("Commercial Vehicle")
+        passed = not bool(incident.get("commercial_vehicle"))
+        results.append({"rule_type": "Commercial Vehicle", "rule_description": desc, "passed": passed})
 
     return results
 
@@ -709,6 +769,12 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
             "loss_description": claim.incident_description or "",
             "claim_type": claim.incident_type or "",
             "estimated_amount": 0,  # fnol_claims schema doesn't include this; can be extended
+            "accident_location": getattr(claim, "accident_location", None) or "",
+            "liability_admission": getattr(claim, "liability_admission", None),
+            "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+            "injury_indicator": getattr(claim, "injury_indicator", None),
+            "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+            "flood_coverage": getattr(claim, "flood_coverage", None),
         },
         "claimant": {"driver_name": claim.policy_holder_name or ""},
         "documents": {
@@ -762,6 +828,12 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "incident_type": claim.incident_type,
         "incident_description": claim.incident_description,
         "incident_date_time": claim.incident_date_time.isoformat() if claim.incident_date_time else None,
+        "accident_location": getattr(claim, "accident_location", None),
+        "liability_admission": getattr(claim, "liability_admission", None),
+        "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+        "injury_indicator": getattr(claim, "injury_indicator", None),
+        "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+        "flood_coverage": getattr(claim, "flood_coverage", None),
         "fir_document_copy": claim.fir_document_copy,
         "insurance_document_copy": claim.insurance_document_copy,
         "damage_photos": photo_urls,
@@ -1096,6 +1168,18 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
             incident_dt = None
     policy_start = parse_date(policy.get("policy_start_date")) if policy.get("policy_start_date") else None
     policy_end = parse_date(policy.get("policy_end_date")) if policy.get("policy_end_date") else None
+    def _bool(v):
+        if v is None:
+            return None
+        return bool(v)
+
+    accident_location = incident.get("accident_location") or data.get("accident_location") or None
+    liability_admission = _bool(data.get("liability_admission") if "liability_admission" in data else incident.get("liability_admission"))
+    dashcam_cctv_evidence = _bool(data.get("dashcam_cctv_evidence") if "dashcam_cctv_evidence" in data else incident.get("dashcam_cctv_evidence"))
+    injury_indicator = _bool(data.get("injury_indicator") if "injury_indicator" in data else incident.get("injury_indicator"))
+    commercial_vehicle = _bool(data.get("commercial_vehicle") if "commercial_vehicle" in data else incident.get("commercial_vehicle"))
+    flood_coverage = _bool(data.get("flood_coverage") if "flood_coverage" in data else incident.get("flood_coverage"))
+
     return {
         "complaint_id": complaint_id,
         "coverage_type": policy.get("coverage_type"),
@@ -1111,6 +1195,12 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "incident_type": incident.get("claim_type"),
         "incident_description": incident.get("loss_description"),
         "incident_date_time": incident_dt,
+        "accident_location": accident_location,
+        "liability_admission": liability_admission,
+        "dashcam_cctv_evidence": dashcam_cctv_evidence,
+        "injury_indicator": injury_indicator,
+        "commercial_vehicle": commercial_vehicle,
+        "flood_coverage": flood_coverage,
         "fir_document_copy": documents.get("fir_path") if isinstance(documents.get("fir_path"), str) else None,
         "insurance_document_copy": documents.get("insurance_path") if isinstance(documents.get("insurance_path"), str) else None,
     }
@@ -1186,6 +1276,17 @@ def run_fraud_detection(request, complaint_id: str):
     """
     fnol_claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
     raw_response = _fnol_claim_to_raw_response(fnol_claim)
+
+    # Use existing evaluation's claim_amount for threshold so threshold_value is not always 25
+    existing = (
+        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
+        .order_by("-created_date")
+        .first()
+    )
+    if existing and (existing.claim_amount or existing.estimated_amount):
+        amount = float(existing.claim_amount or existing.estimated_amount or 0)
+        if amount > 0:
+            raw_response.setdefault("incident", {})["estimated_amount"] = amount
 
     result = _run_process_claim_logic(raw_response)
 

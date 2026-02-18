@@ -711,10 +711,6 @@ export default function ClaimDetail() {
                               <p className="text-sm font-medium mt-1">{claimEvaluation.damage_confidence}%</p>
                             </div>
                             <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Estimated Amount</p>
-                              <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.estimated_amount)}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
                               <p className="text-xs text-muted-foreground">Claim Amount</p>
                               <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.claim_amount)}</p>
                             </div>
@@ -725,14 +721,6 @@ export default function ClaimDetail() {
                             <div className="rounded-lg border p-4">
                               <p className="text-xs text-muted-foreground">Claim Type</p>
                               <p className="text-sm font-medium mt-1">{claimEvaluation.claim_type ?? "—"}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Decision</p>
-                              <p className="text-sm font-medium mt-1">{claimEvaluation.decision ?? "—"}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Claim Status</p>
-                              <p className="text-sm font-medium mt-1">{claimEvaluation.claim_status ?? "—"}</p>
                             </div>
                             {claimEvaluation.reason && (
                               <div className="rounded-lg border p-4 sm:col-span-2">
@@ -759,22 +747,6 @@ export default function ClaimDetail() {
                               <div className="rounded-lg border p-4">
                                 <p className="text-xs text-muted-foreground">LLM Severity</p>
                                 <p className="text-sm font-medium mt-1">{claimEvaluation.llm_severity}</p>
-                              </div>
-                            )}
-                            {claimEvaluation.created_date && (
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Created Date</p>
-                                <p className="text-sm font-medium mt-1">
-                                  {new Date(claimEvaluation.created_date).toLocaleString()}
-                                </p>
-                              </div>
-                            )}
-                            {claimEvaluation.updated_date && (
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Updated Date</p>
-                                <p className="text-sm font-medium mt-1">
-                                  {new Date(claimEvaluation.updated_date).toLocaleString()}
-                                </p>
                               </div>
                             )}
                           </div>
@@ -942,7 +914,7 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Coverage</span>
+                  <span className="text-muted-foreground">Coverage Type</span>
                   <span className="font-medium">
                     {fnol.coverage_type || policy.coverage_type || "—"}
                   </span>
@@ -951,6 +923,12 @@ export default function ClaimDetail() {
                   <span className="text-muted-foreground">Policy Status</span>
                   <span className="font-medium">
                     {fnol.policy_status || policy.policy_status || "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Flood Coverage Endorsement</span>
+                  <span className="font-medium">
+                    {fnol.flood_coverage === true || fnol.flood_coverage === 1 ? "Yes" : "No"}
                   </span>
                 </div>
                 <div className="flex justify-between">

@@ -18,7 +18,19 @@ export interface FnolPayload {
     loss_description: string;
     claim_type: string;
     estimated_amount: number;
+    accident_location?: string;
+    liability_admission?: boolean;
+    dashcam_cctv_evidence?: boolean;
+    injury_indicator?: boolean;
+    commercial_vehicle?: boolean;
+    flood_coverage?: boolean;
   };
+  accident_location?: string;
+  liability_admission?: boolean;
+  dashcam_cctv_evidence?: boolean;
+  injury_indicator?: boolean;
+  commercial_vehicle?: boolean;
+  flood_coverage?: boolean;
   claimant: {
     driver_name: string;
     driving_license_number: string;
@@ -53,6 +65,12 @@ export interface FnolResponse {
   incident_type: string | null;
   incident_description: string | null;
   incident_date_time: string | null;
+  accident_location: string | null;
+  liability_admission: boolean | null;
+  dashcam_cctv_evidence: boolean | null;
+  injury_indicator: boolean | null;
+  commercial_vehicle: boolean | null;
+  flood_coverage: boolean | null;
   previous_claims_last_12_months?: number;
   fir_document_copy: string | null;
   insurance_document_copy: string | null;
