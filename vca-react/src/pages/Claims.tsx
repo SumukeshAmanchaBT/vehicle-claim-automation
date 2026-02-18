@@ -50,10 +50,48 @@ const CLAIM_STATUS_META: Record<
   },
 };
 
+/** Thai first names for random mock insured. */
+const THAI_FIRST_NAMES = [
+  "Somchai", "Anan", "Kanya", "Prasert", "Sakda", "Chaiwat", "Pim", "Noi",
+  "Thanawat", "Siriporn", "Niran", "Wasan", "Sombat", "Duangjai", "Surasak",
+  "Nattaya", "Wichai", "Rattana", "Somsak", "Yupadee", "Sukhumvit", "Malee",
+];
+
+/** Thai last/family names for random mock insured. */
+const THAI_LAST_NAMES = [
+  "Vejjajiva", "Wongchai", "Srisuk", "Chaiyaporn", "Rattanakul", "Boonmee",
+  "Srisombat", "Thongmee", "Jaidee", "Sombat", "Pongprayoon", "Sutthirat",
+  "Chanthara", "Phongpaichit", "Siriwan", "Nakorn", "Prasertsuk", "Wongsa",
+];
+
+/** Thailand-style policy number prefixes. */
+const THAI_POLICY_PREFIXES = ["MTR", "MTL", "PA", "CAR", "MOT"];
+
+function randomChoice<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function randomThaiName(): string {
+  return `${randomChoice(THAI_FIRST_NAMES)} ${randomChoice(THAI_LAST_NAMES)}`;
+}
+
+/** Generate a Thailand-style policy number (e.g. MTR-2567-00012345, MTL-67-084721). */
+function randomThaiPolicyNumber(): string {
+  const prefix = randomChoice(THAI_POLICY_PREFIXES);
+  const year = 2567 + Math.floor(Math.random() * 3); // 2567–2569 (BE)
+  const shortYear = year % 100;
+  const num = String(Math.floor(100000 + Math.random() * 900000));
+  if (prefix === "MTR" || prefix === "PA") {
+    return `${prefix}-${year}-${num}`;
+  }
+  return `${prefix}-${shortYear}-${num}`;
+}
+
 /** Build one mock FNOL payload with a dynamic claim_id (used once per "Fetch FNOL Data" click). */
 function getMockFnolPayload(claimId: string): FnolPayload {
   const now = new Date();
-  const policyNum = `POL${claimId.replace(/[^0-9]/g, "").padStart(6, "0") || "100001"}`;
+  const policyNum = randomThaiPolicyNumber();
+  const driverName = randomThaiName();
   return {
     claim_id: claimId,
     policy: {
@@ -76,7 +114,7 @@ function getMockFnolPayload(claimId: string): FnolPayload {
       estimated_amount: 45000,
     },
     claimant: {
-      driver_name: "Ravi Kumars",
+      driver_name: driverName,
       driving_license_number: "DL-001-2020",
       license_valid_till: "2028-05-15",
     },

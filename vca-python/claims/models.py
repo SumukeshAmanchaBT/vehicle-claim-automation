@@ -21,6 +21,12 @@ class FnolClaim(models.Model):
     incident_type = models.CharField(max_length=50, null=True, blank=True, db_column="incident_type")
     incident_description = models.TextField(null=True, blank=True)
     incident_date_time = models.DateTimeField(null=True, blank=True)
+    accident_location = models.CharField(max_length=255, null=True, blank=True)
+    liability_admission = models.BooleanField(default=False, null=True, blank=True)
+    dashcam_cctv_evidence = models.BooleanField(default=False, null=True, blank=True)
+    injury_indicator = models.BooleanField(default=False, null=True, blank=True)
+    commercial_vehicle = models.BooleanField(default=False, null=True, blank=True)
+    flood_coverage = models.BooleanField(default=False, null=True, blank=True)
     fir_document_copy = models.CharField(max_length=255, null=True, blank=True)
     insurance_document_copy = models.CharField(max_length=255, null=True, blank=True)
     claim_status = models.ForeignKey(
