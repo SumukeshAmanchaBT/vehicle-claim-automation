@@ -407,9 +407,9 @@ export default function ClaimDetail() {
                         <div className="min-w-0 flex-1">
                           <p className="text-xs text-muted-foreground">AI Damage Assessment</p>
                           <p className="text-xl font-bold">{aiConfidence}%</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">
+                          {/* <p className="text-xs text-muted-foreground mt-0.5">
                             Est. {formatCurrency(incident.estimated_amount ?? 0)}
-                          </p>
+                          </p> */}
                         </div>
                       </div>
                     </CardContent>
@@ -421,6 +421,12 @@ export default function ClaimDetail() {
             {/* Tabs */}
             <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4 p-4 w-full">
               <TabsList>
+                <TabsTrigger value="details">Claim Details</TabsTrigger>
+                <TabsTrigger value="documents">Documents</TabsTrigger>
+                {/* After Fraud Evaluation (or when Damage run): Fraud Evaluation before Claim Details */}
+                {!isOpenClaim && (
+                  <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
+                )}
                 {/* After Damage Detection: AI Assessment first, then Fraud Evaluation, then Claim Details, Documents */}
                 {damageDetectionRun && (
                   <>
@@ -428,12 +434,8 @@ export default function ClaimDetail() {
                     <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
                   </>
                 )}
-                {/* After Fraud Evaluation (or when Damage run): Fraud Evaluation before Claim Details */}
-                {!isOpenClaim && (
-                  <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
-                )}
-                <TabsTrigger value="details">Claim Details</TabsTrigger>
-                <TabsTrigger value="documents">Documents</TabsTrigger>
+                
+               
               </TabsList>
 
               <TabsContent value="details">
@@ -872,7 +874,7 @@ export default function ClaimDetail() {
           </div>
 
           {/* Sidebar */}
-          <div className="space-y-6">
+          <div className="space-y-4">
             <Card className="card-elevated">
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">

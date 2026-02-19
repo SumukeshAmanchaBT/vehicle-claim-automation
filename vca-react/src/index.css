@@ -29,8 +29,8 @@
     --secondary-foreground: 30 64 98; /* #1E4062 approx */
 
     /* Muted elements */
-    --muted: 241 245 249;          /* #F1F5F9 */
-    --muted-foreground: 100 116 139; /* #64748B */
+    --muted: 202 222 255;          /* #F1F5F9 */
+    --muted-foreground: 30 45 70; /* #64748B */
 
     /* Accent - Vibrant Blue */
     --accent: 59 130 246;          /* #3B82F6 */
@@ -297,4 +297,9 @@
 .table-header-bg th {
   background-color: rgb(209, 226, 255) !important;
   color: #000000;
+}
+
+.text-xs {
+    font-size: 0.85rem !important;
+    line-height: 1rem;
 }
