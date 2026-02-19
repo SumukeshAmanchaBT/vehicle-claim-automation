@@ -915,27 +915,27 @@ export default function ClaimDetail() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div>
+                {/* <div>
                   <p className="text-sm">
                     Name: {fnol.policy_holder_name || claimant.driver_name || "—"}
                   </p>
                   <p className="text-sm text-muted-foreground mt-1">
                     Policy: {fnol.policy_number || policy.policy_number || "—"}
                   </p>
-                </div>
-                {/* <Separator />
+                </div> 
+                <Separator /> */}
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">License</span>
-                    <span className="font-mono text-xs">
-                      {claimant.driving_license_number || "—"}
+                    <span className="text-muted-foreground">Name</span>
+                    <span className="text-muted-foreground font-medium ">
+                       {fnol.policy_holder_name || claimant.driver_name || "—"}
                     </span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Valid Till</span>
-                    <span>{claimant.license_valid_till || "—"}</span>
+                    <span className="text-muted-foreground">Policy</span>
+                    <span className="font-medium">{fnol.policy_number || policy.policy_number || "—"}</span>
                   </div>
-                </div> */}
+                </div>
               </CardContent>
             </Card>
 

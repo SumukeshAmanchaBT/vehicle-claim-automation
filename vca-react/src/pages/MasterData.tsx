@@ -1627,7 +1627,7 @@ export default function MasterData() {
                           setPricingPage(1);
                         }}
                       >
-                        Value
+                        Price
                       </SortableTableHead>
                       <SortableTableHead
                         sortKey="type"
