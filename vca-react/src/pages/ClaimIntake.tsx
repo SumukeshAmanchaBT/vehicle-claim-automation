@@ -260,7 +260,7 @@ export default function ClaimIntake() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="estimated_amount">Estimated Amount (₹)</Label>
+                <Label htmlFor="estimated_amount">Estimated Amount (฿)</Label>
                 <Input
                   id="estimated_amount"
                   type="number"

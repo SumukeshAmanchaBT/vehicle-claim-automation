@@ -44,9 +44,9 @@ import {
 import { API_BASE_URL, API_MEDIA_URL } from "@/lib/httpClient";
 
 const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("en-IN", {
+  return new Intl.NumberFormat("th-TH", {
     style: "currency",
-    currency: "INR",
+    currency: "THB",
     minimumFractionDigits: 0,
   }).format(amount);
 };
@@ -405,11 +405,43 @@ export default function ClaimDetail() {
                           <Brain className="h-5 w-5 text-primary" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs text-muted-foreground">AI Damage Assessment</p>
+                          <p className="text-xs text-muted-foreground">Damage Assessment</p>
                           <p className="text-xl font-bold">{aiConfidence}%</p>
                           {/* <p className="text-xs text-muted-foreground mt-0.5">
                             Est. {formatCurrency(incident.estimated_amount ?? 0)}
                           </p> */}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                {/* Claim Type – visible when claim evaluation is available */}
+                {claimEvaluation && (
+                  <Card className="card-elevated">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-secondary/50">
+                          <FileText className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-muted-foreground">Claim Type</p>
+                          <p className="text-xl font-bold">{claimEvaluation.claim_type ?? "—"}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                {/* Claim Amount – visible when claim evaluation is available */}
+                {claimEvaluation && (
+                  <Card className="card-elevated">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                          <DollarSign className="h-5 w-5 text-primary" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-muted-foreground">Claim Amount</p>
+                          <p className="text-xl font-bold">{formatCurrency(claimEvaluation.claim_amount ?? 0)}</p>
                         </div>
                       </div>
                     </CardContent>
@@ -422,7 +454,7 @@ export default function ClaimDetail() {
             <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4 p-4 w-full">
               <TabsList>
                 <TabsTrigger value="details">Claim Details</TabsTrigger>
-                <TabsTrigger value="documents">Documents</TabsTrigger>
+                <TabsTrigger value="documents">Vehicle Images</TabsTrigger>
                 {/* After Fraud Evaluation (or when Damage run): Fraud Evaluation before Claim Details */}
                 {!isOpenClaim && (
                   <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
@@ -430,7 +462,7 @@ export default function ClaimDetail() {
                 {/* After Damage Detection: AI Assessment first, then Fraud Evaluation, then Claim Details, Documents */}
                 {damageDetectionRun && (
                   <>
-                    <TabsTrigger value="assessment">AI Assessment</TabsTrigger>
+                    <TabsTrigger value="assessment">Damage Assessment</TabsTrigger>
                     <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
                   </>
                 )}
@@ -492,7 +524,7 @@ export default function ClaimDetail() {
                         <div className="flex items-start gap-3">
                           <Clock className="h-4 w-4 mt-1 text-muted-foreground" />
                           <div>
-                            <p className="text-sm font-medium">Submitted</p>
+                            <p className="text-sm font-medium">Claim Request Date</p>
                             <p className="text-sm text-muted-foreground">
                               {submittedDate
                                 ? new Date(submittedDate).toLocaleString(undefined, {
@@ -527,7 +559,7 @@ export default function ClaimDetail() {
                     <CardHeader>
                       <CardTitle className="text-base flex items-center gap-2">
                         <Brain className="h-4 w-4" />
-                        AI Damage Assessment
+                        Damage Assessment
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-6">
@@ -605,7 +637,7 @@ export default function ClaimDetail() {
               <TabsContent value="documents">
                 <Card className="card-elevated">
                   <CardHeader>
-                    <CardTitle className="text-base">Uploaded Documents</CardTitle>
+                    <CardTitle className="text-base">Vehicle Images</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="grid gap-4 sm:grid-cols-1">
@@ -839,7 +871,7 @@ export default function ClaimDetail() {
                         },
                         {
                           date: fnol.created_date,
-                          title: "AI Assessment",
+                          title: "Damage Assessment",
                           description: `Damage confidence: ${aiConfidence}%, Fraud: ${fraudBand}`,
                         },
                         {
@@ -884,10 +916,10 @@ export default function ClaimDetail() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <p className="text-sm font-medium">
-                    {fnol.policy_holder_name || claimant.driver_name || "—"}
+                  <p className="text-sm">
+                    Name: {fnol.policy_holder_name || claimant.driver_name || "—"}
                   </p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-sm text-muted-foreground mt-1">
                     Policy: {fnol.policy_number || policy.policy_number || "—"}
                   </p>
                 </div>

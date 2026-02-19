@@ -33,9 +33,9 @@ const getStatusVariant = (
 };
 
 const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("en-US", {
+  return new Intl.NumberFormat("th-TH", {
     style: "currency",
-    currency: "USD",
+    currency: "THB",
     minimumFractionDigits: 0,
   }).format(amount);
 };
