@@ -29,6 +29,9 @@ class FnolClaim(models.Model):
     flood_coverage = models.BooleanField(default=False, null=True, blank=True)
     fir_document_copy = models.CharField(max_length=255, null=True, blank=True)
     insurance_document_copy = models.CharField(max_length=255, null=True, blank=True)
+    excess_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True, default=0
+    )
     claim_status = models.ForeignKey(
         "ClaimStatus",
         on_delete=models.SET_NULL,

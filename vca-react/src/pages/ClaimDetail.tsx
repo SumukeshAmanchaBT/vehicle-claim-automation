@@ -763,6 +763,16 @@ export default function ClaimDetail() {
                               <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.claim_amount)}</p>
                             </div>
                             <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Excess Amount</p>
+                              <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.excess_amount ?? 0)}</p>
+                            </div>
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Estimated Repair</p>
+                              <p className="text-sm font-medium mt-1">
+                                {formatCurrency(claimEvaluation.estimated_repair ?? Math.max(0, (claimEvaluation.claim_amount ?? 0) - (claimEvaluation.excess_amount ?? 0)))}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border p-4">
                               <p className="text-xs text-muted-foreground">Threshold Value</p>
                               <p className="text-sm font-medium mt-1">{claimEvaluation.threshold_value ?? "—"}</p>
                             </div>
@@ -770,6 +780,12 @@ export default function ClaimDetail() {
                               <p className="text-xs text-muted-foreground">Claim Type</p>
                               <p className="text-sm font-medium mt-1">{claimEvaluation.claim_type ?? "—"}</p>
                             </div>
+                            {claimEvaluation.llm_severity && (
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">LLM Severity</p>
+                                <p className="text-sm font-medium mt-1">{claimEvaluation.llm_severity}</p>
+                              </div>
+                            )}
                             {claimEvaluation.reason && (
                               <div className="rounded-lg border p-4 sm:col-span-2">
                                 <p className="text-xs text-muted-foreground">Reason</p>
@@ -789,12 +805,6 @@ export default function ClaimDetail() {
                                     </span>
                                   ))}
                                 </div>
-                              </div>
-                            )}
-                            {claimEvaluation.llm_severity && (
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">LLM Severity</p>
-                                <p className="text-sm font-medium mt-1">{claimEvaluation.llm_severity}</p>
                               </div>
                             )}
                           </div>
