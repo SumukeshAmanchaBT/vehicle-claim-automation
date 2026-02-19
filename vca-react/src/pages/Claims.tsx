@@ -146,8 +146,6 @@ function getNextClaimId(claims: FnolResponse[]): string {
 
 function normalizeStatus(raw?: string | null): ClaimStatusKey {
   const value = (raw || "").trim().toLowerCase();
-
-  console.log("Normalizing status:", { raw, value });
   if (value === "closed damage detection") {
     return "auto_approved";
   }
@@ -182,7 +180,7 @@ function fnolToDisplay(fnol: FnolResponse) {
     policyNumber: r?.policy?.policy_number || fnol.policy_number || "—",
     customerName: r?.claimant?.driver_name || fnol.policy_holder_name || "—",
     vehicleInfo: vehicle,
-    incidentDate: r?.incident?.date_time_of_loss || fnol.incident_date_time || fnol.created_date,
+    claimRequestedDate: fnol.created_date || fnol.incident_date_time || r?.incident?.date_time_of_loss,
     claimType: r?.incident?.claim_type || fnol.claim_type || "—",
     estimatedAmount: r?.incident?.estimated_amount ?? 0,
     statusKey: normalizedStatus,
@@ -218,8 +216,8 @@ export default function Claims() {
   const displayClaims = useMemo(() => claims.map(fnolToDisplay), [claims]);
 
   type ClaimSortKey = "claimNumber" | "policy" | "customer" | "type" | "date" | "status";
-  const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
-  const [sortDir, setSortDir] = useState<SortDirection>("desc");
+  const [sortKey, setSortKey] = useState<ClaimSortKey | null>("claimNumber");
+  const [sortDir, setSortDir] = useState<SortDirection>("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
@@ -252,7 +250,7 @@ export default function Claims() {
             cmp = a.claimType.localeCompare(b.claimType);
             break;
           case "date":
-            cmp = new Date(a.incidentDate).getTime() - new Date(b.incidentDate).getTime();
+            cmp = new Date(a.claimRequestedDate).getTime() - new Date(b.claimRequestedDate).getTime();
             break;
           case "status":
             cmp = a.statusKey.localeCompare(b.statusKey);
@@ -387,7 +385,7 @@ export default function Claims() {
                     <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy No</SortableTableHead>
                     <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Insured /Customer</SortableTableHead>
                     <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Type</SortableTableHead>
-                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Date of Accident</SortableTableHead>
+                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Requested Date</SortableTableHead>
                     <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Stage</SortableTableHead>
                     <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>
@@ -426,7 +424,7 @@ export default function Claims() {
                         </TableCell>
                         <TableCell>{claim.claimType}</TableCell>
                         <TableCell className="text-muted-foreground">
-                          {new Date(claim.incidentDate).toLocaleDateString()}
+                          {new Date(claim.claimRequestedDate).toLocaleDateString()}
                         </TableCell>
                         {/* <TableCell className="font-medium">
                           {formatCurrency(claim.estimatedAmount)}
