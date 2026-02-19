@@ -89,7 +89,7 @@ class ClaimEvaluationResponse(models.Model):
     threshold_value = models.IntegerField(null=True, blank=True, default=0)
     claim_type = models.CharField(max_length=20, null=True, blank=True)
     decision = models.CharField(max_length=20, null=True, blank=True)
-    claim_status = models.CharField(max_length=20, null=True, blank=True)
+    claim_status = models.CharField(max_length=50, null=True, blank=True)
     reason = models.TextField(null=True, blank=True)
     llm_damages = models.TextField(
         null=True,

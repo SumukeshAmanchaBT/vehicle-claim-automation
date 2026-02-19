@@ -39,13 +39,13 @@ const CLAIM_STATUS_META: Record<
   ClaimStatusKey,
   { label: string; badge: BadgeVariant }
 > = {
-  auto_approved: { label: "Closed Damage Detection", badge: "approved" },
-  fraudulent: { label: "Fraudulent", badge: "rejected" },
-  manual_review: { label: "Manual Review", badge: "pending" },
-  open: { label: "Open", badge: "processing" },
+  auto_approved: { label: "Recommendation shared", badge: "approved" },
+  fraudulent: { label: "Business Rule Validation-fail", badge: "rejected" },
+  manual_review: { label: "Recommendation shared", badge: "pending" },
+  open: { label: "FNOL", badge: "processing" },
   pending: { label: "Pending", badge: "pending" },
   pending_damage_detection: {
-    label: "Pending Damage Detection",
+    label: "Business Rule Validation-pass",
     badge: "pending",
   },
 };
@@ -123,7 +123,7 @@ function getMockFnolPayload(claimId: string): FnolPayload {
       dl_copy_uploaded: true,
       photos_uploaded: true,
       fir_uploaded: true,
-      photos: ["/uploads/damage1.jpg"],
+      photos: ["CLM_D002_1.jpg", "CLM_D002_2.jpg"],
     },
     history: { previous_claims_last_12_months: 0 },
   };
@@ -146,19 +146,31 @@ function getNextClaimId(claims: FnolResponse[]): string {
 
 function normalizeStatus(raw?: string | null): ClaimStatusKey {
   const value = (raw || "").trim().toLowerCase();
-  if (value === "closed damage detection") {
+  if (value === "recommendation shared" || value === "closed damage detection") {
     return "auto_approved";
   }
-  if (value === "fraudulent") {
+  if (
+    value === "business rule validation-fail" ||
+    value === "fraudulent"
+  ) {
     return "fraudulent";
   }
   if (value === "manual review" || value === "manual_review") {
     return "manual_review";
   }
-  if (value === "open") {
+  if (
+    value === "fnol" ||
+    value === "open" ||
+    value === "open-fnol" ||
+    value === "open to fnol"
+  ) {
     return "open";
   }
-  if (value === "pending damage detection" || value === "pending_damage_detection") {
+  if (
+    value === "business rule validation-pass" ||
+    value === "pending damage detection" ||
+    value === "pending_damage_detection"
+  ) {
     return "pending_damage_detection";
   }
   // Fallback
@@ -216,8 +228,8 @@ export default function Claims() {
   const displayClaims = useMemo(() => claims.map(fnolToDisplay), [claims]);
 
   type ClaimSortKey = "claimNumber" | "policy" | "customer" | "type" | "date" | "status";
-  const [sortKey, setSortKey] = useState<ClaimSortKey | null>("claimNumber");
-  const [sortDir, setSortDir] = useState<SortDirection>("asc");
+  const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
+  const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
 
@@ -385,7 +397,7 @@ export default function Claims() {
                     <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy No</SortableTableHead>
                     <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Insured /Customer</SortableTableHead>
                     <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Type</SortableTableHead>
-                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Requested Date</SortableTableHead>
+                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Notification Date</SortableTableHead>
                     <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Stage</SortableTableHead>
                     <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>

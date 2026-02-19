@@ -633,25 +633,24 @@ def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to claim_status table.
     Fraud detection does NOT set closed statuses. Based on rule validation only:
-    - Rules passed (all fraud rules pass) -> Pending Damage Detection
-    - Rules failed (any fraud rule fails or Reject) -> Fraudulent
-    claim_status: 3=Fraudulent, 4=Pending Damage Detection
+    - Rules passed (all fraud rules pass) -> Business Rule Validation-pass
+    - Rules failed (any fraud rule fails or Reject) -> Business Rule Validation-fail
     """
     decision = (result.get("decision") or "").strip()
     fraud_rule_results = result.get("fraud_rule_results") or []
 
-    # Reject (policy inactive, high fraud) -> Fraudulent
+    # Reject (policy inactive, high fraud) -> Business Rule Validation-fail
     if decision == "Reject":
-        return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
+        return ClaimStatus.objects.filter(status_name__iexact="Business Rule Validation-fail").first()
 
-    # Any fraud rule failed -> Fraudulent
+    # Any fraud rule failed -> Business Rule Validation-fail
     for rule in fraud_rule_results:
         if rule.get("passed") is False:
-            return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
+            return ClaimStatus.objects.filter(status_name__iexact="Business Rule Validation-fail").first()
 
-    # All rules passed -> Pending Damage Detection (never closed)
+    # All rules passed -> Business Rule Validation-pass (never closed)
     return ClaimStatus.objects.filter(
-        status_name__iexact="Pending Damage Detection"
+        status_name__iexact="Business Rule Validation-pass"
     ).first()
 
 
@@ -709,7 +708,7 @@ def _run_process_claim_logic(data: dict) -> dict:
         return {
             "claim_id": complaint_id,
             "decision": "Manual Review",
-            "claim_status": "Open",
+            "claim_status": "FNOL",
             "reason": _get_fraud_rule_description("Missing Damage Photos"),
             "fraud_rule_results": fraud_rule_results,
             "damage_confidence": damage_detection(incident),
@@ -729,7 +728,7 @@ def _run_process_claim_logic(data: dict) -> dict:
         status = "Closed"
     else:
         decision = "Manual Review"
-        status = "Open"
+        status = "FNOL"
 
     return {
         "claim_id": complaint_id,
@@ -788,6 +787,16 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
     }
 
 
+def _get_claim_status_name(claim: FnolClaim, default: str = "FNOL") -> str:
+    """Return claim status name; use default if FK is null or points to a missing row."""
+    try:
+        if claim.claim_status_id is None:
+            return default
+        return claim.claim_status.status_name
+    except ClaimStatus.DoesNotExist:
+        return default
+
+
 def _fnol_claim_to_response(claim: FnolClaim) -> dict:
     """Convert FnolClaim to API response format. Includes latest evaluation amounts when available."""
     latest_eval = (
@@ -838,7 +847,7 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "insurance_document_copy": claim.insurance_document_copy,
         "damage_photos": photo_urls,
         "raw_response": _fnol_claim_to_raw_response(claim),
-        "status": claim.claim_status.status_name if claim.claim_status else "Open",
+        "status": _get_claim_status_name(claim),
         "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
         "llm_damages": llm_damages,
@@ -876,11 +885,11 @@ def list_fraud_claims(request):
         )
         if not eval_row:
             continue
-        status_name = (claim.claim_status.status_name if claim.claim_status else "") or ""
+        status_name = _get_claim_status_name(claim, default="") or ""
         status_lower = status_name.lower()
-        if "fraud" in status_lower or status_lower == "fraudulent":
+        if "business rule validation-fail" in status_lower or "fraud" in status_lower:
             ui_status = "confirmed"
-        elif status_lower in ("auto approved", "closed"):
+        elif status_lower in ("auto approved", "closed", "recommendation shared"):
             ui_status = "cleared"
         else:
             ui_status = "under_review"
