@@ -239,17 +239,15 @@ def damage_assessment(request):
                     except Exception:
                         pass
 
-                    # Determine decision and claim_status from LLM: ID 5=Close+Auto, ID 6=Close+Manual
+                    # Determine decision and claim_status from LLM; both map to Recommendation shared (id 4)
                     severity_lower = (severity_str or "").strip().lower()
                     if severity_lower in ("minor", "moderate") and damages and str(damages[0]).lower() != "none":
                         decision = "Auto Approve"
-                        status_id = 5  # Close and Auto Review
                     else:
                         decision = "Manual Review"
-                        status_id = 6  # Close and Manual Review
 
                     latest.decision = decision[:20]
-                    latest.claim_status = "Closed"
+                    latest.claim_status = "Recommendation shared"
                     latest.save(
                         update_fields=[
                             "llm_damages",
@@ -263,12 +261,14 @@ def damage_assessment(request):
                         ]
                     )
 
-                    # Update fnol_claims.claim_status to ID 5 or 6
+                    # Update fnol_claims.claim_status to Recommendation shared
                     fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
                     if fnol_claim:
                         from claims.models import ClaimStatus
 
-                        new_status = ClaimStatus.objects.filter(pk=status_id).first()
+                        new_status = ClaimStatus.objects.filter(
+                            status_name__iexact="Recommendation shared"
+                        ).first()
                         if new_status:
                             fnol_claim.claim_status = new_status
                             fnol_claim.save(update_fields=["claim_status"])

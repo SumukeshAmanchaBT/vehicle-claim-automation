@@ -89,7 +89,9 @@ export default function ClaimDetail() {
       .then((data) => {
         if (cancelled) return;
         setFnol(data);
-        const isClosed = (data.status || "").toLowerCase() === "closed damage detection";
+        const isClosed =
+          (data.status || "").toLowerCase() === "closed damage detection" ||
+          (data.status || "").toLowerCase() === "recommendation shared";
         if (isClosed) {
           setDamageDetectionRun(true);
         } else {
@@ -115,7 +117,9 @@ export default function ClaimDetail() {
     if (!fnol) return;
     const isOpen =
       !fnol.status ||
+      (fnol.status || "").toLowerCase() === "fnol" ||
       (fnol.status || "").toLowerCase() === "open" ||
+      (fnol.status || "").toLowerCase() === "open to fnol" ||
       (fnol.status || "").toLowerCase() === "pending";
     if (isOpen && activeTab === "fraud-evaluation") {
       setActiveTab("details");
@@ -190,6 +194,9 @@ export default function ClaimDetail() {
       await runDamageAssessment(id, imageUrls);
       setDamageDetectionRun(true);
       setActiveTab("assessment");
+      // Refetch claim so status updates to "Recommendation shared" in the UI
+      const updatedFnol = await getFnolById(id!);
+      setFnol(updatedFnol);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Damage detection failed");
     } finally {
@@ -246,7 +253,7 @@ export default function ClaimDetail() {
   const fraudBand = assessment?.fraud_score ?? "—";
   const fraudScore = fraudBandToNumeric(fraudBand);
   const decision = assessment?.decision ?? "Pending";
-  const claimStatus = assessment?.claim_status ?? "Open";
+  const claimStatus = assessment?.claim_status ?? "FNOL";
   const damageTypes = incidentDescription
     ? incidentDescription.split(/[,&]|\band\b/i).map((s: string) => s.trim()).filter(Boolean)
     : [];
@@ -261,7 +268,8 @@ export default function ClaimDetail() {
 
   // Only use persisted fnol.status (from fnol_claims.claim_status), not live assessment.decision
   const isAutoApproved =
-    (fnol.status || "").toLowerCase() === "closed damage detection";
+    (fnol.status || "").toLowerCase() === "closed damage detection" ||
+    (fnol.status || "").toLowerCase() === "recommendation shared";
 
 
 
@@ -269,18 +277,24 @@ export default function ClaimDetail() {
   const statusForCheck = (fnol.status || claimStatus || "").toLowerCase();
 
   const isPendingDamageDetection =
-    statusForCheck === "pending damage detection" || statusForCheck === "pending_damage_detection";
+    statusForCheck === "business rule validation-pass" ||
+    statusForCheck === "pending damage detection" ||
+    statusForCheck === "pending_damage_detection";
 
 
 
-  const isFraudDetection = statusForCheck === "fraudulent";
+  const isFraudDetection =
+    statusForCheck === "business rule validation-fail" ||
+    statusForCheck === "fraudulent";
   console.log("Fraud detection done:", isFraudDetection);
 
   console.log("Is pending damage detection:", isPendingDamageDetection);
   // Open claim: show Claim Details + Documents only; hide AI Assessment, Fraud Evaluation tab, overview cards
   const isOpenClaim =
     !fnol.status ||
+    (fnol.status || "").toLowerCase() === "fnol" ||
     (fnol.status || "").toLowerCase() === "open" ||
+    (fnol.status || "").toLowerCase() === "open to fnol" ||
     (fnol.status || "").toLowerCase() === "pending";
 
   return (
