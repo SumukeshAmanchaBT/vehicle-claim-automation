@@ -101,6 +101,8 @@ export interface ClaimEvaluationResponse {
   damage_confidence: number;
   estimated_amount: number;
   claim_amount: number;
+  excess_amount: number;
+  estimated_repair: number;
   threshold_value: number;
   claim_type: string;
   decision: string;

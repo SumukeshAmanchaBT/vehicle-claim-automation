@@ -212,7 +212,7 @@ export default function MasterData() {
 
   // Pricing config: search, sort, pagination
   const [pricingSearch, setPricingSearch] = useState("");
-  const [pricingSortKey, setPricingSortKey] = useState<"key" | "name" | "value" | "type" | "status" | null>("key");
+  const [pricingSortKey, setPricingSortKey] = useState<"key" | "name" | "value" | "status" | null>("key");
   const [pricingSortDir, setPricingSortDir] = useState<SortDirection>("asc");
   const [pricingPage, setPricingPage] = useState(1);
   const [pricingPageSize, setPricingPageSize] = useState(10);
@@ -233,7 +233,6 @@ export default function MasterData() {
       if (pricingSortKey === "key") cmp = (a.config_key ?? "").localeCompare(b.config_key ?? "");
       else if (pricingSortKey === "name") cmp = (a.config_name ?? "").localeCompare(b.config_name ?? "");
       else if (pricingSortKey === "value") cmp = (a.config_value ?? "").localeCompare(b.config_value ?? "");
-      else if (pricingSortKey === "type") cmp = (a.config_type ?? "").localeCompare(b.config_type ?? "");
       else if (pricingSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
       return pricingSortDir === "desc" ? -cmp : cmp;
     });
@@ -1598,7 +1597,7 @@ export default function MasterData() {
                         direction={pricingSortDir}
                         onSort={(k) => {
                           if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "status"); setPricingSortDir("asc"); }
                           setPricingPage(1);
                         }}
                         className="pl-6"
@@ -1611,7 +1610,7 @@ export default function MasterData() {
                         direction={pricingSortDir}
                         onSort={(k) => {
                           if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "status"); setPricingSortDir("asc"); }
                           setPricingPage(1);
                         }}
                       >
@@ -1623,23 +1622,11 @@ export default function MasterData() {
                         direction={pricingSortDir}
                         onSort={(k) => {
                           if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "status"); setPricingSortDir("asc"); }
                           setPricingPage(1);
                         }}
                       >
                         Price
-                      </SortableTableHead>
-                      <SortableTableHead
-                        sortKey="type"
-                        currentSortKey={pricingSortKey}
-                        direction={pricingSortDir}
-                        onSort={(k) => {
-                          if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
-                          setPricingPage(1);
-                        }}
-                      >
-                        Type
                       </SortableTableHead>
                       <SortableTableHead
                         sortKey="status"
@@ -1647,7 +1634,7 @@ export default function MasterData() {
                         direction={pricingSortDir}
                         onSort={(k) => {
                           if (pricingSortKey === k) setPricingSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setPricingSortKey(k as "key" | "name" | "value" | "type" | "status"); setPricingSortDir("asc"); }
+                          else { setPricingSortKey(k as "key" | "name" | "value" | "status"); setPricingSortDir("asc"); }
                           setPricingPage(1);
                         }}
                       >
@@ -1659,13 +1646,13 @@ export default function MasterData() {
                   <TableBody>
                     {loading ? (
                       <TableRow>
-                        <TableCell className="pl-6" colSpan={6}>
+                        <TableCell className="pl-6" colSpan={5}>
                           Loading pricing configs...
                         </TableCell>
                       </TableRow>
                     ) : filteredPricing.length === 0 ? (
                       <TableRow>
-                        <TableCell className="pl-6" colSpan={6}>
+                        <TableCell className="pl-6" colSpan={5}>
                           No pricing configs configured.
                         </TableCell>
                       </TableRow>
@@ -1677,7 +1664,6 @@ export default function MasterData() {
                           </TableCell>
                           <TableCell>{config.config_name}</TableCell>
                           <TableCell className="max-w-[120px] truncate">{config.config_value}</TableCell>
-                          <TableCell>{config.config_type}</TableCell>
                           <TableCell>
                             <Switch
                               checked={config.is_active}

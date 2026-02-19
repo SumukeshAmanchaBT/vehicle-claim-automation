@@ -18,6 +18,7 @@ export interface FnolPayload {
     loss_description: string;
     claim_type: string;
     estimated_amount: number;
+    excess_amount?: number;
     accident_location?: string;
     liability_admission?: boolean;
     dashcam_cctv_evidence?: boolean;
@@ -79,6 +80,7 @@ export interface FnolResponse {
   status?: string;
   estimated_amount?: number | null;
   claim_amount?: number | null;
+  excess_amount?: number | null;
   created_date: string;
   created_by: string | null;
   updated_date: string;

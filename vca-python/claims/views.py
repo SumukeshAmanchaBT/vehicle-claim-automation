@@ -850,6 +850,7 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "status": _get_claim_status_name(claim),
         "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
+        "excess_amount": float(claim.excess_amount or 0) if getattr(claim, "excess_amount", None) is not None else 0,
         "llm_damages": llm_damages,
         "llm_severity": llm_severity,
         "created_date": claim.created_date.isoformat() if getattr(claim, "created_date", None) else None,
@@ -943,7 +944,8 @@ def get_fnol(request, pk: str):
 def get_claim_evaluation(request, complaint_id: str):
     """
     Return the latest claim evaluation response for a complaint_id.
-    Includes damage_confidence, estimated_amount, claim_amount, decision, claim_status,
+    Includes damage_confidence, estimated_amount, claim_amount, excess_amount (from fnol_claims),
+    estimated_repair (claim_amount - excess_amount), decision, claim_status,
     reason, llm_damages, llm_severity (from damage assessment).
     """
     latest = (
@@ -962,18 +964,37 @@ def get_claim_evaluation(request, complaint_id: str):
             damages = json.loads(latest.llm_damages)
         except (json.JSONDecodeError, TypeError):
             damages = None
+
+    claim_amount = float(latest.claim_amount or 0)
+    fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
+    excess_amount = float(fnol_claim.excess_amount or 0) if fnol_claim and getattr(fnol_claim, "excess_amount", None) is not None else 0
+    estimated_repair = max(0, claim_amount - excess_amount)
+
+    # Business rule override: map claim_type to severity band
+    claim_type_upper = (latest.claim_type or "").strip().upper()
+    if claim_type_upper == "SIMPLE":
+        llm_severity_out = "minor"
+    elif claim_type_upper == "MEDIUM":
+        llm_severity_out = "moderate"
+    elif claim_type_upper == "COMPLEX":
+        llm_severity_out = "severe"
+    else:
+        llm_severity_out = latest.llm_severity
+
     return Response({
         "complaint_id": latest.complaint_id,
         "damage_confidence": float(latest.damage_confidence or 0),
         "estimated_amount": float(latest.estimated_amount or 0),
-        "claim_amount": float(latest.claim_amount or 0),
+        "claim_amount": claim_amount,
+        "excess_amount": excess_amount,
+        "estimated_repair": estimated_repair,
         "threshold_value": latest.threshold_value,
         "claim_type": latest.claim_type,
         "decision": latest.decision,
         "claim_status": latest.claim_status,
         "reason": latest.reason,
         "llm_damages": damages,
-        "llm_severity": latest.llm_severity,
+        "llm_severity": llm_severity_out,
         "created_date": latest.created_date.isoformat() if latest.created_date else None,
         "updated_date": latest.updated_date.isoformat() if latest.updated_date else None,
     })
@@ -1189,6 +1210,16 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
     commercial_vehicle = _bool(data.get("commercial_vehicle") if "commercial_vehicle" in data else incident.get("commercial_vehicle"))
     flood_coverage = _bool(data.get("flood_coverage") if "flood_coverage" in data else incident.get("flood_coverage"))
 
+    def _decimal(v):
+        if v is None:
+            return None
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+
+    excess_amount = _decimal(incident.get("excess_amount") if "excess_amount" in (incident or {}) else data.get("excess_amount"))
+
     return {
         "complaint_id": complaint_id,
         "coverage_type": policy.get("coverage_type"),
@@ -1212,6 +1243,7 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "flood_coverage": flood_coverage,
         "fir_document_copy": documents.get("fir_path") if isinstance(documents.get("fir_path"), str) else None,
         "insurance_document_copy": documents.get("insurance_path") if isinstance(documents.get("insurance_path"), str) else None,
+        "excess_amount": excess_amount,
     }
 
 

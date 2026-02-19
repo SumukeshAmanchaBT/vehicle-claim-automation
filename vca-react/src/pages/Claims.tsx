@@ -87,8 +87,23 @@ function randomThaiPolicyNumber(): string {
   return `${prefix}-${shortYear}-${num}`;
 }
 
+/** Coverage types for random default. */
+const COVERAGE_TYPES = ["Type 2+", "Type 1", "Type 3+"] as const;
+
+/** Default incident description when no previous claims. */
+const DEFAULT_LOSS_DESCRIPTION = "Own damage - bumper and left fender";
+
+/** Pick a random incident description from previous claims, or default. */
+function randomIncidentDescription(previousClaims: FnolResponse[]): string {
+  const descriptions = previousClaims
+    .map((c) => c.raw_response?.incident?.loss_description ?? c.incident_description ?? "")
+    .filter((s) => s.trim().length > 0);
+  if (descriptions.length === 0) return DEFAULT_LOSS_DESCRIPTION;
+  return randomChoice(descriptions);
+}
+
 /** Build one mock FNOL payload with a dynamic claim_id (used once per "Fetch FNOL Data" click). */
-function getMockFnolPayload(claimId: string): FnolPayload {
+function getMockFnolPayload(claimId: string, previousClaims: FnolResponse[] = []): FnolPayload {
   const now = new Date();
   const policyNum = randomThaiPolicyNumber();
   const driverName = randomThaiName();
@@ -97,7 +112,7 @@ function getMockFnolPayload(claimId: string): FnolPayload {
     policy: {
       policy_number: policyNum,
       policy_status: "Active",
-      coverage_type: "Comprehensive",
+      coverage_type: randomChoice([...COVERAGE_TYPES]),
       policy_start_date: "2025-01-01",
       policy_end_date: "2026-12-31",
     },
@@ -109,9 +124,10 @@ function getMockFnolPayload(claimId: string): FnolPayload {
     },
     incident: {
       date_time_of_loss: now.toISOString(),
-      loss_description: "Own damage - bumper and left fender",
+      loss_description: randomIncidentDescription(previousClaims),
       claim_type: "Own Damage",
       estimated_amount: 45000,
+      excess_amount: 7000,
     },
     claimant: {
       driver_name: driverName,
@@ -304,7 +320,7 @@ export default function Claims() {
     setFetchFnolLoading(true);
     try {
       const claimId = getNextClaimId(claims);
-      const payload = getMockFnolPayload(claimId);
+      const payload = getMockFnolPayload(claimId, claims);
       await saveFnol(payload);
       const data = await getFnolList();
       setClaims(data);
