@@ -160,7 +160,7 @@ export default function ClaimDetail() {
       setActiveTab("fraud-evaluation");
       setFraudSuccessModalOpen(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Fraud detection failed");
+      setError(err instanceof Error ? err.message : "Business Rule Validation failed");
     } finally {
       setFraudDetectionLoading(false);
     }
@@ -286,7 +286,7 @@ export default function ClaimDetail() {
   const isFraudDetection =
     statusForCheck === "business rule validation-fail" ||
     statusForCheck === "fraudulent";
-  console.log("Fraud detection done:", isFraudDetection);
+  console.log("Business Rule Validation done:", isFraudDetection);
 
   console.log("Is pending damage detection:", isPendingDamageDetection);
   // Open claim: show Claim Details + Documents only; hide AI Assessment, Fraud Evaluation tab, overview cards
@@ -332,7 +332,7 @@ export default function ClaimDetail() {
                       Validating...
                     </>
                   ) : (
-                    "Fraud Detection"
+                    "Business Rule Validation"
                   )}
                 </Button>
               )
@@ -359,10 +359,10 @@ export default function ClaimDetail() {
         <Dialog open={fraudSuccessModalOpen} onOpenChange={setFraudSuccessModalOpen}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Fraud Detection Evaluated Successfully</DialogTitle>
+              <DialogTitle>Business Rule Validation Evaluated Successfully</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
-              Fraud detection has been completed for this claim. You can review the results in the Fraud Evaluation tab.
+              Business Rule Validation has been completed for this claim. You can review the results in the Fraud Evaluation tab.
             </p>
             <DialogFooter>
               <Button onClick={() => setFraudSuccessModalOpen(false)}>OK</Button>
@@ -397,7 +397,7 @@ export default function ClaimDetail() {
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">
-                          {fraudScore >= 50 ? "Fraud Risk Detected" : "No Fraud Detected"}
+                          {fraudScore >= 50 ? "Business Rule Validation Failed" : "Business Rule Validation Passed"}
                         </p>
                         <p
                           className={`text-xl font-bold ${fraudScore >= 50 ? "text-destructive" : "text-success"
@@ -838,7 +838,7 @@ export default function ClaimDetail() {
                         if (rules.length === 0) {
                           return (
                             <p className="text-sm text-muted-foreground py-8 text-center">
-                              Click &quot;Fraud Detection&quot; to run validation and see results.
+                              Click &quot;Business Rule Validation&quot; to run validation and see results.
                             </p>
                           );
                         }
