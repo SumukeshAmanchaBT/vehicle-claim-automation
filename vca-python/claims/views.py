@@ -9,7 +9,8 @@ from typing import Optional, Tuple
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User, Group
-from django.db.models import Q
+from django.db import connection
+from django.db.models import Max, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
@@ -392,6 +393,16 @@ def fraud_check(
             except (TypeError, ValueError):
                 pass
 
+    # 4) Liability Admission, Dashcam CCTV Evidence, Injury Indicator, Commercial Vehicle (risk when TRUE)
+    if _is_fraud_rule_active("Liability Admission") and incident.get("liability_admission"):
+        return "High", _get_fraud_rule_description("Liability Admission")
+    if _is_fraud_rule_active("Dashcam CCTV Evidence") and incident.get("dashcam_cctv_evidence"):
+        return "High", _get_fraud_rule_description("Dashcam CCTV Evidence")
+    if _is_fraud_rule_active("Injury Indicator") and incident.get("injury_indicator"):
+        return "High", _get_fraud_rule_description("Injury Indicator")
+    if _is_fraud_rule_active("Commercial Vehicle") and incident.get("commercial_vehicle"):
+        return "High", _get_fraud_rule_description("Commercial Vehicle")
+
     return "Low", ""
 
 
@@ -413,21 +424,22 @@ def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[d
     return False
 
 
-def _get_fraud_evaluation_rules(
-    incident: dict, policy: dict, vehicle: dict, documents: dict,
+def _evaluate_single_fraud_rule(
+    rule_type: str,
+    incident: dict,
+    policy: dict,
+    vehicle: dict,
+    documents: dict,
     complaint_id: Optional[str] = None,
-) -> list[dict]:
+) -> Tuple[bool, str]:
     """
-    Evaluate each active Fraud Check rule and return pass/fail.
-    Returns list of {rule_type, rule_description, passed}.
+    Evaluate one Fraud Check rule by rule_type. Returns (passed, description).
     """
+    desc = _get_fraud_rule_description(rule_type)
     vehicle = vehicle or {}
     documents = documents or {}
-    results = []
 
-    # Early Claim
-    if _is_fraud_rule_active("Early Claim"):
-        desc = _get_fraud_rule_description("Early Claim")
+    if rule_type == "Early Claim":
         early_window_days = _get_early_claim_window_days()
         start_date = parse_date(policy.get("policy_start_date"))
         loss_dt = parse_datetime(incident.get("date_time_of_loss"))
@@ -436,17 +448,13 @@ def _get_fraud_evaluation_rules(
             days_diff = (loss_dt.date() - start_date).days
             if days_diff < 0 or days_diff < early_window_days:
                 passed = False
-        results.append({"rule_type": "Early Claim", "rule_description": desc, "passed": passed})
+        return passed, desc
 
-    # Data missing
-    if _is_fraud_rule_active("Data missing"):
-        desc = _get_fraud_rule_description("Data missing")
+    if rule_type == "Data missing":
         passed = bool((incident.get("loss_description") or "").strip())
-        results.append({"rule_type": "Data missing", "rule_description": desc, "passed": passed})
+        return passed, desc
 
-    # Vehicle Year Invalid
-    if _is_fraud_rule_active("Vehicle Year Invalid"):
-        desc = _get_fraud_rule_description("Vehicle Year Invalid")
+    if rule_type == "Vehicle Year Invalid":
         vehicle_year = vehicle.get("year")
         passed = True
         if vehicle_year is not None:
@@ -456,13 +464,55 @@ def _get_fraud_evaluation_rules(
                     passed = False
             except (TypeError, ValueError):
                 pass
-        results.append({"rule_type": "Vehicle Year Invalid", "rule_description": desc, "passed": passed})
+        return passed, desc
 
-    # Missing Damage Photos - check fnol_damage_photos when complaint_id given, else documents
-    if _is_fraud_rule_active("Missing Damage Photos"):
-        desc = _get_fraud_rule_description("Missing Damage Photos")
+    if rule_type == "Missing Damage Photos":
         passed = _has_damage_photos(complaint_id=complaint_id, documents=documents)
-        results.append({"rule_type": "Missing Damage Photos", "rule_description": desc, "passed": passed})
+        return passed, desc
+
+    # Risk when TRUE → passed when FALSE
+    if rule_type == "Liability Admission":
+        return not bool(incident.get("liability_admission")), desc
+    if rule_type == "Dashcam CCTV Evidence":
+        return not bool(incident.get("dashcam_cctv_evidence")), desc
+    if rule_type == "Injury Indicator":
+        return not bool(incident.get("injury_indicator")), desc
+    if rule_type == "Commercial Vehicle":
+        return not bool(incident.get("commercial_vehicle")), desc
+
+    # Unknown rule_type: show in UI with passed=True and DB description
+    return True, desc
+
+
+def _get_fraud_evaluation_rules(
+    incident: dict, policy: dict, vehicle: dict, documents: dict,
+    complaint_id: Optional[str] = None,
+) -> list[dict]:
+    """
+    Evaluate each active Fraud Check rule from claim_rule_master and return pass/fail.
+    Returns list of {rule_type, rule_description, passed} for all active rules in the table.
+    """
+    vehicle = vehicle or {}
+    documents = documents or {}
+    results = []
+
+    rules = ClaimRuleMaster.objects.filter(
+        rule_group__iexact="Fraud Check",
+        is_active=True,
+    ).order_by("rule_id")
+
+    for rule in rules:
+        rule_type = (rule.rule_type or "").strip()
+        if not rule_type:
+            continue
+        passed, desc = _evaluate_single_fraud_rule(
+            rule_type, incident, policy, vehicle, documents, complaint_id=complaint_id
+        )
+        results.append({
+            "rule_type": rule_type,
+            "rule_description": rule.rule_description or desc,
+            "passed": passed,
+        })
 
     return results
 
@@ -539,23 +589,23 @@ def _fraud_band_to_numeric(band: str) -> float:
 
 def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
-    Map run_fraud_detection result to claim_status table.
-    claim_status: 1=Open, 2=Pending, 3=Fraudulent, 4=Pending Damage Detection,
-                  5=Close and Auto Review, 6=Close and Manual Review
+    Map run_fraud_detection result to fnol_claims.claim_status (claim_status table).
+    Business Rule Validation:
+      - All rules passed → claim_status_id = 3 (Business Rule Validation-pass)
+      - Any rule failed / Reject → claim_status_id = 2 (Business Rule Validation-fail)
     """
     decision = (result.get("decision") or "").strip()
-    reason = (result.get("reason") or "").strip().lower()
     if decision == "Reject":
-        return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
-    if decision == "Auto Approve":
-        return ClaimStatus.objects.filter(pk=5).first()  # Close and Auto Review
-    if decision == "Manual Review":
-        if "photos" in reason or "photo" in reason:
-            return ClaimStatus.objects.filter(
-                status_name__iexact="Pending Damage Detection"
-            ).first()
-        return ClaimStatus.objects.filter(pk=6).first()  # Close and Manual Review
-    return ClaimStatus.objects.filter(status_name__iexact="Open").first()
+        # Fail: policy inactive or high fraud → fnol_claims.claim_status = 2
+        status = ClaimStatus.objects.filter(pk=2).first()
+        return status or ClaimStatus.objects.filter(
+            status_name__iexact="Business Rule Validation-fail"
+        ).first()
+    # All rules passed → fnol_claims.claim_status = 3
+    status = ClaimStatus.objects.filter(pk=3).first()
+    return status or ClaimStatus.objects.filter(
+        status_name__iexact="Business Rule Validation-pass"
+    ).first()
 
 
 def _run_process_claim_logic(data: dict) -> dict:
@@ -672,6 +722,10 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
             "loss_description": claim.incident_description or "",
             "claim_type": claim.incident_type or "",
             "estimated_amount": 0,  # fnol_claims schema doesn't include this; can be extended
+            "liability_admission": getattr(claim, "liability_admission", None),
+            "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+            "injury_indicator": getattr(claim, "injury_indicator", None),
+            "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
         },
         "claimant": {"driver_name": claim.policy_holder_name or ""},
         "documents": {
@@ -687,11 +741,9 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
 
 def _fnol_claim_to_response(claim: FnolClaim) -> dict:
     """Convert FnolClaim to API response format. Includes latest evaluation amounts when available."""
-    latest_eval = (
-        ClaimEvaluationResponse.objects.filter(complaint_id=claim.complaint_id)
-        .order_by("-created_date")
-        .first()
-    )
+    latest_eval = ClaimEvaluationResponse.objects.filter(
+        complaint_id=claim.complaint_id, is_latest=True
+    ).first()
     estimated_amount = None
     claim_amount = None
     llm_damages = None
@@ -760,11 +812,9 @@ def list_fraud_claims(request):
     )
     results = []
     for claim in fnol_claims:
-        eval_row = (
-            ClaimEvaluationResponse.objects.filter(complaint_id=claim.complaint_id)
-            .order_by("-created_date")
-            .first()
-        )
+        eval_row = ClaimEvaluationResponse.objects.filter(
+            complaint_id=claim.complaint_id, is_latest=True
+        ).first()
         if not eval_row:
             continue
         status_name = (claim.claim_status.status_name if claim.claim_status else "") or ""
@@ -828,11 +878,9 @@ def get_claim_evaluation(request, complaint_id: str):
     Includes damage_confidence, estimated_amount, claim_amount, decision, claim_status,
     reason, llm_damages, llm_severity (from damage assessment).
     """
-    latest = (
-        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
-        .order_by("-created_date")
-        .first()
-    )
+    latest = ClaimEvaluationResponse.objects.filter(
+        complaint_id=complaint_id, is_latest=True
+    ).first()
     if not latest:
         return Response(
             {"error": f"No evaluation found for complaint_id: {complaint_id}"},
@@ -846,6 +894,8 @@ def get_claim_evaluation(request, complaint_id: str):
             damages = None
     return Response({
         "complaint_id": latest.complaint_id,
+        "version": latest.version,
+        "is_latest": latest.is_latest,
         "damage_confidence": float(latest.damage_confidence or 0),
         "estimated_amount": float(latest.estimated_amount or 0),
         "claim_amount": float(latest.claim_amount or 0),
@@ -1110,6 +1160,15 @@ def run_fraud_detection(request, complaint_id: str):
     fnol_claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
     raw_response = _fnol_claim_to_raw_response(fnol_claim)
 
+    # Use existing evaluation's claim_amount for threshold so threshold_value is not always 25
+    existing = ClaimEvaluationResponse.objects.filter(
+        complaint_id=complaint_id, is_latest=True
+    ).first()
+    if existing and (existing.claim_amount or existing.estimated_amount):
+        amount = float(existing.claim_amount or existing.estimated_amount or 0)
+        if amount > 0:
+            raw_response.setdefault("incident", {})["estimated_amount"] = amount
+
     result = _run_process_claim_logic(raw_response)
 
     user_id = None
@@ -1119,15 +1178,27 @@ def run_fraud_detection(request, complaint_id: str):
     threshold_val = result.get("threshold")
     threshold_int = int(round((threshold_val or 0) * 100)) if threshold_val is not None else 0
 
+    # Versioning: next version per complaint_id, and clear is_latest on previous rows
+    next_version = (
+        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id).aggregate(
+            v=Max("version")
+        )["v"]
+        or 0
+    ) + 1
+    ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id).update(
+        is_latest=False
+    )
     ClaimEvaluationResponse.objects.create(
         complaint_id=complaint_id,
+        version=next_version,
+        is_latest=True,
         damage_confidence=result.get("damage_confidence") or 0,
         estimated_amount=result.get("estimated_amount") or 0,
         claim_amount=result.get("claim_amount") or result.get("estimated_amount") or 0,
         threshold_value=threshold_int,
         claim_type=(result.get("claim_type") or "")[:20],
         decision=(result.get("decision") or "")[:20],
-        claim_status=(result.get("claim_status") or "")[:20],
+        claim_status=(result.get("claim_status") or "")[:50],
         reason=result.get("reason"),
         created_by=user_id,
         updated_by=user_id,

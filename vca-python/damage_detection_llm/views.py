@@ -190,11 +190,9 @@ def damage_assessment(request):
             if claim_id and isinstance(claim_id, str) and claim_id.strip():
                 from claims.models import ClaimEvaluationResponse
 
-                latest = (
-                    ClaimEvaluationResponse.objects.filter(complaint_id=claim_id.strip())
-                    .order_by("-created_date")
-                    .first()
-                )
+                latest = ClaimEvaluationResponse.objects.filter(
+                    complaint_id=claim_id.strip(), is_latest=True
+                ).first()
                 if latest:
                     base_amount = float(latest.estimated_amount or 0)
             claim_amount = estimate_claim_amount_from_config(
@@ -215,11 +213,9 @@ def damage_assessment(request):
             try:
                 from claims.models import ClaimEvaluationResponse, FnolClaim
 
-                latest = (
-                    ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
-                    .order_by("-created_date")
-                    .first()
-                )
+                latest = ClaimEvaluationResponse.objects.filter(
+                    complaint_id=complaint_id, is_latest=True
+                ).first()
                 if latest:
                     damages_json = json.dumps(damages) if damages else None
                     latest.llm_damages = damages_json

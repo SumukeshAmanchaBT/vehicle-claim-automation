@@ -77,9 +77,20 @@ class FnolDamagePhoto(models.Model):
 class ClaimEvaluationResponse(models.Model):
     """
     Stores evaluation results from process_claim / fraud detection (claim_evaluation_response table).
+    Supports versioning: each new evaluation for a complaint_id is stored as a new row with
+    version = max(version for complaint_id) + 1 and is_latest=True; previous rows get is_latest=False.
     """
 
     complaint_id = models.CharField(max_length=20, db_column="complaint_id")
+    version = models.PositiveIntegerField(
+        default=1,
+        help_text="Version number per complaint_id (1, 2, 3...). New evaluation = new version.",
+    )
+    is_latest = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="True only for the most recent evaluation row for this complaint_id.",
+    )
     damage_confidence = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True, default=0
     )
@@ -115,9 +126,12 @@ class ClaimEvaluationResponse(models.Model):
 
     class Meta:
         db_table = "claim_evaluation_response"
+        indexes = [
+            models.Index(fields=["complaint_id", "is_latest"], name="cer_complaint_latest"),
+        ]
 
     def __str__(self) -> str:
-        return f"ClaimEvaluationResponse(id={self.id}, complaint_id={self.complaint_id})"
+        return f"ClaimEvaluationResponse(id={self.id}, complaint_id={self.complaint_id}, v={self.version})"
 
 
 class ClaimRuleMaster(models.Model):
