@@ -63,6 +63,18 @@ export interface FraudClaimItem {
   status: "under_review" | "confirmed" | "cleared";
   detectedAt: string | null;
   indicators: string[];
+  /** 1 = re-opened claim, show Reopen button in Fraud Detection actions; 0 = new/fetched */
+  re_open?: number;
+  /** Number of times this claim was processed (rows in claim_evaluation_response) */
+  times_processed?: number;
+  /** All evaluation records for this claim (complaint_id, threshold_value, claim_status, reason) */
+  evaluation_records?: {
+    complaint_id: string;
+    version: number;
+    threshold_value: number | null;
+    claim_status: string;
+    reason: string;
+  }[];
 }
 
 /** GET /api/fraud-claims - List claims that have been through fraud detection */

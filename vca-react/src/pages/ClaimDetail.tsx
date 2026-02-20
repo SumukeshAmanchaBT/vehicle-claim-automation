@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, useSearchParams, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -68,6 +68,8 @@ function fraudBandToNumeric(band: string): number {
 
 export default function ClaimDetail() {
   const { id } = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
+  const isReopenFlow = searchParams.get("reopen") === "1";
   const [fnol, setFnol] = useState<FnolResponse | null>(null);
   const [assessment, setAssessment] = useState<ProcessClaimResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -376,7 +378,22 @@ export default function ClaimDetail() {
                 )}
               </Button>
             ) : null}
-            {!damageDetectionRun && !isFraudDetection ? (
+            {fnol?.re_open === 1 && isReopenFlow ? (
+              <Button
+                onClick={handleFraudDetection}
+                disabled={fraudDetectionLoading || !fnol}
+              >
+                {fraudDetectionLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Validating...
+                  </>
+                ) : (
+                  "Re-validation of Business Rules"
+                )}
+              </Button>
+            ) : null}
+            {!damageDetectionRun && !isFraudDetection && !(fnol?.re_open === 1 && isReopenFlow) ? (
               <Button
                 onClick={handleFraudDetection}
                 disabled={fraudDetectionLoading || !fnol || hasBusinessRuleValidationPassed}
