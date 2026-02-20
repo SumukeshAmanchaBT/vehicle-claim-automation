@@ -115,7 +115,7 @@ export default function ClaimDetail() {
     return () => { cancelled = true; };
   }, [id]);
 
-  // When claim is Open, switch away from Fraud Evaluation tab (must be before early returns - hooks rule)
+  // When claim is Open and we have no fraud result, switch away from Fraud Evaluation tab (must be before early returns - hooks rule)
   useEffect(() => {
     if (!fnol) return;
     const isOpen =
@@ -124,10 +124,11 @@ export default function ClaimDetail() {
       (fnol.status || "").toLowerCase() === "open" ||
       (fnol.status || "").toLowerCase() === "open to fnol" ||
       (fnol.status || "").toLowerCase() === "pending";
-    if (isOpen && activeTab === "fraud-evaluation") {
+    // Don't switch away if user just ran Business Rule Validation (fraudResult is set)
+    if (isOpen && activeTab === "fraud-evaluation" && !fraudResult) {
       setActiveTab("details");
     }
-  }, [fnol, activeTab]);
+  }, [fnol, activeTab, fraudResult]);
 
   // Fetch claim evaluation when status is Closed: Auto review or Closed: Manual review
   const statusLower = (fnol?.status || "").toLowerCase();
@@ -308,8 +309,10 @@ export default function ClaimDetail() {
   const isFraudDetection =
     statusForCheck === "business rule validation-fail" ||
     statusForCheck === "fraudulent";
+  // All rules passed: from status (Business Rule Validation-pass) or from last run result (Low risk)
+  const hasBusinessRuleValidationPassed =
+    isPendingDamageDetection || (!!fraudResult && fraudScore < 50);
   console.log("Business Rule Validation done:", isFraudDetection);
-
   console.log("Is pending damage detection:", isPendingDamageDetection);
 
   const isRecommendationShared =
@@ -357,26 +360,10 @@ export default function ClaimDetail() {
                 )}
               </Button>
             )}
-            {!isPendingDamageDetection ? (
-              (!isFraudDetection && !damageDetectionRun) && (
-                <Button
-                  onClick={handleFraudDetection}
-                  disabled={fraudDetectionLoading || !fnol}
-                >
-                  {fraudDetectionLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Validating...
-                    </>
-                  ) : (
-                    "Business Rule Validation"
-                  )}
-                </Button>
-              )
-            ) : (
+            {hasBusinessRuleValidationPassed && !isRecommendationShared ? (
               <Button
                 variant="destructive"
-                disabled={!isPendingDamageDetection || damageDetectionLoading}
+                disabled={damageDetectionLoading}
                 onClick={handleDamageDetection}
               >
                 {damageDetectionLoading ? (
@@ -388,7 +375,22 @@ export default function ClaimDetail() {
                   "Damage Detection"
                 )}
               </Button>
-            )}
+            ) : null}
+            {!damageDetectionRun && !isFraudDetection ? (
+              <Button
+                onClick={handleFraudDetection}
+                disabled={fraudDetectionLoading || !fnol || hasBusinessRuleValidationPassed}
+              >
+                {fraudDetectionLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Validating...
+                  </>
+                ) : (
+                  "Business Rule Validation"
+                )}
+              </Button>
+            ) : null}
           </div>
         </div>
 
@@ -505,8 +507,8 @@ export default function ClaimDetail() {
               <TabsList>
                 <TabsTrigger value="details">Claim Details</TabsTrigger>
                 <TabsTrigger value="documents">Vehicle Images</TabsTrigger>
-                {/* After Fraud Evaluation (or when Damage run): Fraud Evaluation before Claim Details */}
-                {!isOpenClaim && (
+                {/* Show Fraud Evaluation tab after Business Rule Validation (fraudResult) or when claim is past Open (e.g. Business Rule Validation-pass/fail) */}
+                {(!isOpenClaim || fraudResult) && (
                   <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
                 )}
                 {/* After Damage Detection: AI Assessment first, then Fraud Evaluation, then Claim Details, Documents */}
@@ -855,7 +857,7 @@ export default function ClaimDetail() {
                 </TabsContent>
               )}
 
-              {!isOpenClaim && (
+              {(!isOpenClaim || fraudResult) && (
                 <TabsContent value="fraud-evaluation">
                   <Card className="card-elevated">
                     <CardHeader>
