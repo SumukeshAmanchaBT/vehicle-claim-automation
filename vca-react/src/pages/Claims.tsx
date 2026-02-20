@@ -20,12 +20,47 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
-import { Loader2, ZoomIn, Plus } from "lucide-react";
+import { Loader2, ZoomIn, Plus, FileDown } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
-import { getFnolList, saveFnol, type FnolResponse } from "@/lib/api";
+import { getFnolList, getRecommendationReportPdf, saveFnol, type FnolResponse } from "@/lib/api";
 import type { FnolPayload } from "@/models/fnol";
 
 type BadgeVariant = "approved" | "pending" | "rejected" | "processing" | "default";
+
+function ClaimReportPdfButton({ complaintId }: { complaintId: string }) {
+  const [loading, setLoading] = useState(false);
+  const { toast } = useToast();
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setLoading(true);
+    try {
+      const blob = await getRecommendationReportPdf(complaintId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Motor_Claim_Recommendation_Report_${complaintId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast({ title: "Report downloaded", description: "Recommendation report PDF has been downloaded." });
+    } catch {
+      toast({ title: "Download failed", description: "Could not generate recommendation report.", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      onClick={handleDownload}
+      disabled={loading}
+      title="Generate Recommendation Report (PDF)"
+    >
+      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+    </Button>
+  );
+}
 
 type ClaimStatusKey =
   | "auto_approved"
@@ -197,8 +232,8 @@ function fnolToDisplay(fnol: FnolResponse) {
   const r = fnol.raw_response;
   const vehicle = r?.vehicle
     ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}`
-    : fnol.vehicle_name && fnol.vehicle_model && fnol.vehicle_year
-      ? `${fnol.vehicle_year} ${fnol.vehicle_name} ${fnol.vehicle_model}`
+    : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
+      ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
       : "—";
   const normalizedStatus = normalizeStatus((fnol as { status?: string }).status);
 
@@ -209,7 +244,7 @@ function fnolToDisplay(fnol: FnolResponse) {
     customerName: r?.claimant?.driver_name || fnol.policy_holder_name || "—",
     vehicleInfo: vehicle,
     claimRequestedDate: fnol.created_date || fnol.incident_date_time || r?.incident?.date_time_of_loss,
-    claimType: r?.incident?.claim_type || fnol.claim_type || "—",
+    claimType: r?.incident?.claim_type || fnol.incident_type || "—",
     estimatedAmount: r?.incident?.estimated_amount ?? 0,
     statusKey: normalizedStatus,
   };
@@ -464,6 +499,9 @@ export default function Claims() {
                         </TableCell>
                         <TableCell className="pr-6 text-right">
                           <div className="flex items-center justify-end gap-1">
+                            {claim.statusKey === "auto_approved" && (
+                              <ClaimReportPdfButton complaintId={claim.id} />
+                            )}
                             <Button variant="ghost" size="icon" asChild>
                               <Link to={`/claims/${claim.id}`} title="View claim">
                                 <ZoomIn className="h-4 w-4" />

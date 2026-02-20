@@ -28,11 +28,13 @@ import {
   Eye,
   Loader2,
   FileText,
+  FileDown,
   Clock,
 } from "lucide-react";
 import {
   getFnolById,
   getClaimEvaluation,
+  getRecommendationReportPdf,
   processClaim,
   runFraudDetection,
   runDamageAssessment,
@@ -78,6 +80,7 @@ export default function ClaimDetail() {
   const [damageDetectionRun, setDamageDetectionRun] = useState(false);
   const [claimEvaluation, setClaimEvaluation] = useState<ClaimEvaluationResponse | null>(null);
   const [claimEvaluationLoading, setClaimEvaluationLoading] = useState(false);
+  const [reportPdfLoading, setReportPdfLoading] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -163,6 +166,25 @@ export default function ClaimDetail() {
       setError(err instanceof Error ? err.message : "Business Rule Validation failed");
     } finally {
       setFraudDetectionLoading(false);
+    }
+  };
+
+  const handleGenerateRecommendationReport = async () => {
+    if (!id) return;
+    setReportPdfLoading(true);
+    setError(null);
+    try {
+      const blob = await getRecommendationReportPdf(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Motor_Claim_Recommendation_Report_${id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate recommendation report");
+    } finally {
+      setReportPdfLoading(false);
     }
   };
 
@@ -289,6 +311,10 @@ export default function ClaimDetail() {
   console.log("Business Rule Validation done:", isFraudDetection);
 
   console.log("Is pending damage detection:", isPendingDamageDetection);
+
+  const isRecommendationShared =
+    (fnol.status || "").toLowerCase() === "recommendation shared";
+
   // Open claim: show Claim Details + Documents only; hide AI Assessment, Fraud Evaluation tab, overview cards
   const isOpenClaim =
     !fnol.status ||
@@ -312,14 +338,25 @@ export default function ClaimDetail() {
             </Link>
           </Button>
           <div className="flex flex-end items-center gap-2">
-            {/* <StatusBadge
-              status={getStatusVariant(decision)}
-              pulse={claimStatus === "Open"}
-              className="text-sm px-3 py-1"
-            >
-              {decision}
-            </StatusBadge> */}
-            {/* <Button variant="outline">Request Documents</Button> */}
+            {isRecommendationShared && (
+              <Button
+                variant="outline"
+                onClick={handleGenerateRecommendationReport}
+                disabled={reportPdfLoading}
+              >
+                {reportPdfLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="mr-2 h-4 w-4" />
+                    Generate Recommendation Report
+                  </>
+                )}
+              </Button>
+            )}
             {!isPendingDamageDetection ? (
               (!isFraudDetection && !damageDetectionRun) && (
                 <Button
@@ -351,8 +388,7 @@ export default function ClaimDetail() {
                   "Damage Detection"
                 )}
               </Button>
-            )
-            }
+            )}
           </div>
         </div>
 
@@ -986,7 +1022,7 @@ export default function ClaimDetail() {
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Flood Coverage Endorsement</span>
                   <span className="font-medium">
-                    {fnol.flood_coverage === true || fnol.flood_coverage === 1 ? "Yes" : "No"}
+                    {fnol.flood_coverage ? "Yes" : "No"}
                   </span>
                 </div>
                 <div className="flex justify-between">
