@@ -34,7 +34,7 @@ const navItems = [
     permission: "claims.view",
   },
   {
-    title: "Business Rule Validation",
+    title: "Re-Open Claims",
     href: "/fraud",
     icon: ShieldCheck,
     permission: "fraud.view",

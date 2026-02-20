@@ -40,6 +40,13 @@ class FnolClaim(models.Model):
         db_column="claim_status",
         related_name="fnol_claims",
     )
+    re_open = models.IntegerField(
+        default=0,
+        null=True,
+        blank=True,
+        db_column="re_open",
+        help_text="0 = new/fetched claim, 1 = re-opened (or other use). Set to 0 when saving via Fetch FNOL Data.",
+    )
     created_date = models.DateTimeField(null=True, blank=True, db_column="created_date")
     created_by = models.CharField(max_length=150, null=True, blank=True, db_column="created_by")
     updated_date = models.DateTimeField(null=True, blank=True, db_column="updated_date")

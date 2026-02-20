@@ -587,6 +587,19 @@ def _fraud_band_to_numeric(band: str) -> float:
     return 0.0
 
 
+def _get_claim_status_label_for_evaluation(result: dict) -> str:
+    """
+    Map process_claim result to the status string stored in claim_evaluation_response.claim_status.
+    - Rejected → Business Rule Validation-fail
+    - Closed (or Open / passed) → Business Rule Validation-pass
+    """
+    decision = (result.get("decision") or "").strip()
+    status = (result.get("claim_status") or "").strip()
+    if decision == "Reject" or status == "Rejected":
+        return "Business Rule Validation-fail"
+    return "Business Rule Validation-pass"
+
+
 def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to fnol_claims.claim_status (claim_status table).
@@ -790,6 +803,7 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "created_by": getattr(claim, "created_by", None),
         "updated_date": claim.updated_date.isoformat() if getattr(claim, "updated_date", None) else None,
         "updated_by": getattr(claim, "updated_by", None),
+        "re_open": 1 if getattr(claim, "re_open", 0) == 1 else 0,
     }
 
 
@@ -797,15 +811,16 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
 @permission_classes([IsAuthenticated])
 def list_fraud_claims(request):
     """
-    Return claims that have been through fraud detection (exist in claim_evaluation_response).
-    Used by Fraud Detection page - shows Fraudulent, Under Review, and Cleared claims dynamically.
+    Return re-open claims only (fnol_claims.re_open = 1) that have been through fraud detection.
+    Used by Re-Open Claims page - shows only claims marked for re-open.
     """
-    # Claims that have been through fraud detection (exist in claim_evaluation_response)
+    # Re-open claims only (re_open=1) that exist in claim_evaluation_response
     fnol_claims = (
         FnolClaim.objects.filter(
             complaint_id__in=ClaimEvaluationResponse.objects.values_list(
                 "complaint_id", flat=True
-            ).distinct()
+            ).distinct(),
+            re_open=1,
         )
         .select_related("claim_status")
         .order_by("-incident_date_time", "-complaint_id")
@@ -836,6 +851,31 @@ def list_fraud_claims(request):
 
         reason = eval_row.reason or eval_row.decision or "—"
 
+        re_open = getattr(claim, "re_open", None)
+        if re_open is None:
+            re_open = 0
+        try:
+            re_open = int(re_open)
+        except (TypeError, ValueError):
+            re_open = 0
+
+        eval_records = (
+            ClaimEvaluationResponse.objects.filter(complaint_id=claim.complaint_id)
+            .order_by("version")
+            .values("complaint_id", "version", "threshold_value", "claim_status", "reason")
+        )
+        evaluation_records = [
+            {
+                "complaint_id": r["complaint_id"],
+                "version": r["version"],
+                "threshold_value": r["threshold_value"],
+                "claim_status": r["claim_status"] or "—",
+                "reason": (r["reason"] or "").strip() or "—",
+            }
+            for r in eval_records
+        ]
+        times_processed = len(evaluation_records)
+
         results.append({
             "complaint_id": claim.complaint_id,
             "claimNumber": claim.complaint_id,
@@ -846,6 +886,9 @@ def list_fraud_claims(request):
             "status": ui_status,
             "detectedAt": eval_row.created_date.isoformat() if eval_row.created_date else None,
             "indicators": [reason] if reason and reason != "—" else [],
+            "re_open": re_open,
+            "times_processed": times_processed,
+            "evaluation_records": evaluation_records,
         })
     return Response(results)
 
@@ -1086,6 +1129,7 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "incident_date_time": incident_dt,
         "fir_document_copy": documents.get("fir_path") if isinstance(documents.get("fir_path"), str) else None,
         "insurance_document_copy": documents.get("insurance_path") if isinstance(documents.get("insurance_path"), str) else None,
+        "re_open": 0,  # New/fetched claim: set to 0 when saving via Fetch FNOL Data
     }
 
 
@@ -1188,6 +1232,7 @@ def run_fraud_detection(request, complaint_id: str):
     ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id).update(
         is_latest=False
     )
+    evaluation_claim_status = _get_claim_status_label_for_evaluation(result)
     ClaimEvaluationResponse.objects.create(
         complaint_id=complaint_id,
         version=next_version,
@@ -1198,7 +1243,7 @@ def run_fraud_detection(request, complaint_id: str):
         threshold_value=threshold_int,
         claim_type=(result.get("claim_type") or "")[:20],
         decision=(result.get("decision") or "")[:20],
-        claim_status=(result.get("claim_status") or "")[:50],
+        claim_status=(evaluation_claim_status or "")[:50],
         reason=result.get("reason"),
         created_by=user_id,
         updated_by=user_id,

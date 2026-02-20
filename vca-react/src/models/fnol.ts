@@ -85,6 +85,8 @@ export interface FnolResponse {
   created_by: string | null;
   updated_date: string;
   updated_by: string | null;
+  /** 1 = re-opened claim (show Re-validation of Business Rules on claim detail) */
+  re_open?: number;
 }
 
 export interface FraudRuleResult {

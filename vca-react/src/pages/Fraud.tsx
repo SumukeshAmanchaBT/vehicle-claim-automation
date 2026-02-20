@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Progress } from "@/components/ui/progress";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -22,16 +21,11 @@ import {
   Clock,
   TrendingUp,
   Loader2,
+  RotateCcw,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { getFraudClaims, type FraudClaimItem } from "@/lib/api";
-
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("th-TH", {
-    style: "currency",
-    currency: "THB",
-    minimumFractionDigits: 0,
-  }).format(amount);
-};
 
 const getStatusInfo = (status: string) => {
   const map = {
@@ -45,6 +39,7 @@ const getStatusInfo = (status: string) => {
 export default function Fraud() {
   const [fraudCases, setFraudCases] = useState<FraudClaimItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,8 +66,8 @@ export default function Fraud() {
 
   return (
     <AppLayout
-      title="Fraud Detection"
-      subtitle="AI-powered fraud risk analysis and investigation"
+      title="Re-Open Claims"
+      subtitle="Claims marked for re-open — review and re-validate"
     >
       <div className="space-y-6 animate-fade-in">
         {/* Summary Cards */}
@@ -133,11 +128,17 @@ export default function Fraud() {
 
         {/* Fraud Cases Table */}
         <Card className="card-elevated overflow-hidden">
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-warning" />
-              Flagged Claims
+              Re-Open Claims
             </CardTitle>
+            {!loading && (
+              <p className="text-sm text-muted-foreground">
+                Record count: <span className="font-medium text-foreground">{fraudCases.length}</span>
+                {fraudCases.length === 1 ? " record" : " records"}
+              </p>
+            )}
           </CardHeader>
           <CardContent className="p-0">
             {loading ? (
@@ -147,18 +148,16 @@ export default function Fraud() {
               </div>
             ) : fraudCases.length === 0 ? (
               <div className="py-16 text-center text-sm text-muted-foreground">
-                No fraud detection results yet. Run Fraud Detection on claims to see them here.
+                No re-open claims. Only claims with re_open = 1 are listed here.
               </div>
             ) : (
             <Table>
               <TableHeader className="table-header-bg">
                 <TableRow className="bg-muted/50 hover:bg-muted/50">
-                  <TableHead className="pl-6">Claim #</TableHead>
+                  <TableHead className="w-10 pl-4 pr-0" />
+                  <TableHead className="pl-4">Claim #</TableHead>
                   <TableHead>Customer</TableHead>
-                  <TableHead>Risk Score</TableHead>
                   <TableHead>Reason</TableHead>
-                  <TableHead>Amount</TableHead>
-                  <TableHead>Indicators</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="pr-6 text-right">Actions</TableHead>
                 </TableRow>
@@ -167,89 +166,110 @@ export default function Fraud() {
                 {fraudCases.map((fraudCase) => {
                   const statusInfo = getStatusInfo(fraudCase.status);
                   const StatusIcon = statusInfo.icon;
+                  const isExpanded = expandedId === fraudCase.complaint_id;
+                  const timesProcessed = fraudCase.times_processed ?? 0;
                   return (
-                    <TableRow key={fraudCase.complaint_id} className="group">
-                      <TableCell className="pl-6">
-                        <Link
-                          to={`/claims/${fraudCase.complaint_id}`}
-                          className="font-medium text-primary hover:underline"
+                    <React.Fragment key={fraudCase.complaint_id}>
+                      <TableRow
+                        className="group cursor-pointer hover:bg-muted/50"
+                        onClick={() => setExpandedId(isExpanded ? null : fraudCase.complaint_id)}
+                      >
+                        <TableCell
+                          className="w-10 pl-4 pr-0"
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {fraudCase.claimNumber}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        {fraudCase.customer}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-3 w-32">
-                          <Progress
-                            value={fraudCase.riskScore}
-                            className={`h-2 ${
-                              fraudCase.riskScore >= 70
-                                ? "[&>div]:bg-destructive"
-                                : fraudCase.riskScore >= 50
-                                ? "[&>div]:bg-warning"
-                                : "[&>div]:bg-success"
-                            }`}
-                          />
-                          <span
-                            className={`text-sm font-medium ${
-                              fraudCase.riskScore >= 70
-                                ? "text-destructive"
-                                : fraudCase.riskScore >= 50
-                                ? "text-warning"
-                                : "text-success"
-                            }`}
+                          <button
+                            type="button"
+                            className="flex items-center justify-center p-1 rounded hover:bg-muted"
+                            aria-label={isExpanded ? "Collapse" : "Expand"}
+                            onClick={() => setExpandedId(isExpanded ? null : fraudCase.complaint_id)}
                           >
-                            {fraudCase.riskScore}%
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="max-w-[200px]">
-                        <p className="text-sm text-muted-foreground truncate">
-                          {fraudCase.reason}
-                        </p>
-                      </TableCell>
-                      <TableCell className="font-medium">
-                        {formatCurrency(fraudCase.amount)}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {fraudCase.indicators.slice(0, 2).map((indicator) => (
-                            <span
-                              key={indicator}
-                              className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive"
-                            >
-                              {indicator}
-                            </span>
-                          ))}
-                          {fraudCase.indicators.length > 2 && (
-                            <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                              +{fraudCase.indicators.length - 2}
-                            </span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <StatusBadge status={statusInfo.variant}>
-                          <StatusIcon className="h-3 w-3 mr-1" />
-                          {statusInfo.label}
-                        </StatusBadge>
-                      </TableCell>
-                      <TableCell className="pr-6 text-right">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="opacity-0 group-hover:opacity-100 transition-opacity"
-                          asChild
-                        >
-                          <Link to={`/claims/${fraudCase.complaint_id}`}>
-                            <Eye className="h-4 w-4 mr-1" />
-                            Review
+                            {isExpanded ? (
+                              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                            )}
+                          </button>
+                        </TableCell>
+                        <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
+                          <Link
+                            to={`/claims/${fraudCase.complaint_id}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {fraudCase.claimNumber}
                           </Link>
-                        </Button>
-                      </TableCell>
-                    </TableRow>
+                        </TableCell>
+                        <TableCell className="font-medium">
+                          {fraudCase.customer}
+                        </TableCell>
+                        <TableCell className="max-w-[200px]">
+                          <p className="text-sm text-muted-foreground truncate">
+                            {fraudCase.reason}
+                          </p>
+                        </TableCell>
+                        <TableCell>
+                          <StatusBadge status={statusInfo.variant}>
+                            <StatusIcon className="h-3 w-3 mr-1" />
+                            {statusInfo.label}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="pr-6 text-right" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-end gap-2">
+                            <Button variant="outline" size="sm" asChild>
+                              <Link to={`/claims/${fraudCase.complaint_id}`}>
+                                <Eye className="h-4 w-4 mr-1" />
+                                Review
+                              </Link>
+                            </Button>
+                            {fraudCase.re_open === 1 && (
+                              <Button variant="outline" size="sm" asChild>
+                                <Link to={`/claims/${fraudCase.complaint_id}?reopen=1`}>
+                                  <RotateCcw className="h-4 w-4 mr-1" />
+                                  Reopen
+                                </Link>
+                              </Button>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded && (
+                        <TableRow className="bg-muted/30 hover:bg-muted/30">
+                          <TableCell colSpan={6} className="pl-12 pr-6 py-4">
+                            <p className="text-sm font-medium text-foreground mb-3">
+                              Evaluation records ({timesProcessed} record{timesProcessed !== 1 ? "s" : ""})
+                            </p>
+                            {(fraudCase.evaluation_records && fraudCase.evaluation_records.length > 0) ? (
+                              <div className="overflow-x-auto rounded-md border border-border">
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow className="bg-muted/50">
+                                      <TableHead className="text-xs">#</TableHead>
+                                      <TableHead className="text-xs">Complaint ID</TableHead>
+                                      <TableHead className="text-xs">Threshold value</TableHead>
+                                      <TableHead className="text-xs">Claim status</TableHead>
+                                      <TableHead className="text-xs min-w-[180px]">Reason</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {fraudCase.evaluation_records.map((rec, idx) => (
+                                      <TableRow key={idx} className="border-border">
+                                        <TableCell className="text-xs py-2">{rec.version}</TableCell>
+                                        <TableCell className="text-xs py-2">{rec.complaint_id}</TableCell>
+                                        <TableCell className="text-xs py-2">{rec.threshold_value ?? "—"}</TableCell>
+                                        <TableCell className="text-xs py-2">{rec.claim_status}</TableCell>
+                                        <TableCell className="text-xs py-2 max-w-[280px] break-words">{rec.reason}</TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-muted-foreground">No evaluation records.</p>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </TableBody>
