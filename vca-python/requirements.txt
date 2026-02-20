@@ -12,4 +12,5 @@ tensorflow>=2.10.0
 keras>=2.10.0
 numpy>=1.21.0
 Pillow>=9.0.0
+reportlab>=4.0.0
 

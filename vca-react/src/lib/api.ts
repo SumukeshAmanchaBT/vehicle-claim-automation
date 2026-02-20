@@ -123,6 +123,16 @@ export async function getClaimEvaluation(
   );
 }
 
+/** GET /api/fnol/:complaintId/recommendation-report/ - Download MOTOR CLAIM RECOMMENDATION REPORT PDF (status must be Recommendation shared) */
+export async function getRecommendationReportPdf(complaintId: string): Promise<Blob> {
+  const { httpClient } = await import("./httpClient");
+  const response = await httpClient.get(
+    `/fnol/${encodeURIComponent(complaintId)}/recommendation-report/`,
+    { responseType: "blob" }
+  );
+  return response.data as Blob;
+}
+
 /** ****************************
  * Master data APIs
  * **************************** */

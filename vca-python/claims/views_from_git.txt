@@ -1,29 +1,23 @@
-import io
-import json
-import os
+﻿import json
 import random
 import re
 from datetime import date
 from typing import Optional, Tuple
 
-from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User, Group
+from django.db import connection
 from django.db.models import Q
-from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+from core.models import UserProfile
+from core.permissions import has_permission, has_user_update_permission, is_admin
 from .models import (
     ClaimRuleMaster,
     ClaimTypeMaster,
@@ -50,10 +44,8 @@ from .serializers import (
 
 
 def _is_admin_user(user) -> bool:
-    """True if user can perform admin actions: Django staff or in 'Admin' group."""
-    if user.is_staff:
-        return True
-    return user.groups.filter(name__iexact="admin").exists()
+    """True if user is admin (uses core.permissions so UserRole and Django Group are respected)."""
+    return is_admin(user)
 
 
 def _get_pricing_config_value(key: str, default: float) -> float:
@@ -67,12 +59,34 @@ def _get_pricing_config_value(key: str, default: float) -> float:
     return default
 
 
+def _flatten_damage_count(damages: list) -> int:
+    """
+    Count total damage type occurrences from LLM damages (list of lists or list of strings).
+    E.g. [["dent", "scratch"], ["intense-damage"]] -> 3; [["dent"]] -> 1.
+    """
+    count = 0
+    for d in damages or []:
+        if d is None:
+            continue
+        if isinstance(d, list):
+            for item in d:
+                s = (item or "").strip().lower()
+                if s and s != "none":
+                    count += 1
+        else:
+            s = str(d).strip().lower()
+            if s and s != "none":
+                count += 1
+    return max(count, 1)  # at least 1 for "no damage" case
+
+
 def estimate_claim_amount_from_config(
     damages: list, severity: str, base_estimated_amount: float = 0
 ) -> float:
     """
     Estimate claim amount from PricingConfig based on LLM damages and severity.
     Formula: (base_amount + damage_count * rate_per_damage) * severity_multiplier
+    damage_count = total number of damage types (flattened from list-of-lists).
     Config keys: claim_base_amount, claim_rate_per_damage,
                  severity_multiplier_minor, severity_multiplier_moderate, severity_multiplier_severe
     """
@@ -92,9 +106,7 @@ def estimate_claim_amount_from_config(
     else:
         mult = mult_moderate  # default
 
-    damage_count = len([d for d in damages if d and str(d).lower() != "none"])
-    if damage_count == 0:
-        damage_count = 1  # at least 1 for "no damage" case
+    damage_count = _flatten_damage_count(damages)
     amount = (base + damage_count * rate_per_damage) * mult
     if base_estimated_amount and base_estimated_amount > 0:
         amount = max(amount, float(base_estimated_amount))
@@ -104,9 +116,9 @@ def estimate_claim_amount_from_config(
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_user(request):
-    if not _is_admin_user(request.user):
+    if not (has_permission(request.user, "users.add") or is_admin(request.user)):
         return Response(
-            {"error": "Forbidden - Admin role or staff required to create users"},
+            {"error": "Forbidden - users.add permission or Admin role required"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -115,14 +127,38 @@ def create_user(request):
         return Response({"error": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
     user = serializer.save()
+    UserProfile.objects.get_or_create(user=user, defaults={"is_delete": False})
+    _set_auth_user_is_delete(user.pk, 0)
     return Response({"user": UserSerializer(user).data, "message": "User created."}, status=status.HTTP_201_CREATED)
+
+
+def _user_not_deleted_queryset():
+    """Exclude users only when BOTH auth_user.is_delete=1 AND profile.is_delete=1. Show if is_delete=0 in auth_user (restored) or profile not deleted."""
+    auth_table = User._meta.db_table
+    profile_table = UserProfile._meta.db_table
+    # Join user_profile so we can reference it in WHERE (all users: no profile OR profile with any is_delete)
+    qs = User.objects.filter(
+        Q(userprofile__isnull=True) | Q(userprofile__is_delete=False) | Q(userprofile__is_delete=True)
+    )
+    try:
+        # Show when: auth says not deleted OR no profile OR profile says not deleted (so restored users with auth_user.is_delete=0 appear)
+        qs = qs.extra(where=[
+            f"(COALESCE({auth_table}.is_delete, 0) = 0) OR ({profile_table}.id IS NULL) OR ({profile_table}.is_delete = 0)"
+        ])
+    except Exception:
+        pass
+    return qs
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def list_users(request):
-    # Any authenticated user can view all users
-    users = User.objects.all()
+    if not (has_permission(request.user, "users.view") or is_admin(request.user)):
+        return Response(
+            {"error": "Forbidden - users.view permission or Admin role required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    users = _user_not_deleted_queryset()
     payload = []
     for u in users:
         role = u.groups.first().name if u.groups.exists() else 'User'
@@ -140,7 +176,7 @@ def list_users(request):
             'email': u.email,
             'first_name': u.first_name,
             'last_name': u.last_name,
-            'role': role,
+            'role': 'Admin' if u.is_superuser == 1 else 'Users',
             'status': status_text,
             'claims_handled': claims_handled,
             'last_login': u.last_login,
@@ -152,11 +188,9 @@ def list_users(request):
 @api_view(['PATCH', 'PUT'])
 @permission_classes([IsAuthenticated])
 def edit_user(request, pk):
-    # Users can edit their own profile, staff can edit anyone
     user = get_object_or_404(User, pk=pk)
-    
-    if user.id != request.user.id and not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - can only edit your own profile"}, status=status.HTTP_403_FORBIDDEN)
+    if user.id != request.user.id and not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit permission or Admin role required to edit others"}, status=status.HTTP_403_FORBIDDEN)
     
     serializer = UserUpdateSerializer(user, data=request.data, partial=True)
     if not serializer.is_valid():
@@ -168,8 +202,8 @@ def edit_user(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def change_role(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ChangeRoleSerializer(data=request.data)
@@ -185,8 +219,8 @@ def change_role(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def reset_password(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not has_user_update_permission(request.user):
+        return Response({"error": "Forbidden - users.update/users.edit permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     serializer = ResetPasswordSerializer(data=request.data)
@@ -201,8 +235,8 @@ def reset_password(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def deactivate_user(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.delete permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     user.is_active = False
@@ -213,8 +247,8 @@ def deactivate_user(request, pk):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def activate_user(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    if not (has_permission(request.user, "users.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.delete permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
     user.is_active = True
@@ -222,16 +256,34 @@ def activate_user(request, pk):
     return Response({"message": "User activated."}, status=status.HTTP_200_OK)
 
 
+def _set_auth_user_is_delete(user_id: int, value: int) -> None:
+    """Update auth_user.is_delete in DB (column may exist without being on Django User model)."""
+    table = User._meta.db_table
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"UPDATE {table} SET is_delete = %s WHERE id = %s",
+                [value, user_id],
+            )
+    except Exception:
+        pass
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def soft_delete_user(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
+    """Soft delete: set is_delete=1 in auth_user and UserProfile so user is hidden from lists. Also set is_active=False."""
+    if not (has_permission(request.user, "users.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - users.delete permission or Admin role required"}, status=status.HTTP_403_FORBIDDEN)
 
     user = get_object_or_404(User, pk=pk)
+    profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"is_delete": False})
+    profile.is_delete = True
+    profile.save()
     user.is_active = False
     user.save()
-    return Response({"message": "User soft deleted."}, status=status.HTTP_200_OK)
+    _set_auth_user_is_delete(user.pk, 1)
+    return Response({"message": "User soft-deleted."}, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -392,6 +444,22 @@ def fraud_check(
             except (TypeError, ValueError):
                 pass
 
+    # 4) Liability Admission - liability_admission = TRUE (risk)
+    if _is_fraud_rule_active("Liability Admission") and incident.get("liability_admission"):
+        return "High", _get_fraud_rule_description("Liability Admission")
+
+    # 5) Injury Indicator - injury_indicator = TRUE (risk)
+    if _is_fraud_rule_active("Injury Indicator") and incident.get("injury_indicator"):
+        return "High", _get_fraud_rule_description("Injury Indicator")
+
+    # 6) Commercial Vehicle - commercial_vehicle = TRUE (risk)
+    if _is_fraud_rule_active("Commercial Vehicle") and incident.get("commercial_vehicle"):
+        return "High", _get_fraud_rule_description("Commercial Vehicle")
+
+    # 7) Dashcam CCTV Evidence - dashcam_cctv_evidence = TRUE (risk trigger as per rule_expression)
+    if _is_fraud_rule_active("Dashcam CCTV Evidence") and incident.get("dashcam_cctv_evidence"):
+        return "High", _get_fraud_rule_description("Dashcam CCTV Evidence")
+
     return "Low", ""
 
 
@@ -463,6 +531,30 @@ def _get_fraud_evaluation_rules(
         desc = _get_fraud_rule_description("Missing Damage Photos")
         passed = _has_damage_photos(complaint_id=complaint_id, documents=documents)
         results.append({"rule_type": "Missing Damage Photos", "rule_description": desc, "passed": passed})
+
+    # Liability Admission - TRUE = risk ΓåÆ passed when False
+    if _is_fraud_rule_active("Liability Admission"):
+        desc = _get_fraud_rule_description("Liability Admission")
+        passed = not bool(incident.get("liability_admission"))
+        results.append({"rule_type": "Liability Admission", "rule_description": desc, "passed": passed})
+
+    # Dashcam CCTV Evidence - TRUE triggers rule ΓåÆ passed when False
+    if _is_fraud_rule_active("Dashcam CCTV Evidence"):
+        desc = _get_fraud_rule_description("Dashcam CCTV Evidence")
+        passed = not bool(incident.get("dashcam_cctv_evidence"))
+        results.append({"rule_type": "Dashcam CCTV Evidence", "rule_description": desc, "passed": passed})
+
+    # Injury Indicator - TRUE = risk ΓåÆ passed when False
+    if _is_fraud_rule_active("Injury Indicator"):
+        desc = _get_fraud_rule_description("Injury Indicator")
+        passed = not bool(incident.get("injury_indicator"))
+        results.append({"rule_type": "Injury Indicator", "rule_description": desc, "passed": passed})
+
+    # Commercial Vehicle - TRUE = risk ΓåÆ passed when False
+    if _is_fraud_rule_active("Commercial Vehicle"):
+        desc = _get_fraud_rule_description("Commercial Vehicle")
+        passed = not bool(incident.get("commercial_vehicle"))
+        results.append({"rule_type": "Commercial Vehicle", "rule_description": desc, "passed": passed})
 
     return results
 
@@ -540,22 +632,26 @@ def _fraud_band_to_numeric(band: str) -> float:
 def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to claim_status table.
-    claim_status: 1=Open, 2=Pending, 3=Fraudulent, 4=Pending Damage Detection,
-                  5=Close and Auto Review, 6=Close and Manual Review
+    Fraud detection does NOT set closed statuses. Based on rule validation only:
+    - Rules passed (all fraud rules pass) -> Business Rule Validation-pass
+    - Rules failed (any fraud rule fails or Reject) -> Business Rule Validation-fail
     """
     decision = (result.get("decision") or "").strip()
-    reason = (result.get("reason") or "").strip().lower()
+    fraud_rule_results = result.get("fraud_rule_results") or []
+
+    # Reject (policy inactive, high fraud) -> Business Rule Validation-fail
     if decision == "Reject":
-        return ClaimStatus.objects.filter(status_name__iexact="Fraudulent").first()
-    if decision == "Auto Approve":
-        return ClaimStatus.objects.filter(pk=5).first()  # Close and Auto Review
-    if decision == "Manual Review":
-        if "photos" in reason or "photo" in reason:
-            return ClaimStatus.objects.filter(
-                status_name__iexact="Pending Damage Detection"
-            ).first()
-        return ClaimStatus.objects.filter(pk=6).first()  # Close and Manual Review
-    return ClaimStatus.objects.filter(status_name__iexact="Open").first()
+        return ClaimStatus.objects.filter(status_name__iexact="Business Rule Validation-fail").first()
+
+    # Any fraud rule failed -> Business Rule Validation-fail
+    for rule in fraud_rule_results:
+        if rule.get("passed") is False:
+            return ClaimStatus.objects.filter(status_name__iexact="Business Rule Validation-fail").first()
+
+    # All rules passed -> Business Rule Validation-pass (never closed)
+    return ClaimStatus.objects.filter(
+        status_name__iexact="Business Rule Validation-pass"
+    ).first()
 
 
 def _run_process_claim_logic(data: dict) -> dict:
@@ -612,7 +708,7 @@ def _run_process_claim_logic(data: dict) -> dict:
         return {
             "claim_id": complaint_id,
             "decision": "Manual Review",
-            "claim_status": "Open",
+            "claim_status": "FNOL",
             "reason": _get_fraud_rule_description("Missing Damage Photos"),
             "fraud_rule_results": fraud_rule_results,
             "damage_confidence": damage_detection(incident),
@@ -632,7 +728,7 @@ def _run_process_claim_logic(data: dict) -> dict:
         status = "Closed"
     else:
         decision = "Manual Review"
-        status = "Open"
+        status = "FNOL"
 
     return {
         "claim_id": complaint_id,
@@ -672,6 +768,12 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
             "loss_description": claim.incident_description or "",
             "claim_type": claim.incident_type or "",
             "estimated_amount": 0,  # fnol_claims schema doesn't include this; can be extended
+            "accident_location": getattr(claim, "accident_location", None) or "",
+            "liability_admission": getattr(claim, "liability_admission", None),
+            "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+            "injury_indicator": getattr(claim, "injury_indicator", None),
+            "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+            "flood_coverage": getattr(claim, "flood_coverage", None),
         },
         "claimant": {"driver_name": claim.policy_holder_name or ""},
         "documents": {
@@ -683,6 +785,16 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
         },
         "history": {"previous_claims_last_12_months": 0},
     }
+
+
+def _get_claim_status_name(claim: FnolClaim, default: str = "FNOL") -> str:
+    """Return claim status name; use default if FK is null or points to a missing row."""
+    try:
+        if claim.claim_status_id is None:
+            return default
+        return claim.claim_status.status_name
+    except ClaimStatus.DoesNotExist:
+        return default
 
 
 def _fnol_claim_to_response(claim: FnolClaim) -> dict:
@@ -725,13 +837,20 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "incident_type": claim.incident_type,
         "incident_description": claim.incident_description,
         "incident_date_time": claim.incident_date_time.isoformat() if claim.incident_date_time else None,
+        "accident_location": getattr(claim, "accident_location", None),
+        "liability_admission": getattr(claim, "liability_admission", None),
+        "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+        "injury_indicator": getattr(claim, "injury_indicator", None),
+        "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+        "flood_coverage": getattr(claim, "flood_coverage", None),
         "fir_document_copy": claim.fir_document_copy,
         "insurance_document_copy": claim.insurance_document_copy,
         "damage_photos": photo_urls,
         "raw_response": _fnol_claim_to_raw_response(claim),
-        "status": claim.claim_status.status_name if claim.claim_status else "Open",
+        "status": _get_claim_status_name(claim),
         "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
+        "excess_amount": float(claim.excess_amount or 0) if getattr(claim, "excess_amount", None) is not None else 0,
         "llm_damages": llm_damages,
         "llm_severity": llm_severity,
         "created_date": claim.created_date.isoformat() if getattr(claim, "created_date", None) else None,
@@ -767,11 +886,11 @@ def list_fraud_claims(request):
         )
         if not eval_row:
             continue
-        status_name = (claim.claim_status.status_name if claim.claim_status else "") or ""
+        status_name = _get_claim_status_name(claim, default="") or ""
         status_lower = status_name.lower()
-        if "fraud" in status_lower or status_lower == "fraudulent":
+        if "business rule validation-fail" in status_lower or "fraud" in status_lower:
             ui_status = "confirmed"
-        elif status_lower in ("auto approved", "closed"):
+        elif status_lower in ("auto approved", "closed", "recommendation shared"):
             ui_status = "cleared"
         else:
             ui_status = "under_review"
@@ -784,18 +903,18 @@ def list_fraud_claims(request):
         else:
             risk_score = 25
 
-        reason = eval_row.reason or eval_row.decision or "—"
+        reason = eval_row.reason or eval_row.decision or "ΓÇö"
 
         results.append({
             "complaint_id": claim.complaint_id,
             "claimNumber": claim.complaint_id,
-            "customer": claim.policy_holder_name or "—",
+            "customer": claim.policy_holder_name or "ΓÇö",
             "riskScore": risk_score,
             "reason": reason,
             "amount": float(eval_row.estimated_amount or eval_row.claim_amount or 0),
             "status": ui_status,
             "detectedAt": eval_row.created_date.isoformat() if eval_row.created_date else None,
-            "indicators": [reason] if reason and reason != "—" else [],
+            "indicators": [reason] if reason and reason != "ΓÇö" else [],
         })
     return Response(results)
 
@@ -825,7 +944,8 @@ def get_fnol(request, pk: str):
 def get_claim_evaluation(request, complaint_id: str):
     """
     Return the latest claim evaluation response for a complaint_id.
-    Includes damage_confidence, estimated_amount, claim_amount, decision, claim_status,
+    Includes damage_confidence, estimated_amount, claim_amount, excess_amount (from fnol_claims),
+    estimated_repair (claim_amount - excess_amount), decision, claim_status,
     reason, llm_damages, llm_severity (from damage assessment).
     """
     latest = (
@@ -844,18 +964,37 @@ def get_claim_evaluation(request, complaint_id: str):
             damages = json.loads(latest.llm_damages)
         except (json.JSONDecodeError, TypeError):
             damages = None
+
+    claim_amount = float(latest.claim_amount or 0)
+    fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
+    excess_amount = float(fnol_claim.excess_amount or 0) if fnol_claim and getattr(fnol_claim, "excess_amount", None) is not None else 0
+    estimated_repair = max(0, claim_amount - excess_amount)
+
+    # Business rule override: map claim_type to severity band
+    claim_type_upper = (latest.claim_type or "").strip().upper()
+    if claim_type_upper == "SIMPLE":
+        llm_severity_out = "minor"
+    elif claim_type_upper == "MEDIUM":
+        llm_severity_out = "moderate"
+    elif claim_type_upper == "COMPLEX":
+        llm_severity_out = "severe"
+    else:
+        llm_severity_out = latest.llm_severity
+
     return Response({
         "complaint_id": latest.complaint_id,
         "damage_confidence": float(latest.damage_confidence or 0),
         "estimated_amount": float(latest.estimated_amount or 0),
-        "claim_amount": float(latest.claim_amount or 0),
+        "claim_amount": claim_amount,
+        "excess_amount": excess_amount,
+        "estimated_repair": estimated_repair,
         "threshold_value": latest.threshold_value,
         "claim_type": latest.claim_type,
         "decision": latest.decision,
         "claim_status": latest.claim_status,
         "reason": latest.reason,
         "llm_damages": damages,
-        "llm_severity": latest.llm_severity,
+        "llm_severity": llm_severity_out,
         "created_date": latest.created_date.isoformat() if latest.created_date else None,
         "updated_date": latest.updated_date.isoformat() if latest.updated_date else None,
     })
@@ -865,9 +1004,13 @@ def get_claim_evaluation(request, complaint_id: str):
 @permission_classes([IsAuthenticated])
 def claim_type_master_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "claim_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - claim_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = ClaimTypeMaster.objects.all().order_by("claim_type_id")
         return Response(ClaimTypeMasterSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "claim_config.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - claim_config.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = ClaimTypeMasterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -881,9 +1024,13 @@ def claim_type_master_detail(request, pk: int):
     obj = get_object_or_404(ClaimTypeMaster, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "claim_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - claim_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(ClaimTypeMasterSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "claim_config.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - claim_config.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = ClaimTypeMasterSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -893,6 +1040,8 @@ def claim_type_master_detail(request, pk: int):
         # Note: model doesn't have updated_by; keeping created_by stable
         return Response(ClaimTypeMasterSerializer(obj).data)
 
+    if not (has_permission(request.user, "claim_config.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - claim_config.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -901,9 +1050,13 @@ def claim_type_master_detail(request, pk: int):
 @permission_classes([IsAuthenticated])
 def claim_rule_master_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "fraud_rules.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - fraud_rules.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = ClaimRuleMaster.objects.all().order_by("rule_id")
         return Response(ClaimRuleMasterSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "fraud_rules.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - fraud_rules.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = ClaimRuleMasterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -917,9 +1070,13 @@ def claim_rule_master_detail(request, pk: int):
     obj = get_object_or_404(ClaimRuleMaster, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "fraud_rules.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - fraud_rules.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(ClaimRuleMasterSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "fraud_rules.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - fraud_rules.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = ClaimRuleMasterSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -928,6 +1085,8 @@ def claim_rule_master_detail(request, pk: int):
         obj = serializer.save(created_by=obj.created_by or updated_by)
         return Response(ClaimRuleMasterSerializer(obj).data)
 
+    if not (has_permission(request.user, "fraud_rules.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - fraud_rules.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -936,9 +1095,13 @@ def claim_rule_master_detail(request, pk: int):
 @permission_classes([IsAuthenticated])
 def damage_code_master_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "damage_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - damage_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = DamageCodeMaster.objects.all().order_by("damage_id")
         return Response(DamageCodeMasterSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "damage_config.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - damage_config.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = DamageCodeMasterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -952,9 +1115,13 @@ def damage_code_master_detail(request, pk: int):
     obj = get_object_or_404(DamageCodeMaster, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "damage_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - damage_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(DamageCodeMasterSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "damage_config.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - damage_config.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = DamageCodeMasterSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -963,6 +1130,8 @@ def damage_code_master_detail(request, pk: int):
         obj = serializer.save(created_by=obj.created_by or updated_by)
         return Response(DamageCodeMasterSerializer(obj).data)
 
+    if not (has_permission(request.user, "damage_config.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - damage_config.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -971,9 +1140,13 @@ def damage_code_master_detail(request, pk: int):
 @permission_classes([IsAuthenticated])
 def pricing_config_collection(request):
     if request.method == "GET":
+        if not (has_permission(request.user, "price_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - price_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         qs = PricingConfig.objects.all().order_by("config_key")
         return Response(PricingConfigSerializer(qs, many=True).data)
 
+    if not (has_permission(request.user, "price_config.update") or is_admin(request.user)):
+        return Response({"error": "Forbidden - price_config.update required"}, status=status.HTTP_403_FORBIDDEN)
     serializer = PricingConfigSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     created_by = getattr(getattr(request, "user", None), "username", None) or "api_user"
@@ -987,9 +1160,13 @@ def pricing_config_detail(request, pk: int):
     obj = get_object_or_404(PricingConfig, pk=pk)
 
     if request.method == "GET":
+        if not (has_permission(request.user, "price_config.view") or is_admin(request.user)):
+            return Response({"error": "Forbidden - price_config.view required"}, status=status.HTTP_403_FORBIDDEN)
         return Response(PricingConfigSerializer(obj).data)
 
     if request.method in ("PUT", "PATCH"):
+        if not (has_permission(request.user, "price_config.update") or is_admin(request.user)):
+            return Response({"error": "Forbidden - price_config.update required"}, status=status.HTTP_403_FORBIDDEN)
         serializer = PricingConfigSerializer(
             obj, data=request.data, partial=(request.method == "PATCH")
         )
@@ -998,6 +1175,8 @@ def pricing_config_detail(request, pk: int):
         obj = serializer.save(updated_by=updated_by)
         return Response(PricingConfigSerializer(obj).data)
 
+    if not (has_permission(request.user, "price_config.delete") or is_admin(request.user)):
+        return Response({"error": "Forbidden - price_config.delete required"}, status=status.HTTP_403_FORBIDDEN)
     obj.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1019,6 +1198,28 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
             incident_dt = None
     policy_start = parse_date(policy.get("policy_start_date")) if policy.get("policy_start_date") else None
     policy_end = parse_date(policy.get("policy_end_date")) if policy.get("policy_end_date") else None
+    def _bool(v):
+        if v is None:
+            return None
+        return bool(v)
+
+    accident_location = incident.get("accident_location") or data.get("accident_location") or None
+    liability_admission = _bool(data.get("liability_admission") if "liability_admission" in data else incident.get("liability_admission"))
+    dashcam_cctv_evidence = _bool(data.get("dashcam_cctv_evidence") if "dashcam_cctv_evidence" in data else incident.get("dashcam_cctv_evidence"))
+    injury_indicator = _bool(data.get("injury_indicator") if "injury_indicator" in data else incident.get("injury_indicator"))
+    commercial_vehicle = _bool(data.get("commercial_vehicle") if "commercial_vehicle" in data else incident.get("commercial_vehicle"))
+    flood_coverage = _bool(data.get("flood_coverage") if "flood_coverage" in data else incident.get("flood_coverage"))
+
+    def _decimal(v):
+        if v is None:
+            return None
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+
+    excess_amount = _decimal(incident.get("excess_amount") if "excess_amount" in (incident or {}) else data.get("excess_amount"))
+
     return {
         "complaint_id": complaint_id,
         "coverage_type": policy.get("coverage_type"),
@@ -1034,8 +1235,15 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "incident_type": incident.get("claim_type"),
         "incident_description": incident.get("loss_description"),
         "incident_date_time": incident_dt,
+        "accident_location": accident_location,
+        "liability_admission": liability_admission,
+        "dashcam_cctv_evidence": dashcam_cctv_evidence,
+        "injury_indicator": injury_indicator,
+        "commercial_vehicle": commercial_vehicle,
+        "flood_coverage": flood_coverage,
         "fir_document_copy": documents.get("fir_path") if isinstance(documents.get("fir_path"), str) else None,
         "insurance_document_copy": documents.get("insurance_path") if isinstance(documents.get("insurance_path"), str) else None,
+        "excess_amount": excess_amount,
     }
 
 
@@ -1110,6 +1318,17 @@ def run_fraud_detection(request, complaint_id: str):
     fnol_claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
     raw_response = _fnol_claim_to_raw_response(fnol_claim)
 
+    # Use existing evaluation's claim_amount for threshold so threshold_value is not always 25
+    existing = (
+        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
+        .order_by("-created_date")
+        .first()
+    )
+    if existing and (existing.claim_amount or existing.estimated_amount):
+        amount = float(existing.claim_amount or existing.estimated_amount or 0)
+        if amount > 0:
+            raw_response.setdefault("incident", {})["estimated_amount"] = amount
+
     result = _run_process_claim_logic(raw_response)
 
     user_id = None
@@ -1140,217 +1359,4 @@ def run_fraud_detection(request, complaint_id: str):
         fnol_claim.save(update_fields=["claim_status"])
 
     return Response(result, status=status.HTTP_200_OK)
-
-
-# Report brand colors (blue and orange)
-_REPORT_BLUE = colors.HexColor("#00205B")
-_REPORT_ORANGE = colors.HexColor("#E87722")
-_REPORT_LIGHT_BLUE = colors.HexColor("#D6E4F0")
-_REPORT_LIGHT_ORANGE = colors.HexColor("#FCE8DC")
-
-
-def _table_style_header_blue(data, col_widths=None):
-    """Table style: blue header row, white text, grid, alternating light blue/white data rows."""
-    col_count = len(data[0]) if data else 2
-    if col_widths is None:
-        col_widths = ["*"] * col_count
-    t = Table(data, colWidths=col_widths)
-    nrows = len(data)
-    styles = [
-        ("BACKGROUND", (0, 0), (-1, 0), _REPORT_BLUE),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (0, 0), (0, -1), "LEFT"),
-        ("ALIGN", (1, 0), (-1, -1), "LEFT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]
-    for r in range(1, nrows):
-        bg = colors.white if r % 2 == 0 else _REPORT_LIGHT_BLUE
-        styles.append(("BACKGROUND", (0, r), (-1, r), bg))
-    t.setStyle(TableStyle(styles))
-    return t
-
-
-def _section_heading(text, use_orange=False):
-    """Section title as paragraph in blue or orange."""
-    color = _REPORT_ORANGE if use_orange else _REPORT_BLUE
-    style = ParagraphStyle(
-        name="SectionHeading",
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        textColor=color,
-        spaceAfter=6,
-    )
-    return Paragraph(text, style)
-
-
-def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result: dict) -> bytes:
-    """Build MOTOR CLAIM RECOMMENDATION REPORT PDF with blue/orange styling and tabular sections."""
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        leftMargin=0.75 * inch,
-        rightMargin=0.75 * inch,
-        topMargin=0.75 * inch,
-        bottomMargin=0.75 * inch,
-    )
-    story = []
-    styles = getSampleStyleSheet()
-
-    # ----- Title (left-aligned, space before/after orange line) -----
-    title_style = ParagraphStyle(
-        name="ReportTitle",
-        fontName="Helvetica-Bold",
-        fontSize=18,
-        textColor=_REPORT_BLUE,
-        alignment=0,
-        spaceAfter=14,
-    )
-    story.append(Paragraph("MOTOR CLAIM RECOMMENDATION REPORT", title_style))
-    story.append(Spacer(1, 0.08 * inch))
-    line_table = Table([[""]], colWidths=[6 * inch], rowHeights=[4])
-    line_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), _REPORT_ORANGE)]))
-    story.append(line_table)
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ----- 1. Claim Details -----
-    story.append(_section_heading("1. Claim Details"))
-    incident_dt = claim.incident_date_time.strftime("%d/%m/%Y %H:%M") if claim.incident_date_time else "—"
-    vehicle_str = f"{claim.vehicle_year or ''} {claim.vehicle_make or ''} {claim.vehicle_model or ''}".strip() or "—"
-    claim_details = [
-        ["Claim No.:", claim.complaint_id or "—"],
-        ["Policy No.:", claim.policy_number or "—"],
-        ["Insured:", claim.policy_holder_name or "—"],
-        ["Vehicle:", f"{vehicle_str} / {claim.vehicle_registration_number or '—'}"],
-        ["Policy Type:", claim.coverage_type or "—"],
-        ["Date of Loss:", incident_dt],
-        ["Cause of Loss:", claim.incident_type or "—"],
-        ["Claimed Amount:", str(evaluation.estimated_amount or evaluation.claim_amount or "—") if evaluation else "—"],
-        ["Recommendation:", (evaluation.decision or "—") if evaluation else "—"],
-    ]
-    if claim.incident_description:
-        claim_details.insert(7, ["Description:", (claim.incident_description or "—")[:80]])
-    story.append(_table_style_header_blue([["Field", "Value"]] + claim_details, [2.2 * inch, "*"]))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ----- 2. Policy Coverage Review -----
-    story.append(_section_heading("2. Policy Coverage Review", use_orange=True))
-    policy_start = claim.policy_start_date.strftime("%d/%m/%Y") if claim.policy_start_date else "—"
-    policy_end = claim.policy_end_date.strftime("%d/%m/%Y") if claim.policy_end_date else "—"
-    policy_coverage = [
-        ["Policy period:", f"{policy_start} - {policy_end}"],
-        ["Policy active at time of loss:", "Yes" if (claim.policy_status or "").lower() == "active" else "No"],
-        ["Policy Status:", claim.policy_status or "—"],
-    ]
-    story.append(_table_style_header_blue([["Policy Status", "Value"]] + policy_coverage, [2.8 * inch, "*"]))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ----- 3. Documents Submitted Review -----
-    story.append(_section_heading("3. Documents Submitted Review"))
-    has_photos = claim.damage_photos.exists()
-    documents_review = [
-        ["Claim form / details completed", "Yes"],
-        ["Copy of policy schedule", "Yes" if claim.policy_number else "—"],
-        ["Photos of damage", "Yes" if has_photos else "No"],
-        ["Vehicle / registration details", "Yes" if claim.vehicle_registration_number else "—"],
-    ]
-    story.append(_table_style_header_blue([["Document", "Yes / No"]] + documents_review, [3.5 * inch, 1.2 * inch]))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ----- 4. Business Rule Validation (Fraud Evaluation) -----
-    story.append(_section_heading("4. Business Rule Validation", use_orange=True))
-    rules = fraud_result.get("fraud_rule_results") or []
-    if rules:
-        rule_rows = [["Validation Check", "Status"]]
-        for r in rules:
-            rule_type = r.get("rule_type") or "Rule"
-            rule_desc = (r.get("rule_description") or "")[:70]
-            passed = r.get("passed", False)
-            rule_rows.append([f"{rule_type}: {rule_desc}", "Pass" if passed else "Fail"])
-        story.append(_table_style_header_blue(rule_rows, [4 * inch, 1.2 * inch]))
-    else:
-        story.append(_table_style_header_blue([["Validation Check", "Status"], ["No rules evaluated", "—"]], [4 * inch, 1.2 * inch]))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ----- 5. Damage Assessment -----
-    story.append(_section_heading("5. Damage Assessment"))
-    if evaluation:
-        llm_d = evaluation.llm_damages
-        damages_str = "—"
-        if llm_d:
-            try:
-                damages = json.loads(llm_d) if isinstance(llm_d, str) else llm_d
-                damages_str = ", ".join(str(d) for d in damages) if isinstance(damages, list) else str(llm_d)
-            except (TypeError, json.JSONDecodeError):
-                damages_str = str(llm_d)
-        damage_rows = [
-            ["Damage Confidence (%)", str(evaluation.damage_confidence or 0)],
-            ["LLM Damages", damages_str],
-            ["LLM Severity", evaluation.llm_severity or "—"],
-        ]
-        story.append(_table_style_header_blue([["Item", "Value"]] + damage_rows, [2.5 * inch, "*"]))
-    else:
-        story.append(_table_style_header_blue([["Item", "Value"], ["—", "—"]], [2.5 * inch, "*"]))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ----- 6. Claim Evaluation / Final Recommendation -----
-    story.append(_section_heading("6. Final Recommendation", use_orange=True))
-    if evaluation:
-        eval_rows = [
-            ["Claim Amount (THB)", str(evaluation.claim_amount or evaluation.estimated_amount or "—")],
-            ["Claim Type", evaluation.claim_type or "—"],
-            ["Decision", evaluation.decision or "—"],
-            ["Claim Status", evaluation.claim_status or "—"],
-            ["Conclusion", evaluation.reason or (evaluation.decision or "—")],
-        ]
-        if evaluation.created_date:
-            eval_rows.append(["Evaluated On", evaluation.created_date.strftime("%d/%m/%Y %H:%M")])
-        story.append(_table_style_header_blue([["Field", "Value"]] + eval_rows, [2.5 * inch, "*"]))
-    else:
-        story.append(_table_style_header_blue([["Field", "Value"], ["—", "—"]], [2.5 * inch, "*"]))
-
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.read()
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def recommendation_report_pdf(request, complaint_id: str):
-    """
-    Generate and return MOTOR CLAIM RECOMMENDATION REPORT as PDF.
-    Available when claim status is Recommendation shared.
-    Contains: Claim Details, Vehicle Images, Fraud Evaluation, Damage Assessment, Claim Evaluation.
-    """
-    claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
-    status_name = (claim.claim_status.status_name if claim.claim_status else "").strip()
-    if status_name.lower() != "recommendation shared":
-        return Response(
-            {"detail": "Recommendation report is only available for claims with status 'Recommendation shared'."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    evaluation = (
-        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
-        .order_by("-created_date")
-        .first()
-    )
-    if not evaluation:
-        return Response(
-            {"detail": "No evaluation found for this claim."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    raw_response = _fnol_claim_to_raw_response(claim)
-    fraud_result = _run_process_claim_logic(raw_response)
-    pdf_bytes = _build_recommendation_report_pdf(claim, evaluation, fraud_result)
-    filename = f"Motor_Claim_Recommendation_Report_{complaint_id}.pdf"
-    response = HttpResponse(pdf_bytes, content_type="application/pdf")
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return response
 
