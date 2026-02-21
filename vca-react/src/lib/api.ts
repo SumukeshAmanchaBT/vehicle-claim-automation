@@ -117,6 +117,8 @@ export interface ClaimEvaluationResponse {
   estimated_repair: number;
   threshold_value: number;
   claim_type: string;
+  /** Severity from claim type: SIMPLE=minor, MEDIUM=moderate, COMPLEX=severe */
+  severity: string | null;
   decision: string;
   claim_status: string;
   reason: string | null;

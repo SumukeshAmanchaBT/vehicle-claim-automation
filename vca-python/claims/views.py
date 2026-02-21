@@ -918,7 +918,8 @@ def get_fnol(request, pk: str):
 def get_claim_evaluation(request, complaint_id: str):
     """
     Return the latest claim evaluation response for a complaint_id.
-    Includes damage_confidence, estimated_amount, claim_amount, decision, claim_status,
+    Includes damage_confidence, estimated_amount, claim_amount, excess_amount (from fnol_claims),
+    estimated_repair (claim_amount - excess_amount), decision, claim_status,
     reason, llm_damages, llm_severity (from damage assessment).
     """
     latest = ClaimEvaluationResponse.objects.filter(
@@ -935,15 +936,36 @@ def get_claim_evaluation(request, complaint_id: str):
             damages = json.loads(latest.llm_damages)
         except (json.JSONDecodeError, TypeError):
             damages = None
+
+    # excess_amount from fnol_claims (available after Damage Detection / claim intake)
+    fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
+    excess_amount = float(fnol.excess_amount or 0) if fnol and getattr(fnol, "excess_amount", None) is not None else 0
+    claim_amount = float(latest.claim_amount or 0)
+    estimated_repair = max(0, claim_amount - excess_amount)
+
+    # Severity from claim type: SIMPLE=minor, MEDIUM=moderate, COMPLEX=severe
+    claim_type_upper = (latest.claim_type or "").strip().upper()
+    if claim_type_upper == "SIMPLE":
+        severity = "minor"
+    elif claim_type_upper == "MEDIUM":
+        severity = "moderate"
+    elif claim_type_upper == "COMPLEX":
+        severity = "severe"
+    else:
+        severity = latest.llm_severity or None
+
     return Response({
         "complaint_id": latest.complaint_id,
         "version": latest.version,
         "is_latest": latest.is_latest,
         "damage_confidence": float(latest.damage_confidence or 0),
         "estimated_amount": float(latest.estimated_amount or 0),
-        "claim_amount": float(latest.claim_amount or 0),
+        "claim_amount": claim_amount,
+        "excess_amount": excess_amount,
+        "estimated_repair": estimated_repair,
         "threshold_value": latest.threshold_value,
         "claim_type": latest.claim_type,
+        "severity": severity,
         "decision": latest.decision,
         "claim_status": latest.claim_status,
         "reason": latest.reason,
