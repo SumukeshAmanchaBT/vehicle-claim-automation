@@ -9,6 +9,12 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { mockClaimsByType } from "@/lib/mock-data";
 
+export type ByTypeDataPoint = { type: string; count: number; percentage?: number };
+
+interface ClaimsByTypeChartProps {
+  data?: ByTypeDataPoint[] | null;
+}
+
 const COLORS = [
   "rgb(var(--chart-1))",
   "rgb(var(--chart-2))",
@@ -17,7 +23,8 @@ const COLORS = [
   "rgb(var(--chart-5))",
 ];
 
-export function ClaimsByTypeChart() {
+export function ClaimsByTypeChart({ data }: ClaimsByTypeChartProps) {
+  const chartData = (data && data.length > 0) ? data : mockClaimsByType;
   return (
     <Card className="card-elevated">
       <CardHeader className="pb-2">
@@ -30,7 +37,7 @@ export function ClaimsByTypeChart() {
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
-                data={mockClaimsByType}
+                data={chartData}
                 cx="50%"
                 cy="50%"
                 innerRadius={60}
@@ -39,7 +46,7 @@ export function ClaimsByTypeChart() {
                 dataKey="count"
                 nameKey="type"
               >
-                {mockClaimsByType.map((entry, index) => (
+                {chartData.map((entry, index) => (
                   <Cell
                     key={`cell-${index}`}
                     fill={COLORS[index % COLORS.length]}

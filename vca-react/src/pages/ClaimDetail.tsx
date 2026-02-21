@@ -345,7 +345,7 @@ export default function ClaimDetail() {
           <div className="flex flex-end items-center gap-2">
             {isRecommendationShared && (
               <Button
-                variant="outline"
+
                 onClick={handleGenerateRecommendationReport}
                 disabled={reportPdfLoading}
               >
@@ -356,7 +356,7 @@ export default function ClaimDetail() {
                   </>
                 ) : (
                   <>
-                    <FileDown className="mr-2 h-4 w-4" />
+                    <FileDown className="mr-2 h-4 w-4 " />
                     Generate Recommendation Report
                   </>
                 )}
@@ -470,16 +470,55 @@ export default function ClaimDetail() {
                   <Card className="card-elevated">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                          <Brain className="h-5 w-5 text-primary" />
+
+                        {/* Icon Box */}
+                        <div
+                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg
+        ${aiConfidence >= 70
+                              ? "bg-success/20"
+                              : aiConfidence >= 40
+                                ? "bg-warning/20"
+                                : "bg-destructive/20"
+                            }`}
+                        >
+                          <Brain
+                            className={`h-5 w-5
+          ${aiConfidence >= 70
+                                ? "text-success"
+                                : aiConfidence >= 40
+                                  ? "text-warning"
+                                  : "text-destructive"
+                              }`}
+                          />
                         </div>
+
+                        {/* Text */}
                         <div className="min-w-0 flex-1">
-                          <p className="text-xs text-muted-foreground">Damage Assessment</p>
-                          <p className="text-xl font-bold">{aiConfidence}%</p>
-                          {/* <p className="text-xs text-muted-foreground mt-0.5">
-                            Est. {formatCurrency(incident.estimated_amount ?? 0)}
-                          </p> */}
+                          <p className="text-xs text-muted-foreground">
+                            Damage Assessment
+                          </p>
+
+                          <p
+                            className={`text-xl font-bold
+          ${aiConfidence >= 70
+                                ? "text-success"
+                                : aiConfidence >= 40
+                                  ? "text-warning"
+                                  : "text-destructive"
+                              }`}
+                          >
+                            {aiConfidence}%
+                          </p>
+
+                          <p className="text-xs text-muted-foreground mt-0.5">
+                            {aiConfidence >= 70
+                              ? "High Confidence"
+                              : aiConfidence >= 40
+                                ? "Moderate Confidence"
+                                : "Low Confidence"}
+                          </p>
                         </div>
+
                       </div>
                     </CardContent>
                   </Card>
@@ -535,8 +574,8 @@ export default function ClaimDetail() {
                     <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
                   </>
                 )}
-                
-               
+
+
               </TabsList>
 
               <TabsContent value="details">
@@ -1007,7 +1046,7 @@ export default function ClaimDetail() {
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Name</span>
                     <span className="text-muted-foreground font-medium ">
-                       {fnol.policy_holder_name || claimant.driver_name || "—"}
+                      {fnol.policy_holder_name || claimant.driver_name || "—"}
                     </span>
                   </div>
                   <div className="flex justify-between">

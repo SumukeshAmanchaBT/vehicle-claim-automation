@@ -1365,8 +1365,8 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     claim_details = [
         ["Claim No.:", claim.complaint_id or "—"],
         ["Policy No.:", claim.policy_number or "—"],
-        ["Insured:", claim.policy_holder_name or "—"],
-        ["Vehicle:", f"{vehicle_str} / {claim.vehicle_registration_number or '—'}"],
+        ["Insured Name:", claim.policy_holder_name or "—"],
+        ["Vehicle Name:", f"{vehicle_str} / {claim.vehicle_registration_number or '—'}"],
         ["Policy Type:", claim.coverage_type or "—"],
         ["Date of Loss:", incident_dt],
         ["Cause of Loss:", claim.incident_type or "—"],
@@ -1383,6 +1383,7 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     policy_start = claim.policy_start_date.strftime("%d/%m/%Y") if claim.policy_start_date else "—"
     policy_end = claim.policy_end_date.strftime("%d/%m/%Y") if claim.policy_end_date else "—"
     policy_coverage = [
+        ["Policy Type:", claim.coverage_type or "—"],
         ["Policy period:", f"{policy_start} - {policy_end}"],
         ["Policy active at time of loss:", "Yes" if (claim.policy_status or "").lower() == "active" else "No"],
         ["Policy Status:", claim.policy_status or "—"],

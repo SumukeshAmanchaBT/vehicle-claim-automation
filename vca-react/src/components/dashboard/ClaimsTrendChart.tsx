@@ -11,7 +11,14 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { mockClaimsTrend } from "@/lib/mock-data";
 
-export function ClaimsTrendChart() {
+export type TrendDataPoint = { date: string; claims: number; approved: number };
+
+interface ClaimsTrendChartProps {
+  data?: TrendDataPoint[] | null;
+}
+
+export function ClaimsTrendChart({ data }: ClaimsTrendChartProps) {
+  const chartData = (data && data.length > 0) ? data : mockClaimsTrend;
   return (
     <Card className="card-elevated">
       <CardHeader className="pb-2">
@@ -21,7 +28,7 @@ export function ClaimsTrendChart() {
         <div className="h-[300px]">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
-              data={mockClaimsTrend}
+              data={chartData}
               margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
             >
               <defs>

@@ -4,8 +4,25 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import { mockFraudAlerts } from "@/lib/mock-data";
 import { Link } from "react-router-dom";
+import type { FraudClaimItem } from "@/lib/api";
 
-export function FraudAlerts() {
+interface FraudAlertsProps {
+  /** Business validation alerts (under_review or confirmed). When provided, uses API data; otherwise mock. */
+  alerts?: FraudClaimItem[] | null;
+}
+
+export function FraudAlerts({ alerts: alertsProp }: FraudAlertsProps) {
+  const useMock = !alertsProp || alertsProp.length === 0;
+  const alerts = useMock ? mockFraudAlerts : alertsProp;
+  const displayAlerts = useMock
+    ? mockFraudAlerts
+    : alertsProp!.map((a) => ({
+        id: a.complaint_id,
+        claimNumber: a.claimNumber,
+        riskScore: a.riskScore,
+        reason: a.reason,
+      }));
+
   return (
     <Card className="card-elevated border-l-4 border-l-destructive">
       <CardHeader className="flex flex-row items-center gap-3 pb-2">
@@ -14,10 +31,10 @@ export function FraudAlerts() {
         </div>
         <div className="flex-1">
           <CardTitle className="text-base font-semibold">
-            Fraud Alerts
+            Business Validation Alerts
           </CardTitle>
           <p className="text-xs text-muted-foreground">
-            {mockFraudAlerts.length} claims require attention
+            {displayAlerts.length} claims require attention
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
@@ -25,9 +42,9 @@ export function FraudAlerts() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-3">
-        {mockFraudAlerts.map((alert) => (
+        {displayAlerts.map((alert) => (
           <div
-            key={alert.id}
+            key={alert.id ?? alert.claimNumber}
             className="flex items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
           >
             <div className="flex-1 space-y-1">

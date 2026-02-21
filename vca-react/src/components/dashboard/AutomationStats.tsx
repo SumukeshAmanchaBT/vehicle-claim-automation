@@ -1,9 +1,19 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Zap, TrendingUp, Clock, Target } from "lucide-react";
+import { Zap, TrendingUp, Target } from "lucide-react";
 import { mockDashboardStats } from "@/lib/mock-data";
 
-export function AutomationStats() {
+interface AutomationStatsProps {
+  stpRate?: number;
+  automationRate?: number;
+  avgProcessingTime?: string;
+}
+
+export function AutomationStats({
+  stpRate = mockDashboardStats.stpRate,
+  automationRate = mockDashboardStats.automationRate,
+  avgProcessingTime = mockDashboardStats.avgProcessingTime,
+}: AutomationStatsProps) {
   return (
     <Card className="card-elevated">
       <CardHeader className="pb-2">
@@ -20,9 +30,9 @@ export function AutomationStats() {
         <div className="space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="text-muted-foreground">STP Rate</span>
-            <span className="font-semibold">{mockDashboardStats.stpRate}%</span>
+            <span className="font-semibold">{stpRate}%</span>
           </div>
-          <Progress value={mockDashboardStats.stpRate} className="h-2" />
+          <Progress value={stpRate} className="h-2" />
           <p className="text-xs text-muted-foreground">
             Straight-Through Processing without manual intervention
           </p>
@@ -35,16 +45,15 @@ export function AutomationStats() {
               <span className="text-xs">Automation Rate</span>
             </div>
             <p className="text-xl font-bold">
-              {mockDashboardStats.automationRate}%
+              {automationRate}%
             </p>
           </div>
           <div className="space-y-1">
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <Clock className="h-3.5 w-3.5" />
               <span className="text-xs">Avg. Time</span>
             </div>
             <p className="text-xl font-bold">
-              {mockDashboardStats.avgProcessingTime}
+              {avgProcessingTime}
             </p>
           </div>
         </div>

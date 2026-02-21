@@ -31,7 +31,7 @@ const getStatusInfo = (status: string) => {
   const map = {
     under_review: { label: "Under Review", variant: "pending" as const, icon: Clock },
     cleared: { label: "Cleared", variant: "approved" as const, icon: CheckCircle2 },
-    confirmed: { label: "Fraud Confirmed", variant: "rejected" as const, icon: XCircle },
+    confirmed: { label: "Business Validation Failed", variant: "rejected" as const, icon: XCircle },
   };
   return map[status as keyof typeof map] || map.under_review;
 };
@@ -66,8 +66,8 @@ export default function Fraud() {
 
   return (
     <AppLayout
-      title="Re-Open Claims"
-      subtitle="Claims marked for re-open — review and re-validate"
+      title="Business Rule Validation"
+      subtitle="Business rule validation and claim risk analysis"
     >
       <div className="space-y-6 animate-fade-in">
         {/* Summary Cards */}
@@ -92,7 +92,7 @@ export default function Fraud() {
                   <ShieldAlert className="h-5 w-5 text-destructive" />
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Confirmed Fraud</p>
+                  <p className="text-xs text-muted-foreground">Validation Failed</p>
                   <p className="text-2xl font-bold">{confirmed}</p>
                 </div>
               </div>
@@ -126,7 +126,7 @@ export default function Fraud() {
           </Card>
         </div>
 
-        {/* Fraud Cases Table */}
+        {/* Business Validation Results Table */}
         <Card className="card-elevated overflow-hidden">
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base flex items-center gap-2">
@@ -144,11 +144,11 @@ export default function Fraud() {
             {loading ? (
               <div className="flex flex-col items-center justify-center py-16">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                <p className="mt-4 text-sm text-muted-foreground">Loading fraud claims...</p>
+                <p className="mt-4 text-sm text-muted-foreground">Loading validation results...</p>
               </div>
             ) : fraudCases.length === 0 ? (
               <div className="py-16 text-center text-sm text-muted-foreground">
-                No re-open claims. Only claims with re_open = 1 are listed here.
+                No business validation results yet. Run Business Rule Validation on claims to see them here.
               </div>
             ) : (
             <Table>
