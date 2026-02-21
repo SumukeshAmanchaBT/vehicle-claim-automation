@@ -67,6 +67,8 @@ export interface FraudClaimItem {
   re_open?: number;
   /** Number of times this claim was processed (rows in claim_evaluation_response) */
   times_processed?: number;
+  /** Latest claim_status from claim_evaluation_response (is_latest=True row) */
+  latest_claim_status?: string;
   /** All evaluation records for this claim (complaint_id, threshold_value, claim_status, reason) */
   evaluation_records?: {
     complaint_id: string;

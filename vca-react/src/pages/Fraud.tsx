@@ -157,7 +157,6 @@ export default function Fraud() {
                   <TableHead className="w-10 pl-4 pr-0" />
                   <TableHead className="pl-4">Claim #</TableHead>
                   <TableHead>Customer</TableHead>
-                  <TableHead>Reason</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="pr-6 text-right">Actions</TableHead>
                 </TableRow>
@@ -202,16 +201,10 @@ export default function Fraud() {
                         <TableCell className="font-medium">
                           {fraudCase.customer}
                         </TableCell>
-                        <TableCell className="max-w-[200px]">
-                          <p className="text-sm text-muted-foreground truncate">
-                            {fraudCase.reason}
-                          </p>
-                        </TableCell>
                         <TableCell>
-                          <StatusBadge status={statusInfo.variant}>
-                            <StatusIcon className="h-3 w-3 mr-1" />
-                            {statusInfo.label}
-                          </StatusBadge>
+                          <p className="text-sm font-medium" title="Latest from claim_evaluation_response">
+                            {fraudCase.latest_claim_status ?? statusInfo.label}
+                          </p>
                         </TableCell>
                         <TableCell className="pr-6 text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-2">
@@ -234,7 +227,7 @@ export default function Fraud() {
                       </TableRow>
                       {isExpanded && (
                         <TableRow className="bg-muted/30 hover:bg-muted/30">
-                          <TableCell colSpan={6} className="pl-12 pr-6 py-4">
+                          <TableCell colSpan={5} className="pl-12 pr-6 py-4">
                             <p className="text-sm font-medium text-foreground mb-3">
                               Evaluation records ({timesProcessed} record{timesProcessed !== 1 ? "s" : ""})
                             </p>

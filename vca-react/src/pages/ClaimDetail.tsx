@@ -83,6 +83,7 @@ export default function ClaimDetail() {
   const [claimEvaluation, setClaimEvaluation] = useState<ClaimEvaluationResponse | null>(null);
   const [claimEvaluationLoading, setClaimEvaluationLoading] = useState(false);
   const [reportPdfLoading, setReportPdfLoading] = useState(false);
+  const [shareFraudInfoClicked, setShareFraudInfoClicked] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -343,6 +344,13 @@ export default function ClaimDetail() {
             </Link>
           </Button>
           <div className="flex flex-end items-center gap-2">
+            <Button
+              variant="destructive"
+              disabled={shareFraudInfoClicked}
+              onClick={() => setShareFraudInfoClicked(true)}
+            >
+              Share fraud info
+            </Button>
             {isRecommendationShared && (
               <Button
 
