@@ -835,12 +835,12 @@ export default function ClaimDetail() {
                               <p className="text-xs text-muted-foreground">Claim Type</p>
                               <p className="text-sm font-medium mt-1">{claimEvaluation.claim_type ?? "—"}</p>
                             </div>
-                            {claimEvaluation.llm_severity && (
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">LLM Severity</p>
-                                <p className="text-sm font-medium mt-1">{claimEvaluation.llm_severity}</p>
-                              </div>
-                            )}
+                            <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Severity</p>
+                              <p className="text-sm font-medium mt-1 capitalize">
+                                {claimEvaluation.severity ?? claimEvaluation.llm_severity ?? "—"}
+                              </p>
+                            </div>
                             {claimEvaluation.reason && (
                               <div className="rounded-lg border p-4 sm:col-span-2">
                                 <p className="text-xs text-muted-foreground">Reason</p>
