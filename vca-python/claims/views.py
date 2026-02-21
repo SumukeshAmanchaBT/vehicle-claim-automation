@@ -876,6 +876,8 @@ def list_fraud_claims(request):
         ]
         times_processed = len(evaluation_records)
 
+        latest_claim_status = (eval_row.claim_status or "").strip() or "—"
+
         results.append({
             "complaint_id": claim.complaint_id,
             "claimNumber": claim.complaint_id,
@@ -884,6 +886,7 @@ def list_fraud_claims(request):
             "reason": reason,
             "amount": float(eval_row.estimated_amount or eval_row.claim_amount or 0),
             "status": ui_status,
+            "latest_claim_status": latest_claim_status,
             "detectedAt": eval_row.created_date.isoformat() if eval_row.created_date else None,
             "indicators": [reason] if reason and reason != "—" else [],
             "re_open": re_open,
