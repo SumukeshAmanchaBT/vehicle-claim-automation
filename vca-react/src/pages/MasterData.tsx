@@ -698,7 +698,7 @@ export default function MasterData() {
           {/* <TabsList>
             <TabsTrigger value="damage-types">Damage Types</TabsTrigger>
             <TabsTrigger value="thresholds">Claim Thresholds</TabsTrigger>
-            <TabsTrigger value="fraud-rules">Fraud Rules</TabsTrigger>
+            <TabsTrigger value="fraud-rules">Business Rules</TabsTrigger>
            <TabsTrigger value="automation">Automation Settings</TabsTrigger> 
           </TabsList> */}
 
@@ -1072,7 +1072,7 @@ export default function MasterData() {
           <TabsContent value="fraud-rules">
             <Card className="card-elevated">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-base">Fraud Rules</CardTitle>
+                <CardTitle className="text-base"> Business Rule Validation</CardTitle>
                 {canUpdateFraudRules && (
                 <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
                   <DialogTrigger asChild>
@@ -1205,13 +1205,13 @@ export default function MasterData() {
                     {loading ? (
                       <TableRow>
                         <TableCell className="pl-6" colSpan={5}>
-                          Loading fraud rules...
+                          Loading  Business Rule Validation ...
                         </TableCell>
                       </TableRow>
                     ) : filteredRules.length === 0 ? (
                       <TableRow>
                         <TableCell className="pl-6" colSpan={5}>
-                          No fraud rules configured.
+                          No  Business Rule Validation  configured.
                         </TableCell>
                       </TableRow>
                     ) : (
