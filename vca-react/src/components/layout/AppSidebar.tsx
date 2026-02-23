@@ -76,7 +76,7 @@ const adminSections: {
     items: [
       { label: "Damage Configuration", href: "/master-data?section=damage-types", permission: "damage_config.view" },
       { label: "Claim Configuration", href: "/master-data?section=thresholds", permission: "claim_config.view" },
-      { label: "Fraud Rules", href: "/master-data?section=fraud-rules", permission: "fraud_rules.view" },
+      { label: "Business Rules", href: "/master-data?section=fraud-rules", permission: "fraud_rules.view" },
       { label: "Price Config", href: "/master-data?section=PriceConfig", permission: "price_config.view" },
     ],
   },
