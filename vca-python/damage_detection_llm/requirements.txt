@@ -2,3 +2,7 @@
 # Dependencies are in the project root requirements.txt:
 #   ultralytics, tensorflow, keras, numpy, Pillow
 # Flask/flask-cors are no longer needed.
+#
+# For vision LLM analysis (flooded, fire, etc. from image):
+#   pip install openai
+# Set OPENAI_API_KEY in env. Optional: OPENAI_VISION_MODEL=gpt-4o (default: gpt-4o-mini)

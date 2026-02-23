@@ -93,6 +93,7 @@ def damage_assessment(request):
     Returns damages (list) and severity (str).
     """
     input_path = None
+    image_url_for_hint = None
 
     # 1. Try claim_id and images array (for Damage Detection from Claim Detail)
     claim_id, images = _get_claim_id_and_images(request)
@@ -108,9 +109,12 @@ def damage_assessment(request):
                 else None
             )
         )
+        image_url_for_hint = image_url
+        print(f'Fetching Image URL: {image_url}')
         if image_url:
             try:
                 input_path = _fetch_image_from_url(image_url.strip())
+                print(f'Fetching Input Image URL: {input_path}')
             except ValueError as e:
                 return Response(
                     {"error": str(e)},
@@ -125,6 +129,8 @@ def damage_assessment(request):
     # 2. Fallback: Try image_url from metadata (JSON or form)
     if not input_path:
         image_url = _get_image_url_from_request(request)
+        if image_url:
+            image_url_for_hint = image_url
     if not input_path and image_url:
         if not isinstance(image_url, str) or not image_url.strip():
             return Response(
@@ -179,7 +185,22 @@ def damage_assessment(request):
         )
 
     try:
-        damages, severity = run_damage_assessment(input_path)
+        incident_description = None
+        flood_coverage = False
+        if claim_id and isinstance(claim_id, str) and claim_id.strip():
+            from claims.models import FnolClaim
+            fnol = FnolClaim.objects.filter(complaint_id=claim_id.strip()).first()
+            if fnol:
+                incident_description = fnol.incident_description
+                flood_coverage = bool(getattr(fnol, "flood_coverage", False))
+        if not incident_description and isinstance(request.data, dict):
+            incident_description = request.data.get("incident_description") or request.data.get("incidentDescription")
+        damages, severity = run_damage_assessment(
+            input_path,
+            incident_description=incident_description,
+            flood_coverage=flood_coverage,
+            image_url=image_url_for_hint,
+        )
         severity_str = (severity or "").strip()[:20] if severity else ""
 
         # Always include claim_amount: compute from PricingConfig (base + damages * rate) * severity multiplier
@@ -237,7 +258,15 @@ def damage_assessment(request):
 
                     # Determine decision and claim_status from LLM; both map to Recommendation shared (id 4)
                     severity_lower = (severity_str or "").strip().lower()
-                    if severity_lower in ("minor", "moderate") and damages and str(damages[0]).lower() != "none":
+                    def _has_valid_damage(ds):
+                        if not ds:
+                            return False
+                        d0 = ds[0]
+                        if isinstance(d0, dict):
+                            return (d0.get("damage_type") or "").strip().lower() not in ("", "none")
+                        return str(d0).strip().lower() not in ("", "none")
+
+                    if severity_lower in ("minor", "moderate") and _has_valid_damage(damages):
                         decision = "Auto Approve"
                     else:
                         decision = "Manual Review"

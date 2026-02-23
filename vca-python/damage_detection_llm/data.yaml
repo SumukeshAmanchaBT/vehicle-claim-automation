@@ -1,0 +1,16 @@
+# YOLO dataset config for damage detection
+# Use this when retraining to include flooded and fire
+# Paths are relative to this file; adjust train/val to your dataset
+
+names:
+  - dent
+  - scratch
+  - intense-damage
+  - flooded
+  - fire
+
+nc: 5
+
+# Update these paths to your dataset
+train: dataset/images/train
+val: dataset/images/val
