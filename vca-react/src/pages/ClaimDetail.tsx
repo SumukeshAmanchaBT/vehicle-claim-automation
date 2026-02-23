@@ -884,7 +884,7 @@ export default function ClaimDetail() {
                         <div className="rounded-lg border p-4">
                           <p className="text-xs text-muted-foreground">Severity</p>
                           <p className="text-sm font-medium mt-1 capitalize">
-                            {claimEvaluation.severity ?? claimEvaluation.llm_severity ?? "—"}
+                            {claimEvaluation?.severity ?? claimEvaluation?.llm_severity ?? "—"}
                           </p>
                         </div>
                         
