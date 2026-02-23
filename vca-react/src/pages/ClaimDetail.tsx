@@ -344,13 +344,13 @@ export default function ClaimDetail() {
             </Link>
           </Button>
           <div className="flex flex-end items-center gap-2">
-            <Button
+            {/* <Button
               variant="destructive"
               disabled={shareFraudInfoClicked}
               onClick={() => setShareFraudInfoClicked(true)}
             >
               Share fraud info
-            </Button>
+            </Button> */}
             {isRecommendationShared && (
               <Button
 
@@ -573,7 +573,7 @@ export default function ClaimDetail() {
                 <TabsTrigger value="documents">Vehicle Images</TabsTrigger>
                 {/* Show Fraud Evaluation tab after Business Rule Validation (fraudResult) or when claim is past Open (e.g. Business Rule Validation-pass/fail) */}
                 {(!isOpenClaim || fraudResult) && (
-                  <TabsTrigger value="fraud-evaluation">Fraud Evaluation</TabsTrigger>
+                  <TabsTrigger value="fraud-evaluation">Business Rule Validation </TabsTrigger>
                 )}
                 {/* After Damage Detection: AI Assessment first, then Fraud Evaluation, then Claim Details, Documents */}
                 {damageDetectionRun && (
@@ -927,7 +927,7 @@ export default function ClaimDetail() {
                     <CardHeader>
                       <CardTitle className="text-base flex items-center gap-2">
                         <Shield className="h-4 w-4" />
-                        Fraud Evaluation
+                        Business Rule Validation
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-4">
