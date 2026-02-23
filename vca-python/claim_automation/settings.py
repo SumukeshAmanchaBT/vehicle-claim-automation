@@ -165,6 +165,10 @@ STATIC_URL = 'static/'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Vision LLM for damage analysis (flooded, fire, etc. from image)
+# Set OPENAI_API_KEY in env. Optional: OPENAI_VISION_MODEL=gpt-4o or gpt-4o-mini
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
 # Django REST Framework configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [

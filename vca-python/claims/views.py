@@ -93,7 +93,14 @@ def estimate_claim_amount_from_config(
     else:
         mult = mult_moderate  # default
 
-    damage_count = len([d for d in damages if d and str(d).lower() != "none"])
+    def _is_valid_damage(d):
+        if not d:
+            return False
+        if isinstance(d, dict):
+            return (d.get("damage_type") or "").strip().lower() not in ("", "none")
+        return str(d).strip().lower() not in ("", "none")
+
+    damage_count = len([d for d in damages if _is_valid_damage(d)])
     if damage_count == 0:
         damage_count = 1  # at least 1 for "no damage" case
     amount = (base + damage_count * rate_per_damage) * mult
@@ -1429,7 +1436,14 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
         if llm_d:
             try:
                 damages = json.loads(llm_d) if isinstance(llm_d, str) else llm_d
-                damages_str = ", ".join(str(d) for d in damages) if isinstance(damages, list) else str(llm_d)
+                if isinstance(damages, list):
+                    parts = [
+                        d.get("damage_type", str(d)) if isinstance(d, dict) else str(d)
+                        for d in damages if d
+                    ]
+                    damages_str = ", ".join(parts) if parts else "—"
+                else:
+                    damages_str = str(llm_d)
             except (TypeError, json.JSONDecodeError):
                 damages_str = str(llm_d)
         damage_rows = [
