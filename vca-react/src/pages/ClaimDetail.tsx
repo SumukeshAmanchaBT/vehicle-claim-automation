@@ -932,11 +932,11 @@ export default function ClaimDetail() {
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <p className="text-sm text-muted-foreground">
-                        Evaluation based on Master Data fraud rules. Green indicates the rule passed; red indicates it failed.
+                        Evaluation based on Master Data  Business Rule. Green indicates the rule passed; red indicates it failed.
                       </p>
                       {(() => {
                         const rules = fraudResult?.fraud_rule_results ?? assessment?.fraud_rule_results ?? [];
-                        console.log("Parsed fraud rules to display:", rules);
+                        console.log("Parsed Business rules to display:", rules);
                         if (rules.length === 0) {
                           return (
                             <p className="text-sm text-muted-foreground py-8 text-center">
