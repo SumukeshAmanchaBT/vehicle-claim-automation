@@ -641,7 +641,7 @@ export default function ClaimDetail() {
                         <div className="flex items-start gap-3">
                           <Clock className="h-4 w-4 mt-1 text-muted-foreground" />
                           <div>
-                            <p className="text-sm font-medium">Claim Request Date</p>
+                            <p className="text-sm font-medium">Notification Date</p>
                             <p className="text-sm text-muted-foreground">
                               {submittedDate
                                 ? new Date(submittedDate).toLocaleString(undefined, {
