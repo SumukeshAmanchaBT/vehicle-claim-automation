@@ -4,6 +4,7 @@ import os
 import random
 import re
 from datetime import date
+from html import escape as html_escape
 from typing import Optional, Tuple
 
 from django.conf import settings
@@ -18,7 +19,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -1411,14 +1412,59 @@ _REPORT_ORANGE = colors.HexColor("#E87722")
 _REPORT_LIGHT_BLUE = colors.HexColor("#D6E4F0")
 _REPORT_LIGHT_ORANGE = colors.HexColor("#FCE8DC")
 
+# Uniform table layout for recommendation report (same width and row height for all sections)
+_REPORT_TABLE_FIRST_COL = 2.5 * inch
+_REPORT_TABLE_SECOND_COL = 4.0 * inch
+_REPORT_TABLE_ROW_HEIGHT = 32  # points; same for every row so wrapped text fits
+# Business Rule Validation table: wider Validation Check column, narrower Status column
+_REPORT_TABLE_VALIDATION_COL = 4.5 * inch
+_REPORT_TABLE_STATUS_COL = 2.0 * inch
 
-def _table_style_header_blue(data, col_widths=None):
-    """Table style: blue header row, white text, grid, alternating light blue/white data rows."""
+# Paragraph styles for table cells so text wraps to next line instead of overflowing
+_REPORT_TABLE_CELL_STYLE = ParagraphStyle(
+    name="ReportTableCell",
+    fontName="Helvetica",
+    fontSize=9,
+    leading=11,
+    wordWrap="Normal",
+)
+# Header cell style: white text so all table header names are uniformly white on dark blue
+_REPORT_TABLE_HEADER_CELL_STYLE = ParagraphStyle(
+    name="ReportTableHeaderCell",
+    fontName="Helvetica-Bold",
+    fontSize=9,
+    leading=11,
+    wordWrap="Normal",
+    textColor=colors.white,
+)
+
+
+def _report_cell_content(cell, is_header=False):
+    """Wrap cell content in Paragraph so it wraps; accept str or already flowable."""
+    if hasattr(cell, "wrap") and hasattr(cell, "draw"):
+        return cell  # already a flowable
+    s = str(cell) if cell is not None else ""
+    escaped = html_escape(s)
+    style = _REPORT_TABLE_HEADER_CELL_STYLE if is_header else _REPORT_TABLE_CELL_STYLE
+    return Paragraph(escaped, style)
+
+
+def _table_style_header_blue(data, col_widths=None, row_height=None, wrap_cells=True):
+    """Table style: blue header row, white text, grid, alternating light blue/white data rows.
+    When wrap_cells=True, string cells are converted to Paragraphs so text wraps to next line.
+    """
     col_count = len(data[0]) if data else 2
     if col_widths is None:
-        col_widths = ["*"] * col_count
-    t = Table(data, colWidths=col_widths)
+        col_widths = [_REPORT_TABLE_FIRST_COL, _REPORT_TABLE_SECOND_COL]
     nrows = len(data)
+    if wrap_cells and data:
+        data = [
+            [_report_cell_content(cell, is_header=(r == 0)) for c, cell in enumerate(row)]
+            for r, row in enumerate(data)
+        ]
+    h = row_height if row_height is not None else _REPORT_TABLE_ROW_HEIGHT
+    row_heights = [h] * nrows
+    t = Table(data, colWidths=col_widths, rowHeights=row_heights)
     styles = [
         ("BACKGROUND", (0, 0), (-1, 0), _REPORT_BLUE),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -1441,14 +1487,17 @@ def _table_style_header_blue(data, col_widths=None):
 
 
 def _section_heading(text, use_orange=False):
-    """Section title as paragraph in blue or orange."""
+    """Section title as paragraph in blue or orange; left-aligned. keepWithNext keeps heading with table below."""
     color = _REPORT_ORANGE if use_orange else _REPORT_BLUE
     style = ParagraphStyle(
         name="SectionHeading",
         fontName="Helvetica-Bold",
         fontSize=12,
         textColor=color,
+        alignment=0,  # TA_LEFT
         spaceAfter=6,
+        leftIndent=0,
+        keepWithNext=True,  # avoid heading on one page and content on next
     )
     return Paragraph(text, style)
 
@@ -1467,24 +1516,20 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     story = []
     styles = getSampleStyleSheet()
 
-    # ----- Title (left-aligned, space before/after orange line) -----
+    # ----- Title (left-aligned; no line under heading per request) -----
     title_style = ParagraphStyle(
         name="ReportTitle",
         fontName="Helvetica-Bold",
         fontSize=18,
         textColor=_REPORT_BLUE,
         alignment=0,
-        spaceAfter=14,
+        spaceAfter=0.25 * inch,
     )
     story.append(Paragraph("MOTOR CLAIM RECOMMENDATION REPORT", title_style))
-    story.append(Spacer(1, 0.08 * inch))
-    line_table = Table([[""]], colWidths=[6 * inch], rowHeights=[4])
-    line_table.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), _REPORT_ORANGE)]))
-    story.append(line_table)
-    story.append(Spacer(1, 0.2 * inch))
+
+    _sp = lambda: Spacer(1, 0.2 * inch)
 
     # ----- 1. Claim Details -----
-    story.append(_section_heading("1. Claim Details"))
     incident_dt = claim.incident_date_time.strftime("%d/%m/%Y %H:%M") if claim.incident_date_time else "—"
     vehicle_str = f"{claim.vehicle_year or ''} {claim.vehicle_make or ''} {claim.vehicle_model or ''}".strip() or "—"
     claim_details = [
@@ -1500,11 +1545,10 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     ]
     if claim.incident_description:
         claim_details.insert(7, ["Description:", (claim.incident_description or "—")[:80]])
-    story.append(_table_style_header_blue([["Field", "Value"]] + claim_details, [2.2 * inch, "*"]))
-    story.append(Spacer(1, 0.2 * inch))
+    t1 = _table_style_header_blue([["Field", "Value"]] + claim_details)
+    story.append(KeepTogether([_section_heading("1. Claim Details"), t1, _sp()]))
 
     # ----- 2. Policy Coverage Review -----
-    story.append(_section_heading("2. Policy Coverage Review", use_orange=True))
     policy_start = claim.policy_start_date.strftime("%d/%m/%Y") if claim.policy_start_date else "—"
     policy_end = claim.policy_end_date.strftime("%d/%m/%Y") if claim.policy_end_date else "—"
     policy_coverage = [
@@ -1513,11 +1557,10 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
         ["Policy active at time of loss:", "Yes" if (claim.policy_status or "").lower() == "active" else "No"],
         ["Policy Status:", claim.policy_status or "—"],
     ]
-    story.append(_table_style_header_blue([["Policy Status", "Value"]] + policy_coverage, [2.8 * inch, "*"]))
-    story.append(Spacer(1, 0.2 * inch))
+    t2 = _table_style_header_blue([["Policy Status", "Value"]] + policy_coverage)
+    story.append(KeepTogether([_section_heading("2. Policy Coverage Review", use_orange=True), t2, _sp()]))
 
     # ----- 3. Documents Submitted Review -----
-    story.append(_section_heading("3. Documents Submitted Review"))
     has_photos = claim.damage_photos.exists()
     documents_review = [
         ["Claim form / details completed", "Yes"],
@@ -1525,26 +1568,31 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
         ["Photos of damage", "Yes" if has_photos else "No"],
         ["Vehicle / registration details", "Yes" if claim.vehicle_registration_number else "—"],
     ]
-    story.append(_table_style_header_blue([["Document", "Yes / No"]] + documents_review, [3.5 * inch, 1.2 * inch]))
-    story.append(Spacer(1, 0.2 * inch))
+    t3 = _table_style_header_blue([["Document", "Yes/No"]] + documents_review)
+    story.append(KeepTogether([_section_heading("3. Documents Submitted Review"), t3, _sp()]))
 
     # ----- 4. Business Rule Validation (Fraud Evaluation) -----
-    story.append(_section_heading("4. Business Rule Validation", use_orange=True))
+    # Wider Validation Check column, narrower Status column
     rules = fraud_result.get("fraud_rule_results") or []
     if rules:
         rule_rows = [["Validation Check", "Status"]]
         for r in rules:
             rule_type = r.get("rule_type") or "Rule"
-            rule_desc = (r.get("rule_description") or "")[:70]
+            rule_desc = (r.get("rule_description") or "")
             passed = r.get("passed", False)
             rule_rows.append([f"{rule_type}: {rule_desc}", "Pass" if passed else "Fail"])
-        story.append(_table_style_header_blue(rule_rows, [4 * inch, 1.2 * inch]))
+        t4 = _table_style_header_blue(
+            rule_rows,
+            col_widths=[_REPORT_TABLE_VALIDATION_COL, _REPORT_TABLE_STATUS_COL],
+        )
     else:
-        story.append(_table_style_header_blue([["Validation Check", "Status"], ["No rules evaluated", "—"]], [4 * inch, 1.2 * inch]))
-    story.append(Spacer(1, 0.2 * inch))
+        t4 = _table_style_header_blue(
+            [["Validation Check", "Status"], ["No rules evaluated", "—"]],
+            col_widths=[_REPORT_TABLE_VALIDATION_COL, _REPORT_TABLE_STATUS_COL],
+        )
+    story.append(KeepTogether([_section_heading("4. Business Rule Validation", use_orange=True), t4, _sp()]))
 
     # ----- 5. Damage Assessment -----
-    story.append(_section_heading("5. Damage Assessment"))
     if evaluation:
         llm_d = evaluation.llm_damages
         damages_str = "—"
@@ -1566,13 +1614,12 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
             ["LLM Damages", damages_str],
             ["LLM Severity", evaluation.llm_severity or "—"],
         ]
-        story.append(_table_style_header_blue([["Item", "Value"]] + damage_rows, [2.5 * inch, "*"]))
+        t5 = _table_style_header_blue([["Item", "Value"]] + damage_rows)
     else:
-        story.append(_table_style_header_blue([["Item", "Value"], ["—", "—"]], [2.5 * inch, "*"]))
-    story.append(Spacer(1, 0.2 * inch))
+        t5 = _table_style_header_blue([["Item", "Value"], ["—", "—"]])
+    story.append(KeepTogether([_section_heading("5. Damage Assessment"), t5, _sp()]))
 
     # ----- 6. Claim Evaluation / Final Recommendation -----
-    story.append(_section_heading("6. Final Recommendation", use_orange=True))
     if evaluation:
         eval_rows = [
             ["Claim Amount (THB)", str(evaluation.claim_amount or evaluation.estimated_amount or "—")],
@@ -1583,9 +1630,10 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
         ]
         if evaluation.created_date:
             eval_rows.append(["Evaluated On", evaluation.created_date.strftime("%d/%m/%Y %H:%M")])
-        story.append(_table_style_header_blue([["Field", "Value"]] + eval_rows, [2.5 * inch, "*"]))
+        t6 = _table_style_header_blue([["Field", "Value"]] + eval_rows)
     else:
-        story.append(_table_style_header_blue([["Field", "Value"], ["—", "—"]], [2.5 * inch, "*"]))
+        t6 = _table_style_header_blue([["Field", "Value"], ["—", "—"]])
+    story.append(KeepTogether([_section_heading("6. Final Recommendation", use_orange=True), t6]))
 
     doc.build(story)
     buffer.seek(0)
