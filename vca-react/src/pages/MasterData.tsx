@@ -568,6 +568,14 @@ export default function MasterData() {
       });
       return;
     }
+    if (newConfigValue.trim() && Number.isNaN(Number(newConfigValue))) {
+      toast({
+        title: "Invalid number format",
+        description: "Config value must be a valid number.",
+        variant: "destructive",
+      });
+      return;
+    }
     try {
       const created = await createPricingConfig({
         config_key: newConfigKey.trim(),
@@ -611,6 +619,14 @@ export default function MasterData() {
       toast({
         title: "Invalid values",
         description: "Config key and config name are required.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (editConfigValue.trim() && Number.isNaN(Number(editConfigValue))) {
+      toast({
+        title: "Invalid number format",
+        description: "Config value must be a valid number.",
         variant: "destructive",
       });
       return;
@@ -1441,6 +1457,7 @@ export default function MasterData() {
                   <Label htmlFor="edit-config-value">Config Value</Label>
                   <Input
                     id="edit-config-value"
+                    type="number"
                     value={editConfigValue}
                     onChange={(e) => setEditConfigValue(e.target.value)}
                   />
@@ -1535,6 +1552,7 @@ export default function MasterData() {
                         <Label htmlFor="config-value">Config Value</Label>
                         <Input
                           id="config-value"
+                          type="number"
                           value={newConfigValue}
                           onChange={(e) => setNewConfigValue(e.target.value)}
                           placeholder="e.g. 50000"
@@ -1663,7 +1681,7 @@ export default function MasterData() {
                             {config.config_key}
                           </TableCell>
                           <TableCell>{config.config_name}</TableCell>
-                          <TableCell className="max-w-[120px] truncate">{config.config_value}</TableCell>
+                          <TableCell className="max-w-[120px] truncate">฿ {Number(config.config_value.replace(/\D/g, '')).toLocaleString()}</TableCell>
                           <TableCell>
                             <Switch
                               checked={config.is_active}

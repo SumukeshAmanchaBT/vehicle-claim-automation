@@ -47,7 +47,7 @@ import { API_BASE_URL, API_MEDIA_URL } from "@/lib/httpClient";
 
 const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat("th-TH", {
-    style: "currency",
+    // style: "currency",
     currency: "THB",
     minimumFractionDigits: 0,
   }).format(amount);
@@ -553,10 +553,12 @@ export default function ClaimDetail() {
                     <CardContent className="p-4">
                       <div className="flex items-center gap-3">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                          <DollarSign className="h-5 w-5 text-primary" />
+                          {/* <DollarSign className="h-5 w-5 text-primary" /> */}
+                          <span className="text-primary text-lg font-semibold">฿</span>
                         </div>
                         <div className="min-w-0 flex-1">
                           <p className="text-xs text-muted-foreground">Claim Amount</p>
+                          {/* <p className="text-xl font-bold">{formatCurrency(claimEvaluation.claim_amount ?? 0)}</p> */}
                           <p className="text-xl font-bold">{formatCurrency(claimEvaluation.claim_amount ?? 0)}</p>
                         </div>
                       </div>
@@ -582,7 +584,6 @@ export default function ClaimDetail() {
                     <TabsTrigger value="claim-evaluation">Claim Evaluation</TabsTrigger>
                   </>
                 )}
-
 
               </TabsList>
 
@@ -669,87 +670,6 @@ export default function ClaimDetail() {
                 </Card>
               </TabsContent>
 
-              {damageDetectionRun && (
-                <TabsContent value="assessment">
-                  <Card className="card-elevated">
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Brain className="h-4 w-4" />
-                        Damage Assessment
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-6">
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm">Damage Evaluation %</span>
-                          <span className="text-sm font-medium">{aiConfidence}%</span>
-                        </div>
-                        <Progress value={aiConfidence} className="h-2" />
-                      </div>
-
-                      {assessment && (
-                        <div className="grid gap-4">
-                          {/* <div className="rounded-lg border p-4">
-                          <div className="flex items-center gap-2 mb-2">
-                            <CheckCircle2 className="h-4 w-4 text-success" />
-                            <span className="text-sm font-medium">Assessment Result</span>
-                          </div>
-                          <ul className="space-y-1 text-sm text-muted-foreground">
-                            <li>• Claim Type: {assessment.claim_type ?? "—"}</li>
-                            <li>• Decision: {assessment.decision ?? "—"}</li>
-                            <li>• Status: {assessment.claim_status ?? "—"}</li>
-                            <li>• Evaluation Score: {assessment.evaluation_score ?? "—"}</li>
-                            {assessment.reason && <li>• Reason: {assessment.reason}</li>}
-                          </ul>
-                        </div> */}
-                          <div className="rounded-lg border p-4">
-                            <div className="flex items-center gap-2 mb-2">
-                              <Eye className="h-4 w-4 text-primary" />
-                              <span className="text-sm font-medium">Damage Detection</span>
-                            </div>
-                            <ul className="space-y-1 text-sm text-muted-foreground">
-                              {damageTypes.map((type) => (
-                                <li key={type}>• {type} detected</li>
-                              ))}
-                              <li>• Policy: {policy.policy_status ?? "—"}</li>
-                              <li>• Coverage: {policy.coverage_type ?? "—"}</li>
-                            </ul>
-                          </div>
-                        </div>
-                      )}
-
-                      {decision === "Auto Approve" && fraudScore < 30 && (
-                        <div className="flex items-center gap-2 rounded-lg bg-success/10 p-4">
-                          <CheckCircle2 className="h-5 w-5 text-success" />
-                          <div>
-                            <p className="text-sm font-medium text-success">
-                              Eligible for Straight-Through Processing
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              This claim meets all criteria for automated approval
-                            </p>
-                          </div>
-                        </div>
-                      )}
-
-                      {fraudScore >= 50 && (
-                        <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-4">
-                          <AlertTriangle className="h-5 w-5 text-destructive" />
-                          <div>
-                            <p className="text-sm font-medium text-destructive">
-                              High Fraud Risk Detected
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              Manual review required before processing
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </TabsContent>
-              )}
-
               <TabsContent value="documents">
                 <Card className="card-elevated">
                   <CardHeader>
@@ -835,92 +755,6 @@ export default function ClaimDetail() {
                 </Card>
               </TabsContent>
 
-              {damageDetectionRun && (
-                <TabsContent value="claim-evaluation">
-                  <Card className="card-elevated">
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <FileText className="h-4 w-4" />
-                        Claim Evaluation Response
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      {claimEvaluationLoading ? (
-                        <div className="flex items-center justify-center py-12">
-                          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                        </div>
-                      ) : claimEvaluation ? (
-                        <div className="space-y-6">
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Complaint ID</p>
-                              <p className="text-sm font-medium mt-1">{claimEvaluation.complaint_id}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Damage Confidence</p>
-                              <p className="text-sm font-medium mt-1">{claimEvaluation.damage_confidence}%</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Claim Amount</p>
-                              <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.claim_amount)}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Excess Amount</p>
-                              <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.excess_amount ?? 0)}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Estimated Repair</p>
-                              <p className="text-sm font-medium mt-1">
-                                {formatCurrency(claimEvaluation.estimated_repair ?? Math.max(0, (claimEvaluation.claim_amount ?? 0) - (claimEvaluation.excess_amount ?? 0)))}
-                              </p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Threshold Value</p>
-                              <p className="text-sm font-medium mt-1">{claimEvaluation.threshold_value ?? "—"}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Claim Type</p>
-                              <p className="text-sm font-medium mt-1">{claimEvaluation.claim_type ?? "—"}</p>
-                            </div>
-                            <div className="rounded-lg border p-4">
-                              <p className="text-xs text-muted-foreground">Severity</p>
-                              <p className="text-sm font-medium mt-1 capitalize">
-                                {claimEvaluation.severity ?? claimEvaluation.llm_severity ?? "—"}
-                              </p>
-                            </div>
-                            {claimEvaluation.reason && (
-                              <div className="rounded-lg border p-4 sm:col-span-2">
-                                <p className="text-xs text-muted-foreground">Reason</p>
-                                <p className="text-sm font-medium mt-1">{claimEvaluation.reason}</p>
-                              </div>
-                            )}
-                            {claimEvaluation.llm_damages && claimEvaluation.llm_damages.length > 0 && (
-                              <div className="rounded-lg border p-4 sm:col-span-2">
-                                <p className="text-xs text-muted-foreground">LLM Damages</p>
-                                <div className="flex flex-wrap gap-2 mt-2">
-                                  {claimEvaluation.llm_damages.map((d) => (
-                                    <span
-                                      key={d}
-                                      className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
-                                    >
-                                      {d}
-                                    </span>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-muted-foreground py-8 text-center">
-                          No evaluation data found for this claim.
-                        </p>
-                      )}
-                    </CardContent>
-                  </Card>
-                </TabsContent>
-              )}
-
               {(!isOpenClaim || fraudResult) && (
                 <TabsContent value="fraud-evaluation">
                   <Card className="card-elevated">
@@ -982,52 +816,171 @@ export default function ClaimDetail() {
                 </TabsContent>
               )}
 
-              {/* <TabsContent value="timeline">
-                <Card className="card-elevated">
-                  <CardHeader>
-                    <CardTitle className="text-base">Claim Timeline</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {[
-                        {
-                          date: fnol.created_date,
-                          title: "Claim Submitted",
-                          description: "FNOL received",
-                        },
-                        {
-                          date: fnol.created_date,
-                          title: "Damage Assessment",
-                          description: `Damage confidence: ${aiConfidence}%, Fraud: ${fraudBand}`,
-                        },
-                        {
-                          date: fnol.created_date,
-                          title: "Decision",
-                          description: decision,
-                        },
-                      ].map((event, i) => (
-                        <div key={i} className="flex gap-4">
-                          <div className="flex flex-col items-center">
-                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-                              <div className="h-2 w-2 rounded-full bg-primary" />
-                            </div>
-                            {i < 2 && <div className="w-px flex-1 bg-border" />}
+              {damageDetectionRun && (
+                <>
+                  <TabsContent value="assessment">
+                    <Card className="card-elevated">
+                      <CardHeader>
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <Brain className="h-4 w-4" />
+                          Damage Assessment
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-6">
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm">AI Confidence Level %</span>
+                            <span className="text-sm font-medium">{aiConfidence}%</span>
                           </div>
-                          <div className="pb-4">
-                            <p className="text-sm font-medium">{event.title}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {event.description}
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {event.date ? new Date(event.date).toLocaleString() : "—"}
-                            </p>
-                          </div>
+                          <Progress value={aiConfidence} className="h-2" />
                         </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </TabsContent> */}
+
+                        {assessment && (
+                          <div className="grid gap-4">
+                            <div className="rounded-lg border p-4">
+                              <div className="flex items-center gap-2 mb-2">
+                                <Eye className="h-4 w-4 text-primary" />
+                                <span className="text-sm font-medium">Damage Detection</span>
+                              </div>
+                              <ul className="space-y-1 text-sm text-muted-foreground">
+                                {damageTypes.map((type) => (
+                                  <li key={type}>• {type} detected</li>
+                                ))}
+                                {/* <li>• Policy: {policy.policy_status ?? "—"}</li> */}
+                                {/* <li>• Coverage: {policy.coverage_type ?? "—"}</li> */}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+
+                        {decision === "Auto Approve" && fraudScore < 30 && (
+                          <div className="flex items-center gap-2 rounded-lg bg-success/10 p-4">
+                            <CheckCircle2 className="h-5 w-5 text-success" />
+                            <div>
+                              <p className="text-sm font-medium text-success">
+                                Eligible for Straight-Through Processing
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                This claim meets all criteria for automated approval
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {fraudScore >= 50 && (
+                          <div className="flex items-center gap-2 rounded-lg bg-destructive/10 p-4">
+                            <AlertTriangle className="h-5 w-5 text-destructive" />
+                            <div>
+                              <p className="text-sm font-medium text-destructive">
+                                High Fraud Risk Detected
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                Manual review required before processing
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="rounded-lg border p-4">
+                          <p className="text-xs text-muted-foreground">Severity</p>
+                          <p className="text-sm font-medium mt-1 capitalize">
+                            {claimEvaluation.severity ?? claimEvaluation.llm_severity ?? "—"}
+                          </p>
+                        </div>
+                        
+                        {claimEvaluation.llm_damages && claimEvaluation.llm_damages.length > 0 && (
+                          <div className="rounded-lg border p-4 sm:col-span-2">
+                            <p className="text-xs text-muted-foreground">Damages detected</p>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              {claimEvaluation.llm_damages.map((d) => (
+                                <span
+                                  key={d}
+                                  className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
+                                >
+                                  {d}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {claimEvaluation.reason && (
+                          <div className="rounded-lg border p-4 sm:col-span-2">
+                            <p className="text-xs text-muted-foreground">Reason</p>
+                            <p className="text-sm font-medium mt-1">{claimEvaluation.reason}</p>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+
+                  <TabsContent value="claim-evaluation">
+                    <Card className="card-elevated">
+                      <CardHeader>
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <FileText className="h-4 w-4" />
+                          Claim Evaluation Response
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {claimEvaluationLoading ? (
+                          <div className="flex items-center justify-center py-12">
+                            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                          </div>
+                        ) : claimEvaluation ? (
+                          <div className="space-y-6">
+                            <div className="grid gap-4 sm:grid-cols-2">
+                              {/* <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Complaint ID</p>
+                                <p className="text-sm font-medium mt-1">{claimEvaluation.complaint_id}</p>
+                              </div> */}
+                              {/* <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Damage Confidence</p>
+                                <p className="text-sm font-medium mt-1">{claimEvaluation.damage_confidence}%</p>
+                              </div> */}
+                              <div className="rounded-lg border p-4 sm:col-span-2">
+                                <p className="text-xs text-muted-foreground">Claim Type</p>
+                                <p className="text-sm font-medium mt-1 capitalize">{claimEvaluation.claim_type ?? "—"}</p>
+                              </div>
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Claim Amount</p>
+                                <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.claim_amount)}</p>
+                              </div>
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Excess Amount</p>
+                                <p className="text-sm font-medium mt-1">{formatCurrency(claimEvaluation.excess_amount ?? 0)}</p>
+                              </div>
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Estimated Repair</p>
+                                <p className="text-sm font-medium mt-1">
+                                  {formatCurrency(claimEvaluation.estimated_repair ?? Math.max(0, (claimEvaluation.claim_amount ?? 0) - (claimEvaluation.excess_amount ?? 0)))}
+                                </p>
+                              </div>
+                              <div className="rounded-lg border p-4">
+                                <p className="text-xs text-muted-foreground">Threshold Value</p>
+                                <p className="text-sm font-medium mt-1">{claimEvaluation.threshold_value ?? "—"}</p>
+                              </div>
+
+                              {/* <div className="rounded-lg border p-4">
+                              <p className="text-xs text-muted-foreground">Severity</p>
+                              <p className="text-sm font-medium mt-1 capitalize">
+                                {claimEvaluation.severity ?? claimEvaluation.llm_severity ?? "—"}
+                              </p>
+                            </div> */}
+
+
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-muted-foreground py-8 text-center">
+                            No evaluation data found for this claim.
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                </>
+              )}
+
             </Tabs>
           </div>
 
@@ -1140,7 +1093,6 @@ export default function ClaimDetail() {
                 </div> */}
               </CardContent>
             </Card>
-
 
           </div>
         </div>
