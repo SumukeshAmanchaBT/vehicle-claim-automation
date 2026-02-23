@@ -322,7 +322,7 @@ def product_rule(policy: dict) -> bool:
             rule_type__iexact="Policy Status", is_active=True
         ).first()
     )
-    return policy.get("policy_status") == "Active"
+    return (policy.get("policy_status") or "").strip().lower() == "active"
 
 
 def _get_early_claim_window_days() -> int:
@@ -698,18 +698,30 @@ def _get_claim_status_label_for_evaluation(result: dict) -> str:
 def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to fnol_claims.claim_status (claim_status table).
-    Business Rule Validation:
-      - All rules passed → claim_status_id = 3 (Business Rule Validation-pass)
-      - Any rule failed / Reject → claim_status_id = 2 (Business Rule Validation-fail)
+    Business Rule Validation (match your claim_status table):
+      - decision Reject → claim_status_id = 2 (Business Rule Validation-fail)
+      - All fraud rules passed → claim_status_id = 3 (Business Rule Validation-pass)
+      - Any fraud rule failed → claim_status_id = 2
+    Uses fraud_rule_results so stored status matches what the user sees in the UI.
     """
     decision = (result.get("decision") or "").strip()
     if decision == "Reject":
-        # Fail: policy inactive or high fraud → fnol_claims.claim_status = 2
         status = ClaimStatus.objects.filter(pk=2).first()
         return status or ClaimStatus.objects.filter(
             status_name__iexact="Business Rule Validation-fail"
         ).first()
-    # All rules passed → fnol_claims.claim_status = 3
+
+    # When not Reject, derive from fraud_rule_results so DB matches UI rule list
+    fraud_rule_results = result.get("fraud_rule_results") or []
+    if fraud_rule_results:
+        all_passed = all(r.get("passed", False) for r in fraud_rule_results)
+        if not all_passed:
+            status = ClaimStatus.objects.filter(pk=2).first()
+            return status or ClaimStatus.objects.filter(
+                status_name__iexact="Business Rule Validation-fail"
+            ).first()
+
+    # All rules passed (or no rules) → pass
     status = ClaimStatus.objects.filter(pk=3).first()
     return status or ClaimStatus.objects.filter(
         status_name__iexact="Business Rule Validation-pass"
