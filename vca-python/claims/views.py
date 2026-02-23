@@ -378,26 +378,29 @@ def fraud_check(
     """
     vehicle = vehicle or {}
 
-    # Policy Data Mismatch - incident/created within policy period; created >= incident
-    if _is_fraud_rule_active("Policy Data Mismatch"):
-        policy_start = policy.get("policy_start_date")
-        policy_end = policy.get("policy_end_date")
-        incident_dt = incident.get("date_time_of_loss")
+    # Policy Date Mismatch - use fnol_claims when complaint_id present
+    if _is_fraud_rule_active("Policy Date Mismatch"):
+        policy_start = None
+        policy_end = None
+        incident_dt = None
         created_dt = None
         if complaint_id:
             fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
             if fnol:
+                policy_start = fnol.policy_start_date
+                policy_end = fnol.policy_end_date
+                incident_dt = fnol.incident_date_time
                 created_dt = getattr(fnol, "created_date", None)
-                if policy_start is None:
-                    policy_start = fnol.policy_start_date
-                if policy_end is None:
-                    policy_end = fnol.policy_end_date
-                if incident_dt is None:
-                    incident_dt = fnol.incident_date_time
+        if policy_start is None:
+            policy_start = policy.get("policy_start_date") or None
+        if policy_end is None:
+            policy_end = policy.get("policy_end_date") or None
+        if incident_dt is None:
+            incident_dt = incident.get("date_time_of_loss") or None
         if not _policy_data_mismatch_passed(
             policy_start, policy_end, incident_dt, created_dt
         ):
-            return "High", _get_fraud_rule_description("Policy Data Mismatch")
+            return "High", _get_fraud_rule_description("Policy Date Mismatch")
 
     # 1) Early Claim - policy_start_date, date_time_of_loss
     if _is_fraud_rule_active("Early Claim"):
@@ -438,6 +441,24 @@ def fraud_check(
     return "Low", ""
 
 
+def _to_date(value):
+    """Normalize value to date for comparison. Returns None if missing or unparseable."""
+    if value is None:
+        return None
+    if hasattr(value, "date"):
+        return value.date() if getattr(value, "time", None) else value
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    d = parse_date(s)
+    if d is not None:
+        return d
+    dt = parse_datetime(s)
+    return dt.date() if dt else None
+
+
 def _policy_data_mismatch_passed(
     policy_start_date,
     policy_end_date,
@@ -445,34 +466,23 @@ def _policy_data_mismatch_passed(
     created_dt,
 ) -> bool:
     """
-    Policy Data Mismatch rule (fnol_claims):
+    Policy Date Mismatch rule (fnol_claims):
     1. incident_date_time and created_date must be within [policy_start_date, policy_end_date]
-    2. created_date must not be before incident_date_time
-    Returns True if all conditions pass (no mismatch).
+    2. created_date must not be before incident_date_time (by date)
+    Returns True if all conditions pass (no mismatch). Missing dates skip that check (no fail).
     """
-    if not policy_start_date or not policy_end_date:
+    start = _to_date(policy_start_date)
+    end = _to_date(policy_end_date)
+    if start is None or end is None:
         return True  # cannot validate without policy period
-    start = policy_start_date if isinstance(policy_start_date, date) else (parse_date(str(policy_start_date)) if policy_start_date else None)
-    end = policy_end_date if isinstance(policy_end_date, date) else (parse_date(str(policy_end_date)) if policy_end_date else None)
-    if not start or not end:
-        return True
-    inc_date = None
-    if incident_dt:
-        if hasattr(incident_dt, "date"):
-            inc_date = incident_dt.date()
-        else:
-            parsed = parse_datetime(str(incident_dt))
-            inc_date = parsed.date() if parsed else None
-    cre_date = None
-    if created_dt:
-        if hasattr(created_dt, "date"):
-            cre_date = created_dt.date()
-        else:
-            parsed = parse_datetime(str(created_dt))
-            cre_date = parsed.date() if parsed else None
-    if inc_date is not None:
-        if inc_date < start or inc_date > end:
-            return False
+    if start > end:
+        return True  # invalid period, skip validation
+
+    inc_date = _to_date(incident_dt)
+    cre_date = _to_date(created_dt)
+
+    if inc_date is not None and (inc_date < start or inc_date > end):
+        return False
     if cre_date is not None:
         if cre_date < start or cre_date > end:
             return False
@@ -555,21 +565,24 @@ def _evaluate_single_fraud_rule(
     if rule_type == "Commercial Vehicle":
         return not bool(incident.get("commercial_vehicle")), desc
 
-    if rule_type == "Policy Data Mismatch":
-        policy_start = policy.get("policy_start_date")
-        policy_end = policy.get("policy_end_date")
-        incident_dt = incident.get("date_time_of_loss")
+    if rule_type == "Policy Date Mismatch":
+        policy_start = None
+        policy_end = None
+        incident_dt = None
         created_dt = None
         if complaint_id:
             fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
             if fnol:
+                policy_start = fnol.policy_start_date
+                policy_end = fnol.policy_end_date
+                incident_dt = fnol.incident_date_time
                 created_dt = getattr(fnol, "created_date", None)
-                if policy_start is None and fnol.policy_start_date:
-                    policy_start = fnol.policy_start_date
-                if policy_end is None and fnol.policy_end_date:
-                    policy_end = fnol.policy_end_date
-                if incident_dt is None and fnol.incident_date_time:
-                    incident_dt = fnol.incident_date_time
+        if policy_start is None:
+            policy_start = policy.get("policy_start_date") or None
+        if policy_end is None:
+            policy_end = policy.get("policy_end_date") or None
+        if incident_dt is None:
+            incident_dt = incident.get("date_time_of_loss") or None
         passed = _policy_data_mismatch_passed(
             policy_start, policy_end, incident_dt, created_dt
         )
