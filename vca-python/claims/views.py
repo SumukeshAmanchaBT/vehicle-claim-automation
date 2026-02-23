@@ -366,13 +366,38 @@ def _get_fraud_rule_description(rule_type: str) -> str:
 
 
 def fraud_check(
-    history: dict, incident: dict, policy: dict, vehicle: Optional[dict] = None
+    history: dict,
+    incident: dict,
+    policy: dict,
+    vehicle: Optional[dict] = None,
+    complaint_id: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
     Fraud check using claim_rule_master (Fraud Check rules).
     Returns (fraud_band, reason).
     """
     vehicle = vehicle or {}
+
+    # Policy Data Mismatch - incident/created within policy period; created >= incident
+    if _is_fraud_rule_active("Policy Data Mismatch"):
+        policy_start = policy.get("policy_start_date")
+        policy_end = policy.get("policy_end_date")
+        incident_dt = incident.get("date_time_of_loss")
+        created_dt = None
+        if complaint_id:
+            fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
+            if fnol:
+                created_dt = getattr(fnol, "created_date", None)
+                if policy_start is None:
+                    policy_start = fnol.policy_start_date
+                if policy_end is None:
+                    policy_end = fnol.policy_end_date
+                if incident_dt is None:
+                    incident_dt = fnol.incident_date_time
+        if not _policy_data_mismatch_passed(
+            policy_start, policy_end, incident_dt, created_dt
+        ):
+            return "High", _get_fraud_rule_description("Policy Data Mismatch")
 
     # 1) Early Claim - policy_start_date, date_time_of_loss
     if _is_fraud_rule_active("Early Claim"):
@@ -411,6 +436,49 @@ def fraud_check(
         return "High", _get_fraud_rule_description("Commercial Vehicle")
 
     return "Low", ""
+
+
+def _policy_data_mismatch_passed(
+    policy_start_date,
+    policy_end_date,
+    incident_dt,
+    created_dt,
+) -> bool:
+    """
+    Policy Data Mismatch rule (fnol_claims):
+    1. incident_date_time and created_date must be within [policy_start_date, policy_end_date]
+    2. created_date must not be before incident_date_time
+    Returns True if all conditions pass (no mismatch).
+    """
+    if not policy_start_date or not policy_end_date:
+        return True  # cannot validate without policy period
+    start = policy_start_date if isinstance(policy_start_date, date) else (parse_date(str(policy_start_date)) if policy_start_date else None)
+    end = policy_end_date if isinstance(policy_end_date, date) else (parse_date(str(policy_end_date)) if policy_end_date else None)
+    if not start or not end:
+        return True
+    inc_date = None
+    if incident_dt:
+        if hasattr(incident_dt, "date"):
+            inc_date = incident_dt.date()
+        else:
+            parsed = parse_datetime(str(incident_dt))
+            inc_date = parsed.date() if parsed else None
+    cre_date = None
+    if created_dt:
+        if hasattr(created_dt, "date"):
+            cre_date = created_dt.date()
+        else:
+            parsed = parse_datetime(str(created_dt))
+            cre_date = parsed.date() if parsed else None
+    if inc_date is not None:
+        if inc_date < start or inc_date > end:
+            return False
+    if cre_date is not None:
+        if cre_date < start or cre_date > end:
+            return False
+        if inc_date is not None and cre_date < inc_date:
+            return False
+    return True
 
 
 def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[dict] = None) -> bool:
@@ -486,6 +554,26 @@ def _evaluate_single_fraud_rule(
         return not bool(incident.get("injury_indicator")), desc
     if rule_type == "Commercial Vehicle":
         return not bool(incident.get("commercial_vehicle")), desc
+
+    if rule_type == "Policy Data Mismatch":
+        policy_start = policy.get("policy_start_date")
+        policy_end = policy.get("policy_end_date")
+        incident_dt = incident.get("date_time_of_loss")
+        created_dt = None
+        if complaint_id:
+            fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
+            if fnol:
+                created_dt = getattr(fnol, "created_date", None)
+                if policy_start is None and fnol.policy_start_date:
+                    policy_start = fnol.policy_start_date
+                if policy_end is None and fnol.policy_end_date:
+                    policy_end = fnol.policy_end_date
+                if incident_dt is None and fnol.incident_date_time:
+                    incident_dt = fnol.incident_date_time
+        passed = _policy_data_mismatch_passed(
+            policy_start, policy_end, incident_dt, created_dt
+        )
+        return passed, desc
 
     # Unknown rule_type: show in UI with passed=True and DB description
     return True, desc
@@ -660,7 +748,9 @@ def _run_process_claim_logic(data: dict) -> dict:
             "estimated_amount": estimated_amount,
         }
 
-    fraud_score, fraud_reason = fraud_check(history, incident, policy, vehicle)
+    fraud_score, fraud_reason = fraud_check(
+        history, incident, policy, vehicle, complaint_id=complaint_id
+    )
     if fraud_score == "High":
         return {
             "claim_id": complaint_id,

@@ -243,18 +243,39 @@ def damage_assessment(request):
                     latest.llm_severity = severity_str
                     latest.claim_amount = claim_amount
 
-                    # Update threshold_value from claim_type_master based on claim_amount (so it's not static 25)
-                    try:
-                        from claims.views import _get_claim_type_threshold
-
-                        thr, claim_type_name = _get_claim_type_threshold(
-                            {"estimated_amount": claim_amount}
-                        )
-                        latest.threshold_value = int(round((thr or 0) * 100))
-                        if claim_type_name:
-                            latest.claim_type = claim_type_name[:20]
-                    except Exception:
-                        pass
+                    # Set claim_type from LLM severity: Minor→Simple, Moderate→Medium, Severe→Complex
+                    severity_lower = (severity_str or "").strip().lower()
+                    if severity_lower == "minor":
+                        claim_type_name = "SIMPLE"
+                    elif severity_lower == "moderate":
+                        claim_type_name = "MEDIUM"
+                    elif severity_lower == "severe":
+                        claim_type_name = "COMPLEX"
+                    else:
+                        claim_type_name = None
+                    if claim_type_name:
+                        latest.claim_type = claim_type_name[:20]
+                        try:
+                            from claims.models import ClaimTypeMaster
+                            row = ClaimTypeMaster.objects.filter(
+                                claim_type_name__iexact=claim_type_name, is_active=True
+                            ).first()
+                            if row and row.risk_percentage is not None:
+                                latest.threshold_value = int(round(float(row.risk_percentage)))
+                        except Exception:
+                            pass
+                    else:
+                        # Fallback: derive from claim_amount if severity not minor/moderate/severe
+                        try:
+                            from claims.views import _get_claim_type_threshold
+                            thr, claim_type_name = _get_claim_type_threshold(
+                                {"estimated_amount": claim_amount}
+                            )
+                            latest.threshold_value = int(round((thr or 0) * 100))
+                            if claim_type_name:
+                                latest.claim_type = claim_type_name[:20]
+                        except Exception:
+                            pass
 
                     # Determine decision and claim_status from LLM; both map to Recommendation shared (id 4)
                     severity_lower = (severity_str or "").strip().lower()
