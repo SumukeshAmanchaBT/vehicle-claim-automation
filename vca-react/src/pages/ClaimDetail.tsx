@@ -888,11 +888,11 @@ export default function ClaimDetail() {
                           </p>
                         </div>
                         
-                        {claimEvaluation.llm_damages && claimEvaluation.llm_damages.length > 0 && (
+                        {claimEvaluation?.llm_damages && claimEvaluation?.llm_damages.length > 0 && (
                           <div className="rounded-lg border p-4 sm:col-span-2">
                             <p className="text-xs text-muted-foreground">Damages detected</p>
                             <div className="flex flex-wrap gap-2 mt-2">
-                              {claimEvaluation.llm_damages.map((d) => (
+                              {claimEvaluation?.llm_damages.map((d) => (
                                 <span
                                   key={d}
                                   className="rounded-full bg-secondary px-3 py-1 text-xs font-medium"
@@ -903,10 +903,10 @@ export default function ClaimDetail() {
                             </div>
                           </div>
                         )}
-                        {claimEvaluation.reason && (
+                        {claimEvaluation?.reason && (
                           <div className="rounded-lg border p-4 sm:col-span-2">
                             <p className="text-xs text-muted-foreground">Reason</p>
-                            <p className="text-sm font-medium mt-1">{claimEvaluation.reason}</p>
+                            <p className="text-sm font-medium mt-1">{claimEvaluation?.reason}</p>
                           </div>
                         )}
                       </CardContent>
