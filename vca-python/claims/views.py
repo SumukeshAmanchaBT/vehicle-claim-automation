@@ -1616,8 +1616,8 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
                 damages_str = str(llm_d)
         damage_rows = [
             ["Damage Confidence (%)", str(evaluation.damage_confidence or 0)],
-            ["LLM Damages", damages_str],
-            ["LLM Severity", evaluation.llm_severity or "—"],
+            ["Damages detected", damages_str],
+            ["Damage Severity", evaluation.llm_severity or "—"],
         ]
         t5 = _table_style_header_blue([["Item", "Value"]] + damage_rows)
     else:
@@ -1625,13 +1625,19 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     story.append(KeepTogether([_section_heading("5. Damage Assessment"), t5, _sp()]))
 
     # ----- 6. Claim Evaluation / Final Recommendation -----
+    fnol = FnolClaim.objects.filter(complaint_id=claim.complaint_id).first()
+    excess_amount = float(fnol.excess_amount or 0) if fnol and getattr(fnol, "excess_amount", None) is not None else 0
+    claim_amount = float(evaluation.claim_amount or 0)
+    estimated_repair = max(0, claim_amount - excess_amount)
     if evaluation:
         eval_rows = [
             ["Claim Amount (THB)", str(evaluation.claim_amount or evaluation.estimated_amount or "—")],
+            ["Excess Amount (THB)", str(excess_amount or "—")],
+            ["Estimated Repair (THB)", str(estimated_repair or "—")],
             ["Claim Type", evaluation.claim_type or "—"],
             ["Decision", evaluation.decision or "—"],
             ["Claim Status", evaluation.claim_status or "—"],
-            ["Conclusion", evaluation.reason or (evaluation.decision or "—")],
+            # ["Conclusion", evaluation.reason or (evaluation.decision or "—")],
         ]
         if evaluation.created_date:
             eval_rows.append(["Evaluated On", evaluation.created_date.strftime("%d/%m/%Y %H:%M")])
