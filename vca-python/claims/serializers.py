@@ -71,17 +71,35 @@ class ResetPasswordSerializer(serializers.Serializer):
 
 
 class ClaimTypeMasterSerializer(serializers.ModelSerializer):
+    risk_percentage = serializers.DecimalField(
+        max_digits=5, decimal_places=2, required=False
+    )
+
     class Meta:
         model = ClaimTypeMaster
         fields = [
             "claim_type_id",
             "claim_type_name",
             "risk_percentage",
+            "risk_min",
+            "risk_max",
             "is_active",
             "created_date",
             "created_by",
         ]
         read_only_fields = ["claim_type_id", "created_date"]
+
+    def create(self, validated_data):
+        if "risk_percentage" not in validated_data or validated_data["risk_percentage"] is None:
+            validated_data["risk_percentage"] = validated_data.get("risk_max", 100)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        if "risk_percentage" not in validated_data:
+            validated_data["risk_percentage"] = validated_data.get(
+                "risk_max", instance.risk_max
+            )
+        return super().update(instance, validated_data)
 
 
 class ClaimRuleMasterSerializer(serializers.ModelSerializer):

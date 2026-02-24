@@ -185,12 +185,19 @@ class DamageCodeMaster(models.Model):
 
 class ClaimTypeMaster(models.Model):
     """
-    Master table for different claim types (Own Damage, Theft, Glass Break, etc.).
+    Master table for different claim types (SIMPLE, MEDIUM, COMPLEX).
+    risk_min and risk_max define the Risk % Range for each type.
     """
 
     claim_type_id = models.BigAutoField(primary_key=True)
     claim_type_name = models.CharField(max_length=100)
     risk_percentage = models.DecimalField(max_digits=5, decimal_places=2)
+    risk_min = models.DecimalField(
+        max_digits=5, decimal_places=2, default=0
+    )
+    risk_max = models.DecimalField(
+        max_digits=5, decimal_places=2, default=100
+    )
     is_active = models.BooleanField(default=True)
 
     created_date = models.DateTimeField(auto_now_add=True)
