@@ -166,6 +166,8 @@ export interface ClaimTypeMaster {
   claim_type_id: number;
   claim_type_name: string;
   risk_percentage: number;
+  risk_min?: number;
+  risk_max?: number;
   is_active: boolean;
   created_date: string;
   created_by: string | null;
@@ -221,7 +223,7 @@ export async function getClaimTypes(): Promise<ClaimTypeMaster[]> {
 }
 
 export async function createClaimType(
-  payload: Pick<ClaimTypeMaster, "claim_type_name" | "risk_percentage" | "is_active">
+  payload: Pick<ClaimTypeMaster, "claim_type_name" | "risk_min" | "risk_max" | "is_active">
 ): Promise<ClaimTypeMaster> {
   return fetchApi<ClaimTypeMaster>("/masters/claim-types", {
     method: "POST",
@@ -232,7 +234,7 @@ export async function createClaimType(
 export async function updateClaimType(
   id: number,
   payload: Partial<
-    Pick<ClaimTypeMaster, "claim_type_name" | "risk_percentage" | "is_active">
+    Pick<ClaimTypeMaster, "claim_type_name" | "risk_min" | "risk_max" | "is_active">
   >
 ): Promise<ClaimTypeMaster> {
   return fetchApi<ClaimTypeMaster>(`/masters/claim-types/${id}`, {

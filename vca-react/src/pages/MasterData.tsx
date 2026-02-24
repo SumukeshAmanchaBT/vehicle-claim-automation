@@ -50,6 +50,25 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 
+const CLAIM_TYPE_DEFAULT_RANGES: Record<string, [number, number]> = {
+  SIMPLE: [0, 50],
+  MEDIUM: [51, 75],
+  COMPLEX: [76, 100],
+};
+
+function formatClaimTypeRiskRange(type: ClaimTypeMaster): string {
+  const min = type.risk_min;
+  const max = type.risk_max;
+  if (min != null && max != null) {
+    return `${Math.round(min)} – ${Math.round(max)}%`;
+  }
+  const def = CLAIM_TYPE_DEFAULT_RANGES[(type.claim_type_name || "").toUpperCase()];
+  if (def) {
+    return `${def[0]} – ${def[1]}%`;
+  }
+  return type.risk_percentage != null ? `${Math.round(type.risk_percentage)}%` : "—";
+}
+
 export default function MasterData() {
   const { toast } = useToast();
   const location = useLocation();
@@ -84,11 +103,13 @@ export default function MasterData() {
 
   const [claimTypeDialogOpen, setClaimTypeDialogOpen] = useState(false);
   const [newClaimTypeName, setNewClaimTypeName] = useState("");
-  const [newClaimTypeRisk, setNewClaimTypeRisk] = useState("");
+  const [newClaimTypeRiskMin, setNewClaimTypeRiskMin] = useState("");
+  const [newClaimTypeRiskMax, setNewClaimTypeRiskMax] = useState("");
   const [claimTypeEditDialogOpen, setClaimTypeEditDialogOpen] = useState(false);
   const [editingClaimType, setEditingClaimType] = useState<ClaimTypeMaster | null>(null);
   const [editClaimTypeName, setEditClaimTypeName] = useState("");
-  const [editClaimTypeRisk, setEditClaimTypeRisk] = useState("");
+  const [editClaimTypeRiskMin, setEditClaimTypeRiskMin] = useState("");
+  const [editClaimTypeRiskMax, setEditClaimTypeRiskMax] = useState("");
 
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [newRuleType, setNewRuleType] = useState("");
@@ -168,7 +189,7 @@ export default function MasterData() {
     return [...filteredClaimTypes].sort((a, b) => {
       let cmp = 0;
       if (claimTypeSortKey === "name") cmp = (a.claim_type_name ?? "").localeCompare(b.claim_type_name ?? "");
-      else if (claimTypeSortKey === "risk") cmp = a.risk_percentage - b.risk_percentage;
+      else if (claimTypeSortKey === "risk") cmp = (a.risk_min ?? 0) - (b.risk_min ?? 0);
       else if (claimTypeSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
       return claimTypeSortDir === "desc" ? -cmp : cmp;
     });
@@ -372,11 +393,12 @@ export default function MasterData() {
 
   const handleCreateClaimType = async () => {
     const name = newClaimTypeName.trim();
-    const risk = Number(newClaimTypeRisk);
-    if (!name || Number.isNaN(risk)) {
+    const riskMin = Number(newClaimTypeRiskMin);
+    const riskMax = Number(newClaimTypeRiskMax);
+    if (!name || Number.isNaN(riskMin) || Number.isNaN(riskMax) || riskMin > riskMax) {
       toast({
         title: "Invalid claim type",
-        description: "Please provide a name and numeric risk percentage.",
+        description: "Please provide a name and valid risk range (min ≤ max).",
         variant: "destructive",
       });
       return;
@@ -384,14 +406,16 @@ export default function MasterData() {
     try {
       const created = await createClaimType({
         claim_type_name: name,
-        risk_percentage: risk,
+        risk_min: riskMin,
+        risk_max: riskMax,
         is_active: true,
       });
       setClaimTypes((prev) => [...prev, created]);
       toast({ title: "Claim type created" });
       setClaimTypeDialogOpen(false);
       setNewClaimTypeName("");
-      setNewClaimTypeRisk("");
+      setNewClaimTypeRiskMin("");
+      setNewClaimTypeRiskMax("");
     } catch (error) {
       console.error(error);
       toast({
@@ -404,18 +428,21 @@ export default function MasterData() {
   const openEditClaimType = (type: ClaimTypeMaster) => {
     setEditingClaimType(type);
     setEditClaimTypeName(type.claim_type_name);
-    setEditClaimTypeRisk(String(type.risk_percentage));
+    const def = CLAIM_TYPE_DEFAULT_RANGES[(type.claim_type_name || "").toUpperCase()];
+    setEditClaimTypeRiskMin(String(type.risk_min ?? def?.[0] ?? 0));
+    setEditClaimTypeRiskMax(String(type.risk_max ?? def?.[1] ?? 100));
     setClaimTypeEditDialogOpen(true);
   };
 
   const handleUpdateClaimType = async () => {
     if (!editingClaimType) return;
     const name = editClaimTypeName.trim();
-    const risk = Number(editClaimTypeRisk);
-    if (!name || Number.isNaN(risk)) {
+    const riskMin = Number(editClaimTypeRiskMin);
+    const riskMax = Number(editClaimTypeRiskMax);
+    if (!name || Number.isNaN(riskMin) || Number.isNaN(riskMax) || riskMin > riskMax) {
       toast({
         title: "Invalid values",
-        description: "Please provide a name and numeric risk percentage.",
+        description: "Please provide a name and valid risk range (min ≤ max).",
         variant: "destructive",
       });
       return;
@@ -423,7 +450,8 @@ export default function MasterData() {
     try {
       const updated = await updateClaimType(editingClaimType.claim_type_id, {
         claim_type_name: name,
-        risk_percentage: risk,
+        risk_min: riskMin,
+        risk_max: riskMax,
       });
       setClaimTypes((prev) =>
         prev.map((c) =>
@@ -943,13 +971,27 @@ export default function MasterData() {
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="claim-type-risk">Risk Percentage</Label>
+                        <Label htmlFor="claim-type-risk-min">Risk % Min</Label>
                         <Input
-                          id="claim-type-risk"
+                          id="claim-type-risk-min"
                           type="number"
-                          value={newClaimTypeRisk}
-                          onChange={(e) => setNewClaimTypeRisk(e.target.value)}
-                          placeholder="e.g. 25"
+                          min={0}
+                          max={100}
+                          value={newClaimTypeRiskMin}
+                          onChange={(e) => setNewClaimTypeRiskMin(e.target.value)}
+                          placeholder="e.g. 0"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="claim-type-risk-max">Risk % Max</Label>
+                        <Input
+                          id="claim-type-risk-max"
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={newClaimTypeRiskMax}
+                          onChange={(e) => setNewClaimTypeRiskMax(e.target.value)}
+                          placeholder="e.g. 50"
                         />
                       </div>
                     </div>
@@ -1002,7 +1044,7 @@ export default function MasterData() {
                           setClaimTypePage(1);
                         }}
                       >
-                        Risk (%)
+                        Risk % Range
                       </SortableTableHead>
                       <SortableTableHead
                         sortKey="status"
@@ -1039,7 +1081,9 @@ export default function MasterData() {
                           <TableCell className="pl-6 font-medium">
                             {type.claim_type_name}
                           </TableCell>
-                          <TableCell>{Math.round(type.risk_percentage)}</TableCell>
+                          <TableCell>
+                            {formatClaimTypeRiskRange(type)}
+                          </TableCell>
                           <TableCell>
                             <Switch
                               checked={type.is_active}
@@ -1354,12 +1398,25 @@ export default function MasterData() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="edit-claim-type-risk">Risk Percentage</Label>
+                  <Label htmlFor="edit-claim-type-risk-min">Risk % Min</Label>
                   <Input
-                    id="edit-claim-type-risk"
+                    id="edit-claim-type-risk-min"
                     type="number"
-                    value={editClaimTypeRisk}
-                    onChange={(e) => setEditClaimTypeRisk(e.target.value)}
+                    min={0}
+                    max={100}
+                    value={editClaimTypeRiskMin}
+                    onChange={(e) => setEditClaimTypeRiskMin(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-claim-type-risk-max">Risk % Max</Label>
+                  <Input
+                    id="edit-claim-type-risk-max"
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={editClaimTypeRiskMax}
+                    onChange={(e) => setEditClaimTypeRiskMax(e.target.value)}
                   />
                 </div>
               </div>
