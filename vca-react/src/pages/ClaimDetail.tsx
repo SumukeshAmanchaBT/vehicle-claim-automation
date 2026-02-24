@@ -760,11 +760,12 @@ export default function ClaimDetail() {
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <p className="text-sm text-muted-foreground">
-                        Evaluation based on Master Data  Business Rule. Green indicates the rule passed; red indicates it failed.
+                        Evaluation based on Master Data business and fraud rules. Green indicates the rule passed; red
+                        indicates it failed.
                       </p>
                       {(() => {
                         const rules = fraudResult?.fraud_rule_results ?? assessment?.fraud_rule_results ?? [];
-                        console.log("Parsed Business rules to display:", rules);
+                        console.log("Parsed Business/Fraud rules to display:", rules);
                         if (rules.length === 0) {
                           return (
                             <p className="text-sm text-muted-foreground py-8 text-center">
@@ -772,36 +773,61 @@ export default function ClaimDetail() {
                             </p>
                           );
                         }
+
+                        const businessRules = rules.filter(
+                          (r) => !r.rule_group || r.rule_group.toLowerCase() === "business rule"
+                        );
+                        const fraudRules = rules.filter(
+                          (r) => r.rule_group && r.rule_group.toLowerCase() === "fraud check"
+                        );
+
+                        const renderRuleCard = (r: FraudRuleResult, key: React.Key) => (
+                          <div
+                            key={key}
+                            className={`flex items-center justify-between rounded-lg border p-4 ${
+                              r.passed
+                                ? "bg-success/5 border-success/20"
+                                : "bg-destructive/5 border-destructive/20"
+                            }`}
+                          >
+                            <div>
+                              <p className="text-sm font-medium">{r.rule_type}</p>
+                              <p className="text-xs text-muted-foreground">{r.rule_description}</p>
+                            </div>
+                            <span
+                              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
+                                r.passed ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
+                              }`}
+                            >
+                              {r.passed ? (
+                                <>
+                                  <CheckCircle2 className="h-3.5 w-3.5" />
+                                  Pass
+                                </>
+                              ) : (
+                                <>
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                  Fail
+                                </>
+                              )}
+                            </span>
+                          </div>
+                        );
+
                         return (
-                          <div className="space-y-3">
-                            {rules.map((r, i) => (
-                              <div
-                                key={i}
-                                className={`flex items-center justify-between rounded-lg border p-4 ${r.passed ? "bg-success/5 border-success/20" : "bg-destructive/5 border-destructive/20"
-                                  }`}
-                              >
-                                <div>
-                                  <p className="text-sm font-medium">{r.rule_type}</p>
-                                  <p className="text-xs text-muted-foreground">{r.rule_description}</p>
-                                </div>
-                                <span
-                                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${r.passed ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
-                                    }`}
-                                >
-                                  {r.passed ? (
-                                    <>
-                                      <CheckCircle2 className="h-3.5 w-3.5" />
-                                      Pass
-                                    </>
-                                  ) : (
-                                    <>
-                                      <AlertTriangle className="h-3.5 w-3.5" />
-                                      Fail
-                                    </>
-                                  )}
-                                </span>
+                          <div className="space-y-6">
+                            {businessRules.length > 0 && (
+                              <div className="space-y-3">
+                                <h4 className="text-sm font-semibold">1. Business Rule Validation</h4>
+                                {businessRules.map((r, i) => renderRuleCard(r, `business-${i}`))}
                               </div>
-                            ))}
+                            )}
+                            {fraudRules.length > 0 && (
+                              <div className="space-y-3">
+                                <h4 className="text-sm font-semibold">2. Fraud Rule Validation</h4>
+                                {fraudRules.map((r, i) => renderRuleCard(r, `fraud-${i}`))}
+                              </div>
+                            )}
                           </div>
                         );
                       })()}

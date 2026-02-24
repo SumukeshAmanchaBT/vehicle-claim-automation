@@ -347,20 +347,24 @@ def _get_early_claim_window_days() -> int:
         return 30
 
 
+# Rule groups that participate in Business Rule Validation (e.g. Fraud Check + Business Rule)
+_BUSINESS_RULE_VALIDATION_GROUPS = Q(rule_group__iexact="Fraud Check") | Q(rule_group__iexact="Business Rule")
+
+
 def _is_fraud_rule_active(rule_type: str) -> bool:
-    """Check if a Fraud Check rule is active in claim_rule_master."""
+    """Check if a Business Rule Validation rule is active in claim_rule_master (Fraud Check or Business Rule group)."""
     return ClaimRuleMaster.objects.filter(
+        _BUSINESS_RULE_VALIDATION_GROUPS,
         rule_type__iexact=rule_type,
-        rule_group__iexact="Fraud Check",
         is_active=True,
     ).exists()
 
 
 def _get_fraud_rule_description(rule_type: str) -> str:
-    """Return rule_description from claim_rule_master for Fraud Check rules, else rule_type."""
+    """Return rule_description from claim_rule_master for Business Rule Validation rules, else rule_type."""
     rule = ClaimRuleMaster.objects.filter(
+        _BUSINESS_RULE_VALIDATION_GROUPS,
         rule_type__iexact=rule_type,
-        rule_group__iexact="Fraud Check",
         is_active=True,
     ).first()
     return (rule.rule_description or rule_type).strip() if rule else rule_type
@@ -374,7 +378,7 @@ def fraud_check(
     complaint_id: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
-    Fraud check using claim_rule_master (Fraud Check rules).
+    Business rule validation using claim_rule_master (Fraud Check and Business Rule groups).
     Returns (fraud_band, reason).
     """
     vehicle = vehicle or {}
@@ -429,15 +433,15 @@ def fraud_check(
             except (TypeError, ValueError):
                 pass
 
-    # 4) Liability Admission, Dashcam CCTV Evidence, Injury Indicator, Commercial Vehicle (risk when TRUE)
+    # 4) Liability Admission, Dashcam CCTV Evidence, Injury Indicator, No Third-Party Escalation (risk when TRUE)
     if _is_fraud_rule_active("Liability Admission") and incident.get("liability_admission"):
         return "High", _get_fraud_rule_description("Liability Admission")
     if _is_fraud_rule_active("Dashcam CCTV Evidence") and incident.get("dashcam_cctv_evidence"):
         return "High", _get_fraud_rule_description("Dashcam CCTV Evidence")
     if _is_fraud_rule_active("Injury Indicator") and incident.get("injury_indicator"):
         return "High", _get_fraud_rule_description("Injury Indicator")
-    if _is_fraud_rule_active("Commercial Vehicle") and incident.get("commercial_vehicle"):
-        return "High", _get_fraud_rule_description("Commercial Vehicle")
+    if _is_fraud_rule_active("No Third-Party Escalation") and incident.get("commercial_vehicle"):
+        return "High", _get_fraud_rule_description("No Third-Party Escalation")
 
     return "Low", ""
 
@@ -563,7 +567,7 @@ def _evaluate_single_fraud_rule(
         return not bool(incident.get("dashcam_cctv_evidence")), desc
     if rule_type == "Injury Indicator":
         return not bool(incident.get("injury_indicator")), desc
-    if rule_type == "Commercial Vehicle":
+    if rule_type == "No Third-Party Escalation":
         return not bool(incident.get("commercial_vehicle")), desc
 
     if rule_type == "Policy Date Mismatch":
@@ -598,15 +602,15 @@ def _get_fraud_evaluation_rules(
     complaint_id: Optional[str] = None,
 ) -> list[dict]:
     """
-    Evaluate each active Fraud Check rule from claim_rule_master and return pass/fail.
-    Returns list of {rule_type, rule_description, passed} for all active rules in the table.
+    Evaluate each active Business Rule Validation rule from claim_rule_master (Fraud Check + Business Rule groups).
+    Returns list of {rule_type, rule_description, passed} for all active rules.
     """
     vehicle = vehicle or {}
     documents = documents or {}
     results = []
 
     rules = ClaimRuleMaster.objects.filter(
-        rule_group__iexact="Fraud Check",
+        _BUSINESS_RULE_VALIDATION_GROUPS,
         is_active=True,
     ).order_by("rule_id")
 
@@ -620,6 +624,7 @@ def _get_fraud_evaluation_rules(
         results.append({
             "rule_type": rule_type,
             "rule_description": rule.rule_description or desc,
+            "rule_group": rule.rule_group or "",
             "passed": passed,
         })
 
