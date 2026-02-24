@@ -31,6 +31,7 @@ import {
   FileDown,
   Clock,
 } from "lucide-react";
+import { formatDate, formatDateTime } from "@/lib/utils";
 import {
   getFnolById,
   getClaimEvaluation,
@@ -602,9 +603,7 @@ export default function ClaimDetail() {
                           <div>
                             <p className="text-sm font-medium">Incident Date</p>
                             <p className="text-sm text-muted-foreground">
-                              {incidentDate
-                                ? new Date(incidentDate).toLocaleDateString()
-                                : "—"}
+                              {formatDate(incidentDate) || "—"}
                             </p>
                           </div>
                         </div>
@@ -643,12 +642,7 @@ export default function ClaimDetail() {
                           <div>
                             <p className="text-sm font-medium">Notification Date</p>
                             <p className="text-sm text-muted-foreground">
-                              {submittedDate
-                                ? new Date(submittedDate).toLocaleString(undefined, {
-                                  dateStyle: "short",
-                                  timeStyle: "short",
-                                })
-                                : "—"}
+                              {formatDateTime(submittedDate) || "—"}
                             </p>
                           </div>
                         </div>
@@ -1046,19 +1040,11 @@ export default function ClaimDetail() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Policy Start</span>
-                  <span>
-                    {fnol.policy_start_date
-                      ? new Date(fnol.policy_start_date).toLocaleDateString()
-                      : "—"}
-                  </span>
+                  <span>{formatDate(fnol.policy_start_date) || "—"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Policy End</span>
-                  <span>
-                    {fnol.policy_end_date
-                      ? new Date(fnol.policy_end_date).toLocaleDateString()
-                      : "—"}
-                  </span>
+                  <span>{formatDate(fnol.policy_end_date) || "—"}</span>
                 </div>
               </CardContent>
             </Card>

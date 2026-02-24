@@ -22,6 +22,7 @@ import {
 import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { Loader2, ZoomIn, Plus, FileDown } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { formatDate } from "@/lib/utils";
 import { getFnolList, getRecommendationReportPdf, saveFnol, type FnolResponse } from "@/lib/api";
 import type { FnolPayload } from "@/models/fnol";
 
@@ -487,7 +488,7 @@ export default function Claims() {
                         </TableCell>
                         <TableCell>{claim.claimType}</TableCell>
                         <TableCell className="text-muted-foreground">
-                          {new Date(claim.claimRequestedDate).toLocaleDateString()}
+                          {formatDate(claim.claimRequestedDate) || "—"}
                         </TableCell>
                         {/* <TableCell className="font-medium">
                           {formatCurrency(claim.estimatedAmount)}
