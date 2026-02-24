@@ -92,6 +92,7 @@ export interface FnolResponse {
 export interface FraudRuleResult {
   rule_type: string;
   rule_description: string;
+  rule_group?: string;
   passed: boolean;
 }
 

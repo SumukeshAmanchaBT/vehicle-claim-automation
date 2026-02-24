@@ -180,19 +180,20 @@ export default function MasterData() {
 
   // Fraud rules: search, sort, pagination
   const [ruleSearch, setRuleSearch] = useState("");
-  const [ruleSortKey, setRuleSortKey] = useState<"type" | "group" | "expression" | "status" | null>("type");
+  const [ruleSortKey, setRuleSortKey] = useState<"type" | "group" | "description" | "status" | null>("type");
   const [ruleSortDir, setRuleSortDir] = useState<SortDirection>("asc");
   const [rulePage, setRulePage] = useState(1);
   const [rulePageSize, setRulePageSize] = useState(10);
 
   const filteredRules = useMemo(() => {
     const term = ruleSearch.toLowerCase();
-    return claimRules.filter(
-      (r) =>
-        r.rule_type?.toLowerCase().includes(term) ||
-        r.rule_group?.toLowerCase().includes(term) ||
-        r.rule_expression?.toLowerCase().includes(term),
-    );
+    return claimRules.filter((r) => {
+      const type = r.rule_type?.toLowerCase() ?? "";
+      const group = r.rule_group?.toLowerCase() ?? "";
+      const desc = r.rule_description?.toLowerCase() ?? "";
+      const expr = r.rule_expression?.toLowerCase() ?? "";
+      return type.includes(term) || group.includes(term) || desc.includes(term) || expr.includes(term);
+    });
   }, [claimRules, ruleSearch]);
   const sortedRules = useMemo(() => {
     if (!ruleSortKey) return filteredRules;
@@ -200,7 +201,7 @@ export default function MasterData() {
       let cmp = 0;
       if (ruleSortKey === "type") cmp = (a.rule_type ?? "").localeCompare(b.rule_type ?? "");
       else if (ruleSortKey === "group") cmp = (a.rule_group ?? "").localeCompare(b.rule_group ?? "");
-      else if (ruleSortKey === "expression") cmp = (a.rule_expression ?? "").localeCompare(b.rule_expression ?? "");
+      else if (ruleSortKey === "description") cmp = (a.rule_description ?? "").localeCompare(b.rule_description ?? "");
       else if (ruleSortKey === "status") cmp = (a.is_active ? 1 : 0) - (b.is_active ? 1 : 0);
       return ruleSortDir === "desc" ? -cmp : cmp;
     });
@@ -1191,12 +1192,15 @@ export default function MasterData() {
                         Rule Category
                       </SortableTableHead>
                       <SortableTableHead
-                        sortKey="expression"
+                        sortKey="description"
                         currentSortKey={ruleSortKey}
                         direction={ruleSortDir}
                         onSort={(k) => {
                           if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          else {
+                            setRuleSortKey(k as "type" | "group" | "description" | "status");
+                            setRuleSortDir("asc");
+                          }
                           setRulePage(1);
                         }}
                       >
@@ -1208,7 +1212,10 @@ export default function MasterData() {
                         direction={ruleSortDir}
                         onSort={(k) => {
                           if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          else {
+                            setRuleSortKey(k as "type" | "group" | "description" | "status");
+                            setRuleSortDir("asc");
+                          }
                           setRulePage(1);
                         }}
                       >
@@ -1237,8 +1244,8 @@ export default function MasterData() {
                             {rule.rule_type}
                           </TableCell>
                           <TableCell>{rule.rule_group}</TableCell>
-                          <TableCell className="max-w-md truncate">
-                            {rule.rule_expression}
+                          <TableCell className="max-w-xl whitespace-normal">
+                            {rule.rule_description || rule.rule_expression}
                           </TableCell>
                           <TableCell>
                             <Switch
