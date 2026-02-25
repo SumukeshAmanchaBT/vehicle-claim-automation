@@ -709,7 +709,8 @@ export default function ClaimDetail() {
 
                         {/* 4 Image Grid */}
                         <div className="grid grid-cols-2 gap-3">
-                          {[0, 1, 2, 3].map((index) => {
+                          {/* {[0, 1, 2, 3].map((index) => { */}
+                          {[0, 1].map((index) => {
                             const obj = photos[index];
                             const imageUrlObject =
                               typeof obj === "string"
@@ -724,8 +725,9 @@ export default function ClaimDetail() {
                                 key={index}
                                 src={imageUrl}
                                 alt={`Photo ${index + 1}`}
-                                className="h-28 w-full rounded-md border object-cover"
+                                className="h-[300px] w-full rounded-md border "
                                 loading="lazy"
+                                sx={{ objectFit: "" }}
                               />
                             ) : (
                               <div
@@ -957,9 +959,13 @@ export default function ClaimDetail() {
                                 <p className="text-xs text-muted-foreground">Damage Confidence</p>
                                 <p className="text-sm font-medium mt-1">{claimEvaluation.damage_confidence}%</p>
                               </div> */}
-                              <div className="rounded-lg border p-4 sm:col-span-2">
+                              <div className="rounded-lg border p-4 ">
                                 <p className="text-xs text-muted-foreground">Claim Type</p>
                                 <p className="text-sm font-medium mt-1 capitalize">{claimEvaluation.claim_type ?? "—"}</p>
+                              </div>
+                              <div className="rounded-lg border p-4 ">
+                                <p className="text-xs text-muted-foreground">Conclusion</p>
+                                <p className="text-sm font-medium mt-1 capitalize">{claimEvaluation.decision ?? "—"}</p>
                               </div>
                               <div className="rounded-lg border p-4">
                                 <p className="text-xs text-muted-foreground">Claim Amount</p>
@@ -1058,12 +1064,12 @@ export default function ClaimDetail() {
                     {fnol.policy_status || policy.policy_status || "—"}
                   </span>
                 </div>
-                <div className="flex justify-between">
+                {/* <div className="flex justify-between">
                   <span className="text-muted-foreground">Flood Coverage Endorsement</span>
                   <span className="font-medium">
                     {fnol.flood_coverage ? "Yes" : "No"}
                   </span>
-                </div>
+                </div> */}
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Policy Start</span>
                   <span>{formatDate(fnol.policy_start_date) || "—"}</span>

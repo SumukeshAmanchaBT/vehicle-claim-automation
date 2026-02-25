@@ -283,7 +283,7 @@ export default function Claims() {
   const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(20);
 
   const filteredClaims = useMemo(() => {
     let list = displayClaims.filter((claim) => {
