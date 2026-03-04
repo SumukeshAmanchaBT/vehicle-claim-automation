@@ -307,7 +307,7 @@ def damage_assessment(request):
                         ]
                     )
 
-                    # Update fnol_claims.claim_status to Recommendation shared
+                    # Update fnol_claims.claim_status to Recommendation shared and set excess_amount (10% of claim_amount)
                     fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
                     if fnol_claim:
                         from claims.models import ClaimStatus
@@ -317,7 +317,17 @@ def damage_assessment(request):
                         ).first()
                         if new_status:
                             fnol_claim.claim_status = new_status
-                            fnol_claim.save(update_fields=["claim_status"])
+                        # Set/refresh excess_amount as 10% of claim_amount so Claim Evaluation shows correct value
+                        try:
+                            if claim_amount and float(claim_amount) > 0:
+                                fnol_claim.excess_amount = float(claim_amount) * 0.10
+                        except Exception:
+                            # If anything goes wrong, don't block the main flow; excess_amount can remain unchanged
+                            pass
+                        update_fields = ["claim_status"]
+                        if getattr(fnol_claim, "excess_amount", None) is not None:
+                            update_fields.append("excess_amount")
+                        fnol_claim.save(update_fields=update_fields)
             except Exception as persist_err:
                 # Log but don't fail the request; LLM result still returned
                 traceback.print_exc()

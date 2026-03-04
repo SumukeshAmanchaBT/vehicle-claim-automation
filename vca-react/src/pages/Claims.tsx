@@ -181,7 +181,7 @@ function getMockFnolPayload(claimId: string, previousClaims: FnolResponse[] = []
   };
 }
 
-/** Derive next claim ID from existing claims (e.g. CLM-0001, CLM-0002, ...). */
+/** Derive next claim ID from existing claims (e.g. CLM-001, CLM-002, ...). */
 function getNextClaimId(claims: FnolResponse[]): string {
   const prefix = "CLM-";
   const numbers = claims
@@ -193,7 +193,8 @@ function getNextClaimId(claims: FnolResponse[]): string {
     })
     .filter((n) => n > 0);
   const nextNum = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
-  return `${prefix}${String(nextNum).padStart(4, "0")}`;
+  // Keep three-digit sequence like CLM-019, CLM-020, CLM-021...
+  return `${prefix}${String(nextNum).padStart(3, "0")}`;
 }
 
 function normalizeStatus(raw?: string | null): ClaimStatusKey {
