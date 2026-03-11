@@ -126,8 +126,9 @@ function randomThaiPolicyNumber(): string {
 /** Coverage types for random default. */
 const COVERAGE_TYPES = ["Type 2+", "Type 1", "Type 3+"] as const;
 
-/** Default incident description when no previous claims. */
-const DEFAULT_LOSS_DESCRIPTION = "Own damage - bumper and left fender";
+/** Default incident description when no previous claims / for Fetch FNOL Data. */
+const DEFAULT_LOSS_DESCRIPTION =
+  "Front-end collision resulting in major damage to hood, bumper, and driver-side front quarter panel.";
 
 /** Pick a random incident description from previous claims, or default. */
 function randomIncidentDescription(previousClaims: FnolResponse[]): string {
@@ -149,7 +150,7 @@ function getMockFnolPayload(claimId: string, previousClaims: FnolResponse[] = []
       policy_number: policyNum,
       policy_status: "Active",
       coverage_type: randomChoice([...COVERAGE_TYPES]),
-      policy_start_date: "2025-01-01",
+      policy_start_date: "2026-01-01",
       policy_end_date: "2026-12-31",
     },
     vehicle: {
@@ -160,7 +161,7 @@ function getMockFnolPayload(claimId: string, previousClaims: FnolResponse[] = []
     },
     incident: {
       date_time_of_loss: now.toISOString(),
-      loss_description: randomIncidentDescription(previousClaims),
+      loss_description: DEFAULT_LOSS_DESCRIPTION,
       claim_type: "Own Damage",
       estimated_amount: 45000,
       excess_amount: 7000,
