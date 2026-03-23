@@ -126,6 +126,15 @@ const App = () => (
                 </RequireAuth>
               }
             />
+
+            {/* <Route
+              path="/Claim-Digitization"
+              element={
+                <RequireAuth>
+                  <ClaimDigitization />
+                </RequireAuth>
+              }
+            /> */}
             <Route
               path="/settings"
               element={

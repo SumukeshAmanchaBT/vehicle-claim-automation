@@ -14,6 +14,7 @@ import {
   Activity,
   ChevronDown,
   ChevronUp,
+  Monitor,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -50,6 +51,12 @@ const navItems = [
     href: "/reports",
     icon: BarChart3,
     permission: "reports.view",
+  },
+  {
+    title: "Claim Digitization",
+    href: "/Claim-Digitization",
+    icon: Monitor,
+    permission: "damage.view",
   },
 ];
 
@@ -120,14 +127,15 @@ export function AppSidebar() {
       <div className="flex h-full flex-col">
         {/* Logo */}
         <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-6">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary">
+          {/* <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sidebar-primary">
             <Car className="h-5 w-5 text-sidebar-primary-foreground" />
-          </div>
+          </div> */}
           <div>
             <h1 className="text-sm font-semibold text-sidebar-foreground">
-              ClaimFlow AI
+    
+              <img src="https://cdn.prod.website-files.com/68db19eaa5d5503f49fc8d2b/69b953d74e6ff752239f00fa_bt-logo-inverse.png" alt="Logo" className="h-14"  />
             </h1>
-            <p className="text-xs text-sidebar-muted">Insurance Platform</p>
+            {/* <p className="text-xs text-sidebar-muted">Insurance Platform</p> */}
           </div>
         </div>
 
