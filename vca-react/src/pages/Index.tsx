@@ -217,11 +217,11 @@ const Index = () => {
         </div>
 
         {/* Charts Row */}
-        <div className="grid gap-6 lg:grid-cols-3">
+        <div className="grid gap-6">
           <div className="lg:col-span-2">
             <ClaimsTrendChart data={trendData} />
           </div>
-          <ClaimsByTypeChart data={byTypeData} />
+          {/* <ClaimsByTypeChart data={byTypeData} /> */}
         </div>
 
         {/* Bottom Section */}
