@@ -53,9 +53,15 @@ const navItems = [
     permission: "reports.view",
   },
   {
-    title: "Claim Digitization",
+    title: "Claim Process",
     href: "/Claim-Digitization",
     icon: Monitor,
+    permission: "damage.view",
+  },
+  {
+    title: "Invoice History",
+    href: "/invoice-history",
+    icon: FileText,
     permission: "damage.view",
   },
 ];
@@ -95,7 +101,11 @@ const adminSections: {
   // },
 ];
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  open: boolean;
+}
+
+export function AppSidebar({ open }: AppSidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout, hasPermission, isAdmin, me } = useAuth();
@@ -123,7 +133,12 @@ export function AppSidebar() {
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
 
   return (
-    <aside className="fixed left-0 top-0 z-40 h-screen w-64 bg-sidebar border-r border-sidebar-border">
+    <aside
+      className={cn(
+        "fixed left-0 top-0 z-40 h-screen w-64 bg-sidebar border-r border-sidebar-border transition-transform duration-300",
+        open ? "translate-x-0" : "-translate-x-full"
+      )}
+    >
       <div className="flex h-full flex-col">
         {/* Logo */}
         <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-6">

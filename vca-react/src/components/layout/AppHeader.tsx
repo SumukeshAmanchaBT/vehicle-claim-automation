@@ -1,4 +1,4 @@
-import { Bell, Search, HelpCircle } from "lucide-react";
+import { Bell, Search, HelpCircle, PanelLeft } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,16 +14,23 @@ import { StatusBadge } from "@/components/ui/status-badge";
 interface AppHeaderProps {
   title: string;
   subtitle?: string;
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
 }
 
-export function AppHeader({ title, subtitle }: AppHeaderProps) {
+export function AppHeader({ title, subtitle, sidebarOpen, onToggleSidebar }: AppHeaderProps) {
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-6">
-      <div>
-        <h3 className="text-xl font-semibold text-muted-foreground text-foreground">{title}</h3>
-        {subtitle && (
-          <h2 className="text-sm "> {subtitle}</h2>
-        )}
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="icon" onClick={onToggleSidebar} aria-label="Toggle menu">
+          <PanelLeft className="h-5 w-5 text-muted-foreground" />
+        </Button>
+        <div>
+          <h3 className="text-xl font-semibold text-muted-foreground text-foreground">{title}</h3>
+          {subtitle && (
+            <h2 className="text-sm "> {subtitle}</h2>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center gap-4">

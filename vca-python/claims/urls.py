@@ -27,6 +27,19 @@ from .views import (
     pricing_config_collection,
     pricing_config_detail,
 )
+from .digitization_views import (
+    digitization_upload,
+    digitization_classify,
+    digitization_extract,
+    digitization_list_extractions,
+    digitization_extract_kv,
+    digitization_save_classified_local,
+    digitization_save_invoice_details,
+    digitization_verify_parts,
+    digitization_add_part_to_master,
+    invoice_history_list,
+    invoice_history_detail,
+)
 
 urlpatterns = [
     path("login", login, name="login"),
@@ -56,4 +69,17 @@ urlpatterns = [
     path("masters/damage-codes/<int:pk>", damage_code_master_detail, name="damage_code_master_detail"),
     path("masters/pricing-config", pricing_config_collection, name="pricing_config_collection"),
     path("masters/pricing-config/<int:pk>", pricing_config_detail, name="pricing_config_detail"),
+
+    # Claim digitization workflow
+    path("digitization/upload", digitization_upload, name="digitization_upload"),
+    path("digitization/classify", digitization_classify, name="digitization_classify"),
+    path("digitization/extract", digitization_extract, name="digitization_extract"),
+    path("digitization/list-extractions", digitization_list_extractions, name="digitization_list_extractions"),
+    path("digitization/extract-kv", digitization_extract_kv, name="digitization_extract_kv"),
+    path("digitization/save-classified-local", digitization_save_classified_local, name="digitization_save_classified_local"),
+    path("digitization/save-invoice-details", digitization_save_invoice_details, name="digitization_save_invoice_details"),
+    path("digitization/verify-parts", digitization_verify_parts, name="digitization_verify_parts"),
+    path("digitization/add-part-to-master", digitization_add_part_to_master, name="digitization_add_part_to_master"),
+    path("invoice-history", invoice_history_list, name="invoice_history_list"),
+    path("invoice-history/<str:claim_number>", invoice_history_detail, name="invoice_history_detail"),
 ]

@@ -337,3 +337,275 @@ export async function deletePricingConfig(id: number): Promise<void> {
   await fetchApi<void>(`/masters/pricing-config/${id}`, { method: "DELETE" });
 }
 
+/** ****************************
+ * Claim Digitization APIs
+ * **************************** */
+
+export type DigitizationDocumentCategory = "repair" | "other" | "unclassified";
+
+export interface DigitizationDocument {
+  id: number;
+  complaint_id: string;
+  original_filename: string;
+  file_url: string;
+  document_category: DigitizationDocumentCategory;
+  document_type: string;
+  created_date?: string;
+}
+
+export interface DigitizationPartLine {
+  description: string;
+  quantity: string | null;
+  unit_price: string | null;
+  amount: string | null;
+  line_index: number;
+}
+
+export interface DigitizationExtraction {
+  status: string;
+  error_message?: string | null;
+  claim_number?: string | null;
+  vehicle_number?: string | null;
+  engine_number?: string | null;
+  chassis_number?: string | null;
+  make_model?: string | null;
+  total_amount?: string | null;
+  parts: DigitizationPartLine[];
+}
+
+export interface DigitizationDocumentWithExtraction {
+  document_id: number;
+  original_filename: string;
+  file_url: string;
+  document_category: DigitizationDocumentCategory;
+  document_type: string;
+  extraction: DigitizationExtraction | null;
+}
+
+export async function uploadDigitizationDocuments(params: {
+  complaintId: string;
+  files: File[];
+}): Promise<{ documents: DigitizationDocument[] }> {
+  const formData = new FormData();
+  formData.append("complaint_id", params.complaintId);
+  params.files.forEach((f) => formData.append("files", f));
+
+  const response = await httpClient.request<{ documents: DigitizationDocument[] }>({
+    url: "/digitization/upload",
+    method: "POST",
+    data: formData,
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
+  return response.data;
+}
+
+export async function classifyDigitizationDocument(params: {
+  documentId: number;
+  documentCategory: DigitizationDocumentCategory;
+  documentType: string;
+}): Promise<DigitizationDocument> {
+  return fetchApi<DigitizationDocument>("/digitization/classify", {
+    method: "POST",
+    data: {
+      document_id: params.documentId,
+      document_category: params.documentCategory,
+      document_type: params.documentType,
+    },
+  });
+}
+
+export async function extractDigitization(params: {
+  complaintId: string;
+  documentIds?: number[];
+}): Promise<{
+  results: Array<{
+    document_id: number;
+    status: string;
+    error?: string;
+    parts_count?: number;
+  }>;
+}> {
+  return fetchApi<{
+    results: Array<{
+      document_id: number;
+      status: string;
+      error?: string;
+      parts_count?: number;
+    }>;
+  }>("/digitization/extract", {
+    method: "POST",
+    data: {
+      complaint_id: params.complaintId,
+      document_ids: params.documentIds ?? undefined,
+    },
+  });
+}
+
+export async function listDigitizationExtractions(params: {
+  complaintId: string;
+}): Promise<{ documents: DigitizationDocumentWithExtraction[] }> {
+  return fetchApi<{ documents: DigitizationDocumentWithExtraction[] }>(
+    `/digitization/list-extractions?complaint_id=${encodeURIComponent(params.complaintId)}`
+  );
+}
+
+export async function extractDigitizationKv(documentId: number): Promise<{
+  document_id: number;
+  filename: string;
+  key_value_json: Record<string, unknown>;
+}> {
+  return fetchApi<{
+    document_id: number;
+    filename: string;
+    key_value_json: Record<string, unknown>;
+  }>("/digitization/extract-kv", {
+    method: "POST",
+    data: { document_id: documentId },
+  });
+}
+
+export async function saveClassifiedDocumentLocal(params: {
+  file: File;
+  documentCategory: "repair" | "other";
+  originalFilename: string;
+}): Promise<{
+  renamed_filename: string;
+  saved_path: string;
+  document_category: "repair" | "other";
+}> {
+  const formData = new FormData();
+  formData.append("file", params.file);
+  formData.append("document_category", params.documentCategory);
+  formData.append("original_filename", params.originalFilename);
+
+  const response = await httpClient.request<{
+    renamed_filename: string;
+    saved_path: string;
+    document_category: "repair" | "other";
+  }>({
+    url: "/digitization/save-classified-local",
+    method: "POST",
+    data: formData,
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+}
+
+export async function saveInvoiceDetails(params: {
+  claimNumber: string;
+  coreDetails: {
+    claimNumber: string;
+    vehicleNumber: string;
+    engineNumber: string;
+    chassisNumber: string;
+    make: string;
+    modelNumber: string;
+    total: string;
+  };
+  partsDetails: Array<{
+    id?: number;
+    description: string;
+    quantity: string;
+    unitPrice: string;
+    amount: string;
+  }>;
+  removePartIds?: number[];
+}): Promise<{ message: string; claim_number: string; parts_saved: number; parts: Array<{ id: number; description: string | null; quantity: number | null; unitPrice: string; amount: string }> }> {
+  return fetchApi<{ message: string; claim_number: string; parts_saved: number; parts: Array<{ id: number; description: string | null; quantity: number | null; unitPrice: string; amount: string }> }>(
+    "/digitization/save-invoice-details",
+    {
+      method: "POST",
+      data: {
+        claim_number: params.claimNumber,
+        core_details: params.coreDetails,
+        parts_details: params.partsDetails,
+        remove_part_ids: params.removePartIds ?? [],
+      },
+    }
+  );
+}
+
+export async function verifyInvoiceParts(claimNumber: string): Promise<{
+  parts: Array<{
+    part_detail_id: number;
+    part_name: string;
+    verified: boolean;
+    master_id: number | null;
+  }>;
+}> {
+  return fetchApi<{
+    parts: Array<{
+      part_detail_id: number;
+      part_name: string;
+      verified: boolean;
+      master_id: number | null;
+    }>;
+  }>("/digitization/verify-parts", {
+    method: "POST",
+    data: { claim_number: claimNumber },
+  });
+}
+
+export async function addPartToMaster(partDetailId: number): Promise<{
+  part_detail_id: number;
+  part_name: string;
+  verified: true;
+  master_id: number;
+  created_in_master: boolean;
+}> {
+  return fetchApi<{
+    part_detail_id: number;
+    part_name: string;
+    verified: true;
+    master_id: number;
+    created_in_master: boolean;
+  }>("/digitization/add-part-to-master", {
+    method: "POST",
+    data: { part_detail_id: partDetailId },
+  });
+}
+
+export type InvoiceHistoryItem = {
+  claim_number: string;
+  vehicle_number: string | null;
+  engine_number: string | null;
+  chassis_number: string | null;
+  make: string | null;
+  model_number: string | null;
+  amount: string | null;
+  created_date?: string | null;
+  updated_date?: string | null;
+};
+
+export async function listInvoiceHistory(params?: {
+  q?: string;
+}): Promise<{ items: InvoiceHistoryItem[] }> {
+  const q = params?.q ? `?q=${encodeURIComponent(params.q)}` : "";
+  return fetchApi<{ items: InvoiceHistoryItem[] }>(`/invoice-history${q}`);
+}
+
+export async function getInvoiceHistoryDetail(
+  claimNumber: string
+): Promise<{
+  core: InvoiceHistoryItem;
+  parts: Array<{
+    id: number;
+    description: string | null;
+    quantity: number | null;
+    unit_price: string | null;
+    amount: string | null;
+  }>;
+}> {
+  return fetchApi<{
+    core: InvoiceHistoryItem;
+    parts: Array<{
+      id: number;
+      description: string | null;
+      quantity: number | null;
+      unit_price: string | null;
+      amount: string | null;
+    }>;
+  }>(`/invoice-history/${encodeURIComponent(claimNumber)}`);
+}
+

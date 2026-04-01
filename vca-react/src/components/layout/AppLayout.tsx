@@ -1,5 +1,6 @@
 import { AppSidebar } from "./AppSidebar";
 import { AppHeader } from "./AppHeader";
+import { useState } from "react";
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -8,11 +9,18 @@ interface AppLayoutProps {
 }
 
 export function AppLayout({ children, title, subtitle }: AppLayoutProps) {
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
   return (
     <div className="min-h-screen bg-background">
-      <AppSidebar />
-      <div className="pl-64">
-        <AppHeader title={title} subtitle={subtitle} />
+      <AppSidebar open={sidebarOpen} />
+      <div className={`transition-all duration-300 ${sidebarOpen ? "pl-64" : "pl-0"}`}>
+        <AppHeader
+          title={title}
+          subtitle={subtitle}
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+        />
         <main className="p-6">{children}</main>
       </div>
     </div>
