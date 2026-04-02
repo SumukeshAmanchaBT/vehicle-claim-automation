@@ -43,8 +43,11 @@ import {
   type FnolResponse,
   type ProcessClaimResponse,
   type ClaimEvaluationResponse,
+  type DamageAssessmentResponse,
 } from "@/lib/api";
 import { API_BASE_URL, API_MEDIA_URL } from "@/lib/httpClient";
+import { useToast } from "@/components/ui/use-toast";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat("th-TH", {
@@ -85,6 +88,9 @@ export default function ClaimDetail() {
   const [claimEvaluationLoading, setClaimEvaluationLoading] = useState(false);
   const [reportPdfLoading, setReportPdfLoading] = useState(false);
   const [shareFraudInfoClicked, setShareFraudInfoClicked] = useState(false);
+  const [damageAssessmentPreview, setDamageAssessmentPreview] =
+    useState<DamageAssessmentResponse | null>(null);
+  const { toast } = useToast();
 
   useEffect(() => {
     if (!id) return;
@@ -155,6 +161,10 @@ export default function ClaimDetail() {
     return () => { cancelled = true; };
   }, [id, damageDetectionRun]);
 
+  useEffect(() => {
+    if (claimEvaluation) setDamageAssessmentPreview(null);
+  }, [claimEvaluation]);
+
   const handleFraudDetection = async () => {
     if (!id) return;
     setFraudDetectionLoading(true);
@@ -218,10 +228,21 @@ export default function ClaimDetail() {
     setDamageDetectionLoading(true);
     setError(null);
     try {
-      await runDamageAssessment(id, imageUrls);
+      const result = await runDamageAssessment(id, imageUrls);
+      setDamageAssessmentPreview(result);
+      const n = result.images_assessed ?? imageUrls.length;
+      const amt = formatCurrency(result.claim_amount ?? 0);
+      let dmg =
+        result.damages?.length && result.damages.length > 0
+          ? result.damages.join(", ")
+          : "—";
+      if (dmg.length > 100) dmg = `${dmg.slice(0, 97)}…`;
+      toast({
+        title: "Damage assessment complete",
+        description: `${n} image${n === 1 ? "" : "s"} · Severity: ${result.severity ?? "—"} · Est. claim ${amt} · ${dmg}`,
+      });
       setDamageDetectionRun(true);
       setActiveTab("assessment");
-      // Refetch claim so status updates to "Recommendation shared" in the UI
       const updatedFnol = await getFnolById(id!);
       setFnol(updatedFnol);
     } catch (err) {
@@ -433,6 +454,34 @@ export default function ClaimDetail() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {damageAssessmentPreview && !claimEvaluation && (
+          <Alert className="border-primary/40 bg-primary/5">
+            <CheckCircle2 className="h-4 w-4 text-primary" />
+            <AlertTitle>Latest damage assessment</AlertTitle>
+            <AlertDescription className="text-sm space-y-1">
+              <p>
+                {damageAssessmentPreview.images_assessed ?? 1} image
+                {(damageAssessmentPreview.images_assessed ?? 1) === 1 ? "" : "s"} assessed ·
+                Severity{" "}
+                <span className="font-medium text-foreground">
+                  {damageAssessmentPreview.severity ?? "—"}
+                </span>
+                {" · "}
+                Est. claim{" "}
+                <span className="font-medium text-foreground">
+                  {formatCurrency(damageAssessmentPreview.claim_amount ?? 0)}
+                </span>
+              </p>
+              {damageAssessmentPreview.damages &&
+              damageAssessmentPreview.damages.length > 0 ? (
+                <p className="text-muted-foreground">
+                  Damages: {damageAssessmentPreview.damages.join(", ")}
+                </p>
+              ) : null}
+            </AlertDescription>
+          </Alert>
+        )}
 
         <div className="grid gap-6 lg:grid-cols-3">
           {/* Main Content */}

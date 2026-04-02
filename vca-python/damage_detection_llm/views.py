@@ -40,9 +40,9 @@ def _get_image_url_from_request(request):
     return image_url
 
 
-def _fetch_image_from_url(image_url):
+def _fetch_image_from_url(image_url, dest_path=None):
     """
-    Fetch image from URL and return local file path.
+    Fetch image from URL and write to dest_path or WORK_DIR/damage_input.jpg.
     Raises ValueError on invalid URL or fetch failure.
     """
     parsed = urlparse(image_url)
@@ -61,10 +61,55 @@ def _fetch_image_from_url(image_url):
             raise ValueError("Empty response from URL.")
 
     os.makedirs(WORK_DIR, exist_ok=True)
-    input_path = os.path.join(WORK_DIR, "damage_input.jpg")
+    input_path = dest_path or os.path.join(WORK_DIR, "damage_input.jpg")
+    out_dir = os.path.dirname(input_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     with open(input_path, "wb") as f:
         f.write(data)
     return input_path
+
+
+def _resolve_image_url_from_item(item):
+    """Extract a URL string from an images[] entry (str or { url } / { image: { url } })."""
+    if isinstance(item, str):
+        s = item.strip()
+        return s if s else None
+    if isinstance(item, dict):
+        u = item.get("url") or item.get("image", {}).get("url")
+        if isinstance(u, str) and u.strip():
+            return u.strip()
+    return None
+
+
+_SEVERITY_RANK = {"unknown": 0, "minor": 1, "moderate": 2, "severe": 3}
+
+
+def _merge_severities(severities):
+    """Pick the worst severity across images (severe > moderate > minor > unknown)."""
+    best_key = "unknown"
+    best_r = 0
+    for s in severities:
+        key = (s or "unknown").strip().lower()
+        if key not in _SEVERITY_RANK:
+            key = "unknown"
+        r = _SEVERITY_RANK[key]
+        if r > best_r:
+            best_r = r
+            best_key = key
+    return best_key
+
+
+def _merge_damage_lists(damage_lists):
+    """Union of damage labels, preserving first-seen order (by image order)."""
+    out = []
+    seen = set()
+    for lst in damage_lists:
+        for d in lst or []:
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+    return out
 
 
 def _get_claim_id_and_images(request):
@@ -88,57 +133,58 @@ def damage_assessment(request):
     """
     Accept POST with claim_id and images, or image_url, or multipart form with 'image' file.
     - JSON: {"claim_id": "CLM-001", "images": ["http://...", "http://..."]}
+      All images are assessed; damages are merged (unique, order preserved), severity is worst-of.
     - JSON: {"image_url": "http://example.com/image.jpg"}
     - Form: image_url=http://example.com/image.jpg
-    Returns damages (list) and severity (str).
+    Returns damages (list), severity (str), claim_amount, images_assessed.
     """
-    input_path = None
-    image_url_for_hint = None
+    assessment_jobs = []  # list of (local_path, url_hint)
 
-    # 1. Try claim_id and images array (for Damage Detection from Claim Detail)
     claim_id, images = _get_claim_id_and_images(request)
     if images:
-        # Use first image for damage assessment (or process all and aggregate)
-        first = images[0]
-        image_url = (
-            first
-            if isinstance(first, str)
-            else (
-                first.get("url") or first.get("image", {}).get("url")
-                if isinstance(first, dict)
-                else None
+        urls = []
+        for item in images:
+            u = _resolve_image_url_from_item(item)
+            if u:
+                urls.append(u)
+        if not urls:
+            return Response(
+                {"error": "No valid image URLs in images array."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        )
-        image_url_for_hint = image_url
-        print(f'Fetching Image URL: {image_url}')
-        if image_url:
+        os.makedirs(WORK_DIR, exist_ok=True)
+        fetch_errors = []
+        for idx, image_url in enumerate(urls):
+            dest = os.path.join(WORK_DIR, f"damage_input_{idx}.jpg")
             try:
-                input_path = _fetch_image_from_url(image_url.strip())
-                print(f'Fetching Input Image URL: {input_path}')
+                _fetch_image_from_url(image_url, dest_path=dest)
+                assessment_jobs.append((dest, image_url))
             except ValueError as e:
-                return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                fetch_errors.append(str(e))
             except Exception as e:
-                return Response(
-                    {"error": f"Failed to fetch image from URL: {str(e)}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                fetch_errors.append(f"Failed to fetch image from URL: {str(e)}")
+        if not assessment_jobs:
+            return Response(
+                {
+                    "error": "Could not fetch any images from the provided URLs.",
+                    "details": fetch_errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    # 2. Fallback: Try image_url from metadata (JSON or form)
-    if not input_path:
+    image_url = None
+    if not assessment_jobs:
         image_url = _get_image_url_from_request(request)
-        if image_url:
-            image_url_for_hint = image_url
-    if not input_path and image_url:
+    if not assessment_jobs and image_url:
         if not isinstance(image_url, str) or not image_url.strip():
             return Response(
                 {"error": "image_url must be a non-empty string."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            input_path = _fetch_image_from_url(image_url.strip())
+            os.makedirs(WORK_DIR, exist_ok=True)
+            path = _fetch_image_from_url(image_url.strip())
+            assessment_jobs = [(path, image_url.strip())]
         except ValueError as e:
             return Response(
                 {"error": str(e)},
@@ -150,8 +196,7 @@ def damage_assessment(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    # 2. Fallback: image file upload
-    if not input_path and "image" in request.FILES:
+    if not assessment_jobs and "image" in request.FILES:
         image_file = request.FILES["image"]
         if not allowed_file(image_file.name):
             return Response(
@@ -164,13 +209,14 @@ def damage_assessment(request):
             with open(input_path, "wb") as f:
                 for chunk in image_file.chunks():
                     f.write(chunk)
+            assessment_jobs = [(input_path, None)]
         except Exception as e:
             return Response(
                 {"error": f"Failed to save image: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    if not input_path:
+    if not assessment_jobs:
         return Response(
             {
                 "error": "Provide claim_id and images, image_url in metadata (JSON or form), or upload an image file."
@@ -195,12 +241,23 @@ def damage_assessment(request):
                 flood_coverage = bool(getattr(fnol, "flood_coverage", False))
         if not incident_description and isinstance(request.data, dict):
             incident_description = request.data.get("incident_description") or request.data.get("incidentDescription")
-        damages, severity = run_damage_assessment(
-            input_path,
-            incident_description=incident_description,
-            flood_coverage=flood_coverage,
-            image_url=image_url_for_hint,
-        )
+
+        damage_lists = []
+        severities = []
+        for input_path, image_url_for_hint in assessment_jobs:
+            d, s = run_damage_assessment(
+                input_path,
+                incident_description=incident_description,
+                flood_coverage=flood_coverage,
+                image_url=image_url_for_hint,
+            )
+            damage_lists.append(d if d is not None else [])
+            severities.append(s if s is not None else "unknown")
+
+        damages = _merge_damage_lists(damage_lists)
+        severity = _merge_severities(severities)
+        images_assessed = len(assessment_jobs)
+
         severity_str = (severity or "").strip()[:20] if severity else ""
 
         # Always include claim_amount: compute from PricingConfig (base + damages * rate) * severity multiplier
@@ -226,6 +283,7 @@ def damage_assessment(request):
             "damages": damages if damages is not None else [],
             "severity": severity or "unknown",
             "claim_amount": float(claim_amount),
+            "images_assessed": images_assessed,
         }
 
         # Persist LLM response and update claim status when claim_id provided

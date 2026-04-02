@@ -97,6 +97,10 @@ export async function runFraudDetection(
 export interface DamageAssessmentResponse {
   damages: string[];
   severity: string;
+  /** Priced estimate from backend PricingConfig (see claims.views.estimate_claim_amount_from_config) */
+  claim_amount: number;
+  /** Number of images processed (merged damages, worst severity); omitted on older APIs */
+  images_assessed?: number;
 }
 
 /** POST /api/llm/damage_assessment - Run damage assessment with claim ID and images */
