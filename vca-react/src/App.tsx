@@ -23,6 +23,7 @@ import ClaimDigitization from "./pages/ClaimDigitization";
 import InvoiceHistory from "./pages/InvoiceHistory";
 import InvoiceEdit from "./pages/InvoiceEdit";
 import InvoiceView from "./pages/InvoiceView";
+import InvoiceFilesSummary from "./pages/InvoiceFilesSummary";
 import { AuthProvider } from "./contexts/AuthContext";
 import { RequireAuth } from "./components/auth/RequireAuth";
 
@@ -160,6 +161,14 @@ const App = () => (
               element={
                 <RequireAuth>
                   <InvoiceView />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/invoice-files-summary"
+              element={
+                <RequireAuth>
+                  <InvoiceFilesSummary />
                 </RequireAuth>
               }
             />

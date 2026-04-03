@@ -469,6 +469,7 @@ export async function saveClassifiedDocumentLocal(params: {
   file: File;
   documentCategory: "repair" | "other";
   originalFilename: string;
+  complaintId: string;
 }): Promise<{
   renamed_filename: string;
   saved_path: string;
@@ -478,6 +479,7 @@ export async function saveClassifiedDocumentLocal(params: {
   formData.append("file", params.file);
   formData.append("document_category", params.documentCategory);
   formData.append("original_filename", params.originalFilename);
+  formData.append("complaint_id", params.complaintId);
 
   const response = await httpClient.request<{
     renamed_filename: string;
@@ -494,6 +496,7 @@ export async function saveClassifiedDocumentLocal(params: {
 
 export async function saveInvoiceDetails(params: {
   claimNumber: string;
+  sourceDocumentId?: number;
   coreDetails: {
     claimNumber: string;
     vehicleNumber: string;
@@ -518,6 +521,7 @@ export async function saveInvoiceDetails(params: {
       method: "POST",
       data: {
         claim_number: params.claimNumber,
+        source_document_id: params.sourceDocumentId ?? null,
         core_details: params.coreDetails,
         parts_details: params.partsDetails,
         remove_part_ids: params.removePartIds ?? [],
@@ -596,6 +600,10 @@ export async function getInvoiceHistoryDetail(
     unit_price: string | null;
     amount: string | null;
   }>;
+  document?: {
+    file_url: string;
+    original_filename: string;
+  };
 }> {
   return fetchApi<{
     core: InvoiceHistoryItem;
@@ -606,6 +614,29 @@ export async function getInvoiceHistoryDetail(
       unit_price: string | null;
       amount: string | null;
     }>;
+    document?: {
+      file_url: string;
+      original_filename: string;
+    };
   }>(`/invoice-history/${encodeURIComponent(claimNumber)}`);
+}
+
+export type InvoiceFileSummaryItem = {
+  claim_id: string;
+  filename: string;
+  blob_key: string;
+  blob_url: string;
+  upload_status: string;
+  classification_type: string;
+  created_date?: string | null;
+  last_modified?: string | null;
+  size?: number | null;
+};
+
+export async function listInvoiceFilesSummary(params?: {
+  limit?: number;
+}): Promise<{ items: InvoiceFileSummaryItem[] }> {
+  const q = params?.limit ? `?limit=${encodeURIComponent(String(params.limit))}` : "";
+  return fetchApi<{ items: InvoiceFileSummaryItem[] }>(`/digitization/files-summary${q}`);
 }
 

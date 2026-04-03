@@ -1,5 +1,6 @@
 import base64
 import json
+import mimetypes
 import os
 import re
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,17 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+from .digitization_s3 import (
+    build_digitization_file_url,
+    cleanup_temp_path,
+    digitization_doc_local_path,
+    list_s3_objects,
+    presigned_get_url,
+    s3_enabled,
+    upload_bytes_to_s3,
+    move_s3_object,
+    move_s3_prefix,
+)
 from .models import (
     DigitizationDocument,
     DigitizationExtraction,
@@ -382,59 +394,67 @@ def _extract_and_persist(document: DigitizationDocument) -> dict[str, Any]:
     if ext not in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"):
         return {"status": "failed", "error": f"Unsupported file type for extraction: {ext}"}
 
+    tmp_path = None
+    needs_cleanup = False
     try:
-        image_path = document.file.path
-    except Exception:
-        return {"status": "failed", "error": "Cannot resolve file path for extraction"}
+        tmp_path, needs_cleanup = digitization_doc_local_path(document)
+        image_path = str(tmp_path)
+    except ValueError as e:
+        return {"status": "failed", "error": str(e)}
+    except Exception as e:
+        return {"status": "failed", "error": f"Cannot access file for extraction: {e}"}
 
-    parsed, error = _openai_extract_invoice_data(image_path)
-    extraction, _created = DigitizationExtraction.objects.get_or_create(document=document)
+    try:
+        parsed, error = _openai_extract_invoice_data(image_path)
+        extraction, _created = DigitizationExtraction.objects.get_or_create(document=document)
 
-    # Remove existing parts so re-extract is idempotent for the latest run.
-    DigitizationPartLine.objects.filter(extraction=extraction).delete()
+        # Remove existing parts so re-extract is idempotent for the latest run.
+        DigitizationPartLine.objects.filter(extraction=extraction).delete()
 
-    if error:
-        extraction.status = DigitizationExtraction.STATUS_FAILED
-        extraction.error_message = error
-        extraction.extracted_json = json.dumps(parsed or {}, default=str)
-        extraction.save(update_fields=["status", "error_message", "extracted_json", "updated_date"])
-        return {"status": "failed", "error": error}
+        if error:
+            extraction.status = DigitizationExtraction.STATUS_FAILED
+            extraction.error_message = error
+            extraction.extracted_json = json.dumps(parsed or {}, default=str)
+            extraction.save(update_fields=["status", "error_message", "extracted_json", "updated_date"])
+            return {"status": "failed", "error": error}
 
-    # Best-effort parsing for numeric fields
-    parts_in = parsed.get("parts") if isinstance(parsed, dict) else None
-    if not isinstance(parts_in, list):
-        parts_in = []
+        # Best-effort parsing for numeric fields
+        parts_in = parsed.get("parts") if isinstance(parsed, dict) else None
+        if not isinstance(parts_in, list):
+            parts_in = []
 
-    extraction.status = DigitizationExtraction.STATUS_COMPLETED
-    extraction.error_message = None
-    extraction.extracted_json = json.dumps(parsed, default=str)
-    extraction.claim_number = parsed.get("claim_number")
-    extraction.vehicle_number = parsed.get("vehicle_number")
-    extraction.engine_number = parsed.get("engine_number")
-    extraction.chassis_number = parsed.get("chassis_number")
-    extraction.make_model = parsed.get("make_model")
-    extraction.total_amount = _to_decimal(parsed.get("total_amount"))
-    extraction.save()
+        extraction.status = DigitizationExtraction.STATUS_COMPLETED
+        extraction.error_message = None
+        extraction.extracted_json = json.dumps(parsed, default=str)
+        extraction.claim_number = parsed.get("claim_number")
+        extraction.vehicle_number = parsed.get("vehicle_number")
+        extraction.engine_number = parsed.get("engine_number")
+        extraction.chassis_number = parsed.get("chassis_number")
+        extraction.make_model = parsed.get("make_model")
+        extraction.total_amount = _to_decimal(parsed.get("total_amount"))
+        extraction.save()
 
-    part_rows: list[DigitizationPartLine] = []
-    for idx, p in enumerate(parts_in):
-        if not isinstance(p, dict):
-            continue
-        part_rows.append(
-            DigitizationPartLine(
-                extraction=extraction,
-                line_index=idx,
-                description=str(p.get("description") or "").strip(),
-                quantity=_to_decimal(p.get("quantity")),
-                unit_price=_to_decimal(p.get("unit_price")),
-                amount=_to_decimal(p.get("amount")),
+        part_rows: list[DigitizationPartLine] = []
+        for idx, p in enumerate(parts_in):
+            if not isinstance(p, dict):
+                continue
+            part_rows.append(
+                DigitizationPartLine(
+                    extraction=extraction,
+                    line_index=idx,
+                    description=str(p.get("description") or "").strip(),
+                    quantity=_to_decimal(p.get("quantity")),
+                    unit_price=_to_decimal(p.get("unit_price")),
+                    amount=_to_decimal(p.get("amount")),
+                )
             )
-        )
 
-    if part_rows:
-        DigitizationPartLine.objects.bulk_create(part_rows)
+        if part_rows:
+            DigitizationPartLine.objects.bulk_create(part_rows)
 
-    return {"status": "completed", "parts_count": len(part_rows)}
+        return {"status": "completed", "parts_count": len(part_rows)}
+    finally:
+        cleanup_temp_path(tmp_path, needs_cleanup)
 
 
 @api_view(["POST"])
@@ -461,7 +481,7 @@ def digitization_upload(request):
             original_filename=getattr(f, "name", "") or "",
             file=f,
         )
-        file_url = request.build_absolute_uri(doc.file.url)
+        file_url = build_digitization_file_url(request, doc)
         documents_out.append(
             {
                 "id": doc.id,
@@ -503,7 +523,7 @@ def digitization_classify(request):
     doc.document_type = str(doc_type).strip()[:100]
     doc.save(update_fields=["document_category", "document_type"])
 
-    file_url = request.build_absolute_uri(doc.file.url)
+    file_url = build_digitization_file_url(request, doc)
     return Response(
         {
             "id": doc.id,
@@ -580,7 +600,7 @@ def digitization_list_extractions(request):
                     }
                 )
 
-        file_url = request.build_absolute_uri(doc.file.url)
+        file_url = build_digitization_file_url(request, doc)
         out.append(
             {
                 "document_id": doc.id,
@@ -622,48 +642,106 @@ def digitization_extract_kv(request):
         return Response({"error": "document_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     doc = get_object_or_404(DigitizationDocument, id=document_id)
+    tmp_path = None
+    needs_cleanup = False
+
     try:
-        file_path = doc.file.path
-    except Exception:
-        return Response({"error": "Cannot resolve file path"}, status=status.HTTP_400_BAD_REQUEST)
+        # For S3-backed files we may need to download to a temp file for extraction.
+        tmp_path, needs_cleanup = digitization_doc_local_path(doc)
+        file_path = str(tmp_path)
 
-    ext = Path(doc.original_filename or doc.file.name).suffix.lower()
+        ext = Path(doc.original_filename or doc.file.name).suffix.lower()
+        kv_json: dict[str, Any] = {}
 
-    image_exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
-    if ext in image_exts:
-        kv_json, ai_error = _openai_extract_invoice_data(file_path)
-        if ai_error:
-            return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
-    elif ext == ".pdf":
-        text, text_error = _extract_text_from_pdf(file_path)
-        if text_error:
-            return Response({"error": text_error}, status=status.HTTP_400_BAD_REQUEST)
+        image_exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
+        if ext in image_exts:
+            kv_json, ai_error = _openai_extract_invoice_data(file_path)
+            if ai_error:
+                return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
+        elif ext == ".pdf":
+            text, text_error = _extract_text_from_pdf(file_path)
+            if text_error:
+                return Response({"error": text_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        fallback_kv = _fallback_extract_kv_from_text(text)
-        kv_json, ai_error = _openai_extract_kv_from_text(text)
-        if ai_error:
-            return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
+            fallback_kv = _fallback_extract_kv_from_text(text)
+            kv_json, ai_error = _openai_extract_kv_from_text(text)
+            if ai_error:
+                return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Ensure broader PDF fields are present in RawData even if AI returned
-        # only a small canonical subset.
-        if isinstance(kv_json, dict):
-            for k, v in fallback_kv.items():
-                if k not in kv_json or kv_json.get(k) in (None, "", "null"):
-                    kv_json[k] = v
-    else:
+            # Ensure broader PDF fields are present in RawData even if AI returned
+            # only a small canonical subset.
+            if isinstance(kv_json, dict):
+                for k, v in fallback_kv.items():
+                    if k not in kv_json or kv_json.get(k) in (None, "", "null"):
+                        kv_json[k] = v
+        else:
+            return Response(
+                {"error": f"Unsupported file type for key-value extraction: {ext}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Persist extraction so history edit can locate the source document later.
+        # Best-effort only: keep the endpoint functional even if persistence fails.
+        try:
+            extraction, _created = DigitizationExtraction.objects.get_or_create(document=doc)
+            extraction.status = DigitizationExtraction.STATUS_COMPLETED
+            extraction.error_message = None
+            extraction.extracted_json = json.dumps(kv_json or {}, default=str)
+
+            if isinstance(kv_json, dict):
+                extraction.claim_number = str(kv_json.get("claim_number") or "").strip() or None
+                extraction.vehicle_number = str(kv_json.get("vehicle_number") or "").strip() or None
+                extraction.engine_number = str(kv_json.get("engine_number") or "").strip() or None
+                extraction.chassis_number = str(kv_json.get("chassis_number") or "").strip() or None
+                extraction.make_model = (
+                    str(kv_json.get("make_model") or kv_json.get("vehicle_name") or "").strip()
+                    or None
+                )
+                extraction.total_amount = _to_decimal(
+                    kv_json.get("total_amount")
+                    or kv_json.get("claimed_amount")
+                    or kv_json.get("claim_amount")
+                )
+
+                # Persist parts lines for completeness
+                DigitizationPartLine.objects.filter(extraction=extraction).delete()
+                parts_in = kv_json.get("parts")
+                if isinstance(parts_in, list):
+                    part_rows: list[DigitizationPartLine] = []
+                    for idx, p in enumerate(parts_in):
+                        if not isinstance(p, dict):
+                            continue
+                        part_rows.append(
+                            DigitizationPartLine(
+                                extraction=extraction,
+                                line_index=idx,
+                                description=str(p.get("description") or "").strip(),
+                                quantity=_to_decimal(p.get("quantity")),
+                                unit_price=_to_decimal(p.get("unit_price")),
+                                amount=_to_decimal(p.get("amount")),
+                            )
+                        )
+                    if part_rows:
+                        DigitizationPartLine.objects.bulk_create(part_rows)
+
+            extraction.save()
+        except Exception:
+            pass
+
         return Response(
-            {"error": f"Unsupported file type for key-value extraction: {ext}"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {
+                "document_id": doc.id,
+                "filename": doc.original_filename,
+                "key_value_json": kv_json,
+            },
+            status=status.HTTP_200_OK,
         )
-
-    return Response(
-        {
-            "document_id": doc.id,
-            "filename": doc.original_filename,
-            "key_value_json": kv_json,
-        },
-        status=status.HTTP_200_OK,
-    )
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"error": f"Cannot access file: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+    finally:
+        cleanup_temp_path(tmp_path, needs_cleanup)
 
 
 @api_view(["POST"])
@@ -700,10 +778,39 @@ def digitization_save_classified_local(request):
     stem = re.sub(r"_(repair|other)$", "", stem, flags=re.I)  # avoid repeated suffixes
     suffix = "repair" if category == "repair" else "other"
     renamed_filename = f"{stem}_{suffix}{ext}"
+    safe_name = Path(renamed_filename).name
+    complaint_id = (request.data.get("complaint_id") or "").strip()
+    if not complaint_id:
+        complaint_id = "unknown"
+
+    if s3_enabled():
+        body = b"".join(chunk for chunk in uploaded_file.chunks())
+        ctype, _ = mimetypes.guess_type(safe_name)
+        object_key = f"digitization/classified/{complaint_id}/{safe_name}"
+        try:
+            upload_bytes_to_s3(
+                object_key,
+                body,
+                content_type=ctype or "application/octet-stream",
+            )
+        except RuntimeError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "")
+        file_url = presigned_get_url(object_key) or ""
+        return Response(
+            {
+                "renamed_filename": renamed_filename,
+                "saved_path": f"s3://{bucket}/{object_key}",
+                "saved_s3_key": object_key,
+                "file_url": file_url,
+                "document_category": category,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     target_dir = Path(r"D:\vehicle_automation_project\invoice_documents")
     target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / renamed_filename
+    target_path = target_dir / safe_name
 
     with open(target_path, "wb+") as destination:
         for chunk in uploaded_file.chunks():
@@ -849,6 +956,7 @@ def digitization_save_invoice_details(request):
     core = request.data.get("core_details") or {}
     parts = request.data.get("parts_details") or []
     remove_part_ids = request.data.get("remove_part_ids") or []
+    source_document_id = _to_int(request.data.get("source_document_id"))
     if not isinstance(core, dict):
         return Response({"error": "core_details must be an object"}, status=status.HTTP_400_BAD_REQUEST)
     if not isinstance(parts, list):
@@ -876,6 +984,89 @@ def digitization_save_invoice_details(request):
         )
         if created and user_id is not None:
             InvoiceCoreDetails.objects.filter(claim_number=claim_number).update(created_by=user_id)
+
+        # Link invoice -> uploaded source document (for history edit file viewer).
+        # This makes the association deterministic even if AI extracted claim_number was missing.
+        if source_document_id:
+            try:
+                src_doc = DigitizationDocument.objects.get(id=source_document_id)
+                prev_complaint_id = str(src_doc.complaint_id or "").strip()
+                extraction, _created = DigitizationExtraction.objects.get_or_create(document=src_doc)
+                extraction.claim_number = claim_number
+                if extraction.status == DigitizationExtraction.STATUS_PENDING:
+                    extraction.status = DigitizationExtraction.STATUS_COMPLETED
+                extraction.error_message = None
+                extraction.save(update_fields=["claim_number", "status", "error_message", "updated_date"])
+
+                # IMPORTANT: Use extracted claim_number as the canonical folder/key in S3.
+                # If the file was uploaded under a temporary/session complaint_id (e.g. DIGI-...),
+                # move it under digitization/<CLAIM_NUMBER>/... and update the DB key.
+                if s3_enabled():
+                    try:
+                        # Move ALL objects for this session complaint id (including classified copies),
+                        # so the DIGI-... folder disappears once we know the real claim number.
+                        if prev_complaint_id and prev_complaint_id != claim_number:
+                            move_s3_prefix(
+                                f"digitization/{prev_complaint_id}/",
+                                f"digitization/{claim_number}/",
+                            )
+                            move_s3_prefix(
+                                f"digitization/classified/{prev_complaint_id}/",
+                                f"digitization/classified/{claim_number}/",
+                            )
+
+                        current_key = str(getattr(src_doc.file, "name", "") or "")
+                        new_key = current_key
+                        # Expected formats:
+                        # - digitization/<TEMP>/<filename>
+                        # - digitization/classified/<TEMP>/<filename>
+                        parts = current_key.split("/")
+                        if len(parts) >= 3 and parts[0] == "digitization":
+                            if parts[1] == "classified" and len(parts) >= 4:
+                                # digitization/classified/<id>/...
+                                parts[2] = claim_number
+                                new_key = "/".join(parts)
+                            else:
+                                # digitization/<id>/...
+                                parts[1] = claim_number
+                                new_key = "/".join(parts)
+                        if new_key and new_key != current_key:
+                            move_s3_object(current_key, new_key)
+                            src_doc.file.name = new_key
+                    except Exception:
+                        # Non-fatal: invoice save should still succeed.
+                        pass
+
+                # Also align complaint_id in DB to claim_number so subsequent listing uses real ID.
+                if src_doc.complaint_id != claim_number:
+                    src_doc.complaint_id = claim_number
+                src_doc.save(update_fields=["complaint_id", "file"])
+
+                # Update ALL docs that were uploaded under the session complaint id
+                # so UI/history reads the real claim number everywhere.
+                if prev_complaint_id and prev_complaint_id != claim_number:
+                    try:
+                        for d in DigitizationDocument.objects.filter(complaint_id=prev_complaint_id).only("id", "file"):
+                            key = str(getattr(d.file, "name", "") or "")
+                            if key.startswith(f"digitization/{prev_complaint_id}/"):
+                                d.file.name = key.replace(
+                                    f"digitization/{prev_complaint_id}/",
+                                    f"digitization/{claim_number}/",
+                                    1,
+                                )
+                            elif key.startswith(f"digitization/classified/{prev_complaint_id}/"):
+                                d.file.name = key.replace(
+                                    f"digitization/classified/{prev_complaint_id}/",
+                                    f"digitization/classified/{claim_number}/",
+                                    1,
+                                )
+                            d.complaint_id = claim_number
+                            d.save(update_fields=["complaint_id", "file"])
+                    except Exception:
+                        pass
+            except Exception:
+                # Non-fatal: invoice save should still succeed.
+                pass
 
         # Delete only explicitly removed rows
         removed_ids_int = [_to_int(x) for x in remove_part_ids]
@@ -1040,6 +1231,37 @@ def invoice_history_detail(request, claim_number: str):
             }
         )
 
+    # Best-effort: link this invoice back to its original uploaded source document.
+    # We can do this via DigitizationExtraction.claim_number -> DigitizationDocument.file.
+    document_info: dict[str, Any] = {
+        "file_url": "",
+        "original_filename": "",
+    }
+    try:
+        extraction = (
+            DigitizationExtraction.objects.filter(claim_number__iexact=claim_number)
+            .order_by("-updated_date")
+            .select_related("document")
+            .first()
+        )
+        if not extraction:
+            # Fallback: try a best-effort search in extracted_json for older data.
+            extraction = (
+                DigitizationExtraction.objects.filter(extracted_json__icontains=claim_number)
+                .order_by("-updated_date")
+                .select_related("document")
+                .first()
+            )
+        if extraction and getattr(extraction, "document", None):
+            doc = extraction.document
+            document_info["original_filename"] = getattr(doc, "original_filename", "") or getattr(
+                doc.file, "name", ""
+            ).split("/")[-1]
+            document_info["file_url"] = build_digitization_file_url(request, doc) or ""
+    except Exception:
+        # If linkage fails, we still return core + parts.
+        pass
+
     return Response(
         {
             "core": {
@@ -1052,7 +1274,101 @@ def invoice_history_detail(request, claim_number: str):
                 "amount": str(core.amount) if core.amount is not None else None,
             },
             "parts": parts,
+            "document": document_info,
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def digitization_files_summary(request):
+    """
+    Summary of uploaded digitization documents (for Invoice Files Summary screen).
+    Fetches from S3 only (no local /media rows).
+    """
+    limit = _to_int(request.query_params.get("limit")) or 200
+    limit = max(1, min(limit, 500))
+
+    if not s3_enabled():
+        return Response({"items": []}, status=status.HTTP_200_OK)
+
+    # Prefer classified objects; show at most 2 per claim (Repairer + Non Repairer)
+    objs = list_s3_objects(prefix="digitization/classified/", limit=limit)
+    if not objs:
+        # Fallback to non-classified upload prefix if no classified objects exist yet
+        objs = list_s3_objects(prefix="digitization/", limit=limit)
+
+    # Build key -> claim_number mapping from DB (so Claim ID column shows MC... not DIGI-...)
+    key_to_claim_number: dict[str, str] = {}
+    try:
+        docs = (
+            DigitizationDocument.objects.filter(file__isnull=False)
+            .select_related()
+            .only("id", "file")
+        )
+        for d in docs[:2000]:
+            try:
+                k = str(d.file.name or "").strip()
+            except Exception:
+                continue
+            if not k or k in key_to_claim_number:
+                continue
+            try:
+                ex = DigitizationExtraction.objects.filter(document_id=d.id).only("claim_number").first()
+                if ex and ex.claim_number:
+                    key_to_claim_number[k] = str(ex.claim_number).strip()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Pick latest object per (claim, type). Type is Repairer/Non Repairer only.
+    chosen: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for o in objs:
+        key = str(o.get("key") or "")
+        if not key or key.endswith("/"):
+            continue
+        parts = key.split("/")
+        filename = parts[-1]
+
+        # Extract uploaded-session claim id from key
+        session_claim_id = ""
+        if len(parts) >= 4 and parts[0] == "digitization" and parts[1] == "classified":
+            session_claim_id = parts[2]
+        elif len(parts) >= 3 and parts[0] == "digitization":
+            session_claim_id = parts[1]
+
+        # Determine classification (only 2 types)
+        lower = filename.lower()
+        classification = "Repairer" if "_repair" in lower else "Non Repairer"
+
+        # Prefer to display real invoice claim_number if we can map the key
+        display_claim_id = key_to_claim_number.get(key) or session_claim_id or ""
+
+        url = presigned_get_url(key) or ""
+        item = {
+            "claim_id": display_claim_id,
+            "filename": filename,
+            "blob_key": key,
+            "blob_url": url,
+            "upload_status": "Success" if url else "Failed",
+            "classification_type": classification,
+            "last_modified": o.get("last_modified"),
+            "size": o.get("size"),
+        }
+
+        grp_key = (display_claim_id, classification)
+        prev = chosen.get(grp_key)
+        if not prev:
+            chosen[grp_key] = item
+        else:
+            # Keep the most recently modified
+            if (item.get("last_modified") or 0) > (prev.get("last_modified") or 0):
+                chosen[grp_key] = item
+
+    # Return sorted by last_modified desc, up to limit
+    out = sorted(chosen.values(), key=lambda x: x.get("last_modified") or 0, reverse=True)[:limit]
+    return Response({"items": out}, status=status.HTTP_200_OK)
 

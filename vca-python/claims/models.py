@@ -1,4 +1,5 @@
 from django.db import models
+from pathlib import Path
 
 
 class FnolClaim(models.Model):
@@ -408,7 +409,15 @@ class DigitizationDocument(models.Model):
     id = models.BigAutoField(primary_key=True)
     complaint_id = models.CharField(max_length=20, db_index=True)
 
-    file = models.FileField(upload_to="digitization/")
+    @staticmethod
+    def _upload_to(instance: "DigitizationDocument", filename: str) -> str:
+        """
+        Store files under digitization/<complaint_id>/ so S3 listing can derive Claim ID.
+        """
+        safe_name = Path(filename).name
+        return f"digitization/{instance.complaint_id}/{safe_name}"
+
+    file = models.FileField(upload_to=_upload_to)
     original_filename = models.CharField(max_length=255, blank=True, default="")
 
     document_category = models.CharField(

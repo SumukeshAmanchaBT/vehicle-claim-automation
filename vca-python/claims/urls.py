@@ -39,6 +39,7 @@ from .digitization_views import (
     digitization_add_part_to_master,
     invoice_history_list,
     invoice_history_detail,
+    digitization_files_summary,
 )
 
 urlpatterns = [
@@ -82,4 +83,5 @@ urlpatterns = [
     path("digitization/add-part-to-master", digitization_add_part_to_master, name="digitization_add_part_to_master"),
     path("invoice-history", invoice_history_list, name="invoice_history_list"),
     path("invoice-history/<str:claim_number>", invoice_history_detail, name="invoice_history_detail"),
+    path("digitization/files-summary", digitization_files_summary, name="digitization_files_summary"),
 ]

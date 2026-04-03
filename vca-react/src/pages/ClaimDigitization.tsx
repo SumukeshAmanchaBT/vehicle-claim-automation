@@ -106,6 +106,58 @@ export default function ClaimDigitization() {
 
   const formatMb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 
+  const removeDocumentById = (docId: number) => {
+    setDocuments((prevDocs) => {
+      const nextDocs = prevDocs.filter((d) => d.id !== docId);
+
+      // Update selection
+      setSelectedDocId((prevSelected) => {
+        if (prevSelected !== docId) return prevSelected;
+        return nextDocs[0]?.id ?? null;
+      });
+
+      // Remove related caches/maps
+      setLocalFileByDocId((prev) => {
+        const copy = { ...prev };
+        delete copy[docId];
+        return copy;
+      });
+      setServerDocIdByLocalId((prev) => {
+        const copy = { ...prev };
+        delete copy[docId];
+        return copy;
+      });
+      setValidationDataByLocalId((prev) => {
+        const copy = { ...prev };
+        delete copy[docId];
+        return copy;
+      });
+
+      // Rebuild upload files list to match remaining docs order.
+      setFiles((prevFiles) => {
+        const remainingFileSet = new Set<File>();
+        prevDocs
+          .filter((d) => d.id !== docId)
+          .forEach((d) => {
+            const f = localFileByDocId[d.id];
+            if (f) remainingFileSet.add(f);
+          });
+        // Keep original order from prevFiles where possible
+        return prevFiles.filter((f) => remainingFileSet.has(f));
+      });
+
+      if (nextDocs.length === 0) {
+        setShowValidation(false);
+        setRawData({});
+        setPartsDetails([]);
+        setRemovedPartDbIds([]);
+        setPartVerifyByDbId({});
+        setViewerZoom(1);
+      }
+      return nextDocs;
+    });
+  };
+
   // Edit-from-history mode: open validation directly for a claim_number.
   useEffect(() => {
     const sp = new URLSearchParams(location.search);
@@ -117,15 +169,36 @@ export default function ClaimDigitization() {
     setMessage(null);
     getInvoiceHistoryDetail(editClaim)
       .then(async (res) => {
+        let docFileUrl = res.document?.file_url || "";
+        // Normalize relative media URLs like "media/..." to "/media/..." so <img>/<iframe> resolves correctly.
+        if (docFileUrl && !/^https?:\/\//i.test(docFileUrl) && !docFileUrl.startsWith("blob:") && !docFileUrl.startsWith("/")) {
+          docFileUrl = `/${docFileUrl}`;
+        }
+        const docOriginalFilename = res.document?.original_filename || "";
+        // If backend doesn't return a filename, infer it from the URL key (works for S3 presigned URLs).
+        const inferredFilenameFromUrl =
+          docFileUrl
+            ? decodeURIComponent(
+                docFileUrl.split("?")[0].split("/").filter(Boolean).pop() || ""
+              )
+            : "";
+        const historyFilename = docOriginalFilename || inferredFilenameFromUrl || `Invoice - ${editClaim}`;
         const historyDoc: DigitizationDocument = {
           id: Date.now(),
           complaint_id: complaintId,
-          original_filename: `Invoice - ${editClaim}`,
-          file_url: "",
+          original_filename: historyFilename,
+          file_url: docFileUrl,
           document_category: "repair",
           document_type: "History",
           created_date: new Date().toISOString(),
         };
+        if (!historyDoc.file_url) {
+          notifyError(
+            `Document file_url not returned from backend for claim ${editClaim}. Please re-Submit/Classify this invoice (to persist extraction link).`
+          );
+        }
+        // Debug: helps confirm whether backend returns the S3/dynamic file URL.
+        console.log("Edit-from-history res.document:", res.document);
         setDocuments([historyDoc]);
         setSelectedDocId(historyDoc.id);
 
@@ -178,6 +251,11 @@ export default function ClaimDigitization() {
   const selectedDoc = useMemo(
     () => documents.find((d) => d.id === selectedDocId) ?? null,
     [documents, selectedDocId]
+  );
+
+  const documentsForList = useMemo(
+    () => (showValidation ? documents.filter((d) => d.document_category === "repair") : documents),
+    [documents, showValidation]
   );
   const canCustomZoom = useMemo(
     () => !!selectedDoc && isImageFile(selectedDoc.original_filename),
@@ -358,13 +436,14 @@ export default function ClaimDigitization() {
         file: localFile,
         documentCategory: categoryForSave,
         originalFilename: selectedDoc.original_filename || localFile.name,
+        complaintId,
       });
 
       const updated: DigitizationDocument = {
         ...selectedDoc,
         original_filename: res.renamed_filename,
         document_category: docCategory,
-        document_type: docCategory === "repair" ? "Repairer Documents" : "Other Documents",
+        document_type: docCategory === "repair" ? "Repairer Documents" : "Non-Repairer Documents",
       };
       setDocuments((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
       notifySuccess(`Saved: ${res.saved_path}`);
@@ -398,15 +477,18 @@ export default function ClaimDigitization() {
       }
 
       // Recreate upload payload from input files for current session
-      // We use current <input> selection state for backend upload.
-      if (!files.length) {
+      // Build upload files from current documents order so file-wise Clear works correctly.
+      const filesForUpload = documents
+        .map((d) => localFileByDocId[d.id])
+        .filter((f): f is File => !!f);
+      if (!filesForUpload.length) {
         notifyError("Please re-select files and click Upload before Submit.");
         return;
       }
 
       const uploaded = await uploadDigitizationDocuments({
         complaintId,
-        files,
+        files: filesForUpload,
       });
 
       const mapIds: Record<number, number> = {};
@@ -446,6 +528,7 @@ export default function ClaimDigitization() {
 
         const saved = await saveInvoiceDetails({
           claimNumber,
+          sourceDocumentId: serverId,
           coreDetails: built.coreDetails,
           partsDetails: built.partsDetails.map((p) => ({
             id: p.dbId,
@@ -473,8 +556,23 @@ export default function ClaimDigitization() {
 
       setValidationDataByLocalId(nextValidationByLocalId);
 
-      // Show validation for currently selected doc
-      const builtSelected = nextValidationByLocalId[selectedDoc.id];
+      // If we didn't save any Repairer docs, don't enter validation mode.
+      if (savedCount === 0) {
+        setShowValidation(false);
+        notifySuccess(
+          `Submit completed. Saved ${otherSkippedCount} Non-Repairer Document file(s) to S3. No extraction was performed.`
+        );
+        return;
+      }
+
+      // Show validation for a Repairer document:
+      // - prefer currently selected doc if it has validation data
+      // - otherwise fall back to first Repairer doc
+      let builtSelected = nextValidationByLocalId[selectedDoc.id];
+      if (!builtSelected) {
+        const firstRepair = documents.find((d) => d.document_category === "repair");
+        if (firstRepair) builtSelected = nextValidationByLocalId[firstRepair.id];
+      }
       if (builtSelected) {
         applyValidationData(builtSelected);
         const claimNumber = (builtSelected.coreDetails.claimNumber || "").trim();
@@ -491,7 +589,7 @@ export default function ClaimDigitization() {
       setShowValidation(true);
       setValidationTab("core");
       notifySuccess(
-        `Submit completed. Saved ${savedCount} Repairer Document record(s) to database.${otherSkippedCount ? ` Skipped ${otherSkippedCount} Other Document(s).` : ""}${skippedCount ? ` Skipped ${skippedCount} (missing Claim Number).` : ""}`
+        `Submit completed. Saved ${savedCount} Repairer Document record(s) to database.${otherSkippedCount ? ` Skipped ${otherSkippedCount} Non-Repairer Document(s).` : ""}${skippedCount ? ` Skipped ${skippedCount} (missing Claim Number).` : ""}`
       );
     } catch (e) {
       const err = e as AxiosError<any>;
@@ -641,31 +739,53 @@ export default function ClaimDigitization() {
                   )}
                 </div>
                 <div className="max-h-[160px] space-y-1 overflow-auto p-2">
-                  {documents.length === 0 ? (
+                  {documentsForList.length === 0 ? (
                     <p className="px-2 py-3 text-sm text-muted-foreground">
-                      Upload files to show list.
+                      {showValidation ? "No Repairer documents to validate." : "Upload files to show list."}
                     </p>
                   ) : (
-                    documents.map((doc) => (
-                      <button
+                    documentsForList.map((doc) => (
+                      <div
                         key={`top-list-${doc.id}`}
-                        type="button"
-                        onClick={async () => {
-                          setSelectedDocId(doc.id);
-                          if (showValidation) {
-                            await loadValidationForLocalDoc(doc.id);
-                          } else {
-                            setDocCategory(doc.document_category);
-                          }
-                        }}
                         className={`w-full rounded-sm border px-2 py-2 text-left text-xs font-semibold transition ${
                           doc.id === selectedDocId
                             ? "border-primary bg-primary/10 text-primary"
                             : "bg-card hover:bg-muted/60"
                         }`}
                       >
-                        {doc.original_filename || `Document ${doc.id}`}
-                      </button>
+                        <div className="flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setSelectedDocId(doc.id);
+                              if (showValidation) {
+                                await loadValidationForLocalDoc(doc.id);
+                              } else {
+                                setDocCategory(doc.document_category);
+                              }
+                            }}
+                            className="min-w-0 flex-1 truncate text-left"
+                            title={doc.original_filename || `Document ${doc.id}`}
+                          >
+                            {doc.original_filename || `Document ${doc.id}`}
+                          </button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              removeDocumentById(doc.id);
+                            }}
+                            title="Remove file"
+                            disabled={loading}
+                          >
+                            <X className="h-4 w-4 text-red-600" />
+                          </Button>
+                        </div>
+                      </div>
                     ))
                   )}
                 </div>
@@ -692,7 +812,7 @@ export default function ClaimDigitization() {
                       </div>
                       <div className="flex items-center gap-2">
                         <RadioGroupItem value="other" id="other-docs-top" />
-                        <Label htmlFor="other-docs-top">Other Documents</Label>
+                        <Label htmlFor="other-docs-top">Non-Repairer Documents</Label>
                       </div>
                     </RadioGroup>
 
@@ -847,15 +967,19 @@ export default function ClaimDigitization() {
                 <div className="p-2">
                   <div className="h-[500px] overflow-auto rounded border bg-muted/20">
                     <div className="flex min-h-[500px] items-center justify-center">
-                      {selectedDoc && isImageFile(selectedDoc.original_filename) ? (
+                      {selectedDoc && isImageFile(selectedDoc.original_filename || selectedDoc.file_url) ? (
                         <img
                           src={selectedDoc.file_url}
                           alt={selectedDoc.original_filename || "preview"}
                           className="h-full w-full object-contain"
                           style={{ transform: `scale(${viewerZoom})`, transformOrigin: "top center" }}
                         />
-                      ) : selectedDoc && isPdfFile(selectedDoc.original_filename) ? (
-                        <iframe src={selectedDoc.file_url} title={selectedDoc.original_filename || "pdf"} className="h-[500px] w-full rounded" />
+                      ) : selectedDoc && isPdfFile(selectedDoc.original_filename || selectedDoc.file_url) ? (
+                        <iframe
+                          src={selectedDoc.file_url}
+                          title={selectedDoc.original_filename || "pdf"}
+                          className="h-[500px] w-full rounded"
+                        />
                       ) : selectedDoc && !selectedDoc.file_url ? (
                         <p className="text-sm text-muted-foreground">No source document available for this invoice (history edit mode).</p>
                       ) : (

@@ -64,6 +64,12 @@ const navItems = [
     icon: FileText,
     permission: "damage.view",
   },
+  {
+    title: "Invoice Files Summary",
+    href: "/invoice-files-summary",
+    icon: FileText,
+    permission: "damage.view",
+  },
 ];
 
 const adminSections: {
