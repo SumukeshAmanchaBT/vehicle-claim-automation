@@ -19,6 +19,11 @@ import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import ChangePassword from "./pages/ChangePassword";
 import NotFound from "./pages/NotFound";
+import ClaimDigitization from "./pages/ClaimDigitization";
+import InvoiceHistory from "./pages/InvoiceHistory";
+import InvoiceEdit from "./pages/InvoiceEdit";
+import InvoiceView from "./pages/InvoiceView";
+import InvoiceFilesSummary from "./pages/InvoiceFilesSummary";
 import { AuthProvider } from "./contexts/AuthContext";
 import { RequireAuth } from "./components/auth/RequireAuth";
 
@@ -127,14 +132,46 @@ const App = () => (
               }
             />
 
-            {/* <Route
+            <Route
               path="/Claim-Digitization"
               element={
                 <RequireAuth>
                   <ClaimDigitization />
                 </RequireAuth>
               }
-            /> */}
+            />
+            <Route
+              path="/invoice-history"
+              element={
+                <RequireAuth>
+                  <InvoiceHistory />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/invoice-history/:claimNumber/edit"
+              element={
+                <RequireAuth>
+                  <InvoiceEdit />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/invoice-history/:claimNumber/view"
+              element={
+                <RequireAuth>
+                  <InvoiceView />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/invoice-files-summary"
+              element={
+                <RequireAuth>
+                  <InvoiceFilesSummary />
+                </RequireAuth>
+              }
+            />
             <Route
               path="/settings"
               element={

@@ -1,4 +1,5 @@
 from django.db import models
+from pathlib import Path
 
 
 class FnolClaim(models.Model):
@@ -388,3 +389,218 @@ class PricingConfig(models.Model):
 
     def __str__(self) -> str:
         return f"{self.config_key}: {self.config_value}"
+
+
+class DigitizationDocument(models.Model):
+    """
+    Stores uploaded documents for claim digitization (repair invoice, other docs, etc.).
+    """
+
+    DOCUMENT_CATEGORY_REPAIR = "repair"
+    DOCUMENT_CATEGORY_OTHER = "other"
+    DOCUMENT_CATEGORY_UNCLASSIFIED = "unclassified"
+
+    DOCUMENT_CATEGORY_CHOICES = [
+        (DOCUMENT_CATEGORY_REPAIR, "Repair Documents"),
+        (DOCUMENT_CATEGORY_OTHER, "Other Documents"),
+        (DOCUMENT_CATEGORY_UNCLASSIFIED, "Unclassified"),
+    ]
+
+    id = models.BigAutoField(primary_key=True)
+    complaint_id = models.CharField(max_length=20, db_index=True)
+
+    @staticmethod
+    def _upload_to(instance: "DigitizationDocument", filename: str) -> str:
+        """
+        Store files under digitization/<complaint_id>/ so S3 listing can derive Claim ID.
+        """
+        safe_name = Path(filename).name
+        return f"digitization/{instance.complaint_id}/{safe_name}"
+
+    file = models.FileField(upload_to=_upload_to)
+    original_filename = models.CharField(max_length=255, blank=True, default="")
+
+    document_category = models.CharField(
+        max_length=30,
+        choices=DOCUMENT_CATEGORY_CHOICES,
+        default=DOCUMENT_CATEGORY_UNCLASSIFIED,
+        db_index=True,
+    )
+    # Free-text document type (e.g., "Tax Invoice", "Repair Invoice", etc.)
+    document_type = models.CharField(max_length=100, blank=True, default="", db_index=True)
+
+    created_date = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "digitization_documents"
+        indexes = [
+            models.Index(fields=["complaint_id", "document_category"], name="dd_complaint_category_idx"),
+            models.Index(fields=["complaint_id", "document_type"], name="dd_complaint_type_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"DigitizationDocument(id={self.id}, complaint_id={self.complaint_id}, type={self.document_type})"
+
+
+class DigitizationExtraction(models.Model):
+    """
+    Stores extracted header + raw JSON from a digitized document.
+    """
+
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+    STATUS_PENDING = "pending"
+
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_COMPLETED, "Completed"),
+        (STATUS_FAILED, "Failed"),
+    ]
+
+    document = models.OneToOneField(
+        DigitizationDocument,
+        on_delete=models.CASCADE,
+        related_name="extraction",
+    )
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    error_message = models.TextField(null=True, blank=True)
+
+    # Common header fields (best-effort; may be null)
+    claim_number = models.CharField(max_length=100, null=True, blank=True)
+    vehicle_number = models.CharField(max_length=100, null=True, blank=True)
+    engine_number = models.CharField(max_length=100, null=True, blank=True)
+    chassis_number = models.CharField(max_length=100, null=True, blank=True)
+    make_model = models.CharField(max_length=150, null=True, blank=True)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    extracted_json = models.TextField(null=True, blank=True)
+
+    created_date = models.DateTimeField(auto_now_add=True)
+    updated_date = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "digitization_extractions"
+
+    def __str__(self) -> str:
+        return f"DigitizationExtraction(document_id={self.document_id}, status={self.status})"
+
+
+class DigitizationPartLine(models.Model):
+    """
+    Extracted parts line items for a digitized document.
+    """
+
+    extraction = models.ForeignKey(
+        DigitizationExtraction,
+        on_delete=models.CASCADE,
+        related_name="parts",
+    )
+
+    line_index = models.PositiveIntegerField(default=0, db_index=True)
+    description = models.CharField(max_length=255, blank=True, default="")
+
+    quantity = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+
+    class Meta:
+        db_table = "digitization_part_lines"
+        indexes = [
+            models.Index(fields=["extraction", "line_index"], name="dpl_extraction_line_idx"),
+        ]
+        ordering = ["line_index", "id"]
+
+    def __str__(self) -> str:
+        return f"DigitizationPartLine(extraction_id={self.extraction_id}, desc={self.description[:30]})"
+
+
+class InvoiceCoreDetails(models.Model):
+    """
+    Maps to MySQL table: vehicle_invoice_details
+    (User-managed table; Django will not create/alter it.)
+    """
+
+    claim_number = models.CharField(max_length=50, primary_key=True)
+
+    vehicle_number = models.CharField(max_length=50, null=True, blank=True)
+    engine_number = models.CharField(max_length=50, null=True, blank=True)
+    chassis_number = models.CharField(max_length=100, null=True, blank=True)
+    make = models.CharField(max_length=50, null=True, blank=True)
+    model_number = models.CharField(max_length=50, null=True, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    created_by = models.IntegerField(null=True, blank=True)
+    created_date = models.DateTimeField(null=True, blank=True)
+    updated_by = models.IntegerField(null=True, blank=True)
+    updated_date = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.IntegerField(null=True, blank=True)
+    deleted_date = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "vehicle_invoice_details"
+        managed = False
+
+    def __str__(self) -> str:
+        return f"InvoiceCoreDetails(claim_number={self.claim_number})"
+
+
+class InvoicePartDetails(models.Model):
+    """
+    Maps to MySQL table: vehicle_invoice_part_details
+    (User-managed table; Django will not create/alter it.)
+    """
+
+    id = models.AutoField(primary_key=True)
+    claim_number = models.ForeignKey(
+        InvoiceCoreDetails,
+        on_delete=models.CASCADE,
+        db_column="claim_number",
+        to_field="claim_number",
+        related_name="invoice_parts",
+    )
+
+    description = models.CharField(max_length=255, null=True, blank=True)
+    quantity = models.IntegerField(null=True, blank=True)
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
+    created_by = models.IntegerField(null=True, blank=True)
+    created_date = models.DateTimeField(null=True, blank=True)
+    updated_by = models.IntegerField(null=True, blank=True)
+    updated_date = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.IntegerField(null=True, blank=True)
+    deleted_date = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "vehicle_invoice_part_details"
+        managed = False
+
+    def __str__(self) -> str:
+        return f"InvoicePartDetails(id={self.id}, claim_number={self.claim_number_id})"
+
+
+class PartsMaster(models.Model):
+    """
+    Maps to MySQL table: parts_master
+    (User-managed table; Django will not create/alter it.)
+    """
+
+    id = models.AutoField(primary_key=True)
+    part_name = models.CharField(max_length=255, unique=True)
+    part_code = models.CharField(max_length=100, null=True, blank=True)
+    category = models.CharField(max_length=100, null=True, blank=True)
+
+    created_by = models.IntegerField(null=True, blank=True)
+    created_date = models.DateTimeField(null=True, blank=True)
+    updated_by = models.IntegerField(null=True, blank=True)
+    updated_date = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.IntegerField(null=True, blank=True)
+    deleted_date = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "parts_master"
+        managed = False
+
+    def __str__(self) -> str:
+        return f"PartsMaster(id={self.id}, part_name={self.part_name})"

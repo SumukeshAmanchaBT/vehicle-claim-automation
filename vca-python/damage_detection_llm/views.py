@@ -241,7 +241,6 @@ def damage_assessment(request):
                 flood_coverage = bool(getattr(fnol, "flood_coverage", False))
         if not incident_description and isinstance(request.data, dict):
             incident_description = request.data.get("incident_description") or request.data.get("incidentDescription")
-
         damage_lists = []
         severities = []
         for input_path, image_url_for_hint in assessment_jobs:
