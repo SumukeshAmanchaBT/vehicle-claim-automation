@@ -71,7 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const isAdmin = useCallback(
-    () => (me?.role?.name?.toLowerCase() === "admin" ?? false),
+    () => me?.role?.name?.toLowerCase() === "admin",
     [me]
   );
 

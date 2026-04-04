@@ -45,6 +45,7 @@ import {
   type ClaimEvaluationResponse,
   type DamageAssessmentResponse,
 } from "@/lib/api";
+import type { FraudRuleResult } from "@/models/fnol";
 import { API_BASE_URL, API_MEDIA_URL } from "@/lib/httpClient";
 import { useToast } from "@/components/ui/use-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -774,9 +775,8 @@ export default function ClaimDetail() {
                                 key={index}
                                 src={imageUrl}
                                 alt={`Photo ${index + 1}`}
-                                className="h-[300px] w-full rounded-md border "
+                                className="h-[300px] w-full rounded-md border object-cover"
                                 loading="lazy"
-                                sx={{ objectFit: "" }}
                               />
                             ) : (
                               <div

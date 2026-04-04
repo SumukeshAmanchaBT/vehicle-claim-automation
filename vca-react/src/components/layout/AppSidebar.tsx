@@ -60,11 +60,18 @@ const navItems = [
   },
 ];
 
+type AdminNavItem = {
+  label: string;
+  href: string;
+  icon?: LucideIcon;
+  permission?: string;
+};
+
 const adminSections: {
   title: string;
   icon: LucideIcon;
   baseMatch: string[];
-  items: { label: string; href: string; icon?: LucideIcon }[];
+  items: AdminNavItem[];
 }[] = [
   {
     title: "User Management",
@@ -209,6 +216,7 @@ export function AppSidebar() {
                   >
                     <CollapsibleTrigger asChild>
                       <button
+                        type="button"
                         className={cn(
                           "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                           isSectionActive
@@ -237,7 +245,7 @@ export function AppSidebar() {
                               if (item.href === "/roles/permissions") return canViewRolePermissions;
                               return true;
                             }
-                            if (section.title === "Master Data" && "permission" in item) {
+                            if (section.title === "Master Data" && item.permission) {
                               return isAdmin() || hasPermission(item.permission);
                             }
                             return true;
@@ -309,13 +317,16 @@ export function AppSidebar() {
               </p>
             </div>
             <button
+              type="button"
+              aria-label="Log out"
+              title="Log out"
               className="p-1.5 rounded-md hover:bg-sidebar-accent transition-colors"
               onClick={() => {
                 logout();
                 navigate("/login");
               }}
             >
-              <LogOut className="h-4 w-4 text-sidebar-muted" />
+              <LogOut className="h-4 w-4 text-sidebar-muted" aria-hidden />
             </button>
           </div>
         </div>

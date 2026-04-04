@@ -1216,7 +1216,7 @@ export default function MasterData() {
                         direction={ruleSortDir}
                         onSort={(k) => {
                           if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          else { setRuleSortKey(k as "type" | "group" | "description" | "status"); setRuleSortDir("asc"); }
                           setRulePage(1);
                         }}
                         className="pl-6"
@@ -1229,7 +1229,7 @@ export default function MasterData() {
                         direction={ruleSortDir}
                         onSort={(k) => {
                           if (ruleSortKey === k) setRuleSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                          else { setRuleSortKey(k as "type" | "group" | "expression" | "status"); setRuleSortDir("asc"); }
+                          else { setRuleSortKey(k as "type" | "group" | "description" | "status"); setRuleSortDir("asc"); }
                           setRulePage(1);
                         }}
                       >
@@ -1530,6 +1530,7 @@ export default function MasterData() {
                   <Label htmlFor="edit-config-type">Config Type</Label>
                   <select
                     id="edit-config-type"
+                    aria-label="Config type"
                     value={editConfigType}
                     onChange={(e) => setEditConfigType(e.target.value)}
                     className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -1626,6 +1627,7 @@ export default function MasterData() {
                         <Label htmlFor="config-type">Config Type</Label>
                         <select
                           id="config-type"
+                          aria-label="Config type"
                           value={newConfigType}
                           onChange={(e) => setNewConfigType(e.target.value)}
                           className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
