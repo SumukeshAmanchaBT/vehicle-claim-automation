@@ -19,6 +19,7 @@ from .digitization_s3 import (
     cleanup_temp_path,
     digitization_doc_local_path,
     list_s3_objects,
+    s3_object_exists,
     presigned_get_url,
     s3_enabled,
     upload_bytes_to_s3,
@@ -969,6 +970,72 @@ def digitization_save_invoice_details(request):
 
     from django.db import transaction
 
+    # Normalize parts_details into a list[dict] BEFORE entering the transaction.
+    # This prevents DRF/serialization quirks (list of strings, ReturnDict, etc.) from skipping inserts.
+    def _coerce_part_item(item: Any) -> dict[str, Any] | None:
+        """
+        Coerce a single parts_details item into a plain dict.
+        Handles:
+        - dict / mapping-like objects
+        - list/tuple of (k,v) pairs
+        - JSON string
+        - python-literal strings like \"({'description': ...})\" (note the parentheses + single quotes)
+        """
+        if item is None:
+            return None
+        if isinstance(item, dict):
+            return item
+        if isinstance(item, (list, tuple)) and all(isinstance(x, (list, tuple)) and len(x) == 2 for x in item):
+            return dict(item)
+
+        if isinstance(item, str):
+            s = item.strip()
+            # unwrap redundant outer parentheses sometimes produced by stringified python literals
+            for _ in range(3):
+                if len(s) >= 2 and s[0] == "(" and s[-1] == ")":
+                    s = s[1:-1].strip()
+                else:
+                    break
+            # First attempt: JSON
+            try:
+                import json as _json
+
+                parsed = _json.loads(s)
+            except Exception:
+                parsed = None
+            # Second attempt: python literal (single quotes)
+            if parsed is None:
+                try:
+                    import ast as _ast
+
+                    parsed = _ast.literal_eval(s)
+                except Exception:
+                    parsed = None
+            # Unwrap single-item tuple/list like ({...},)
+            if isinstance(parsed, (list, tuple)) and len(parsed) == 1 and isinstance(parsed[0], dict):
+                parsed = parsed[0]
+            if isinstance(parsed, dict):
+                return parsed
+            return None
+
+        # Last resort for mapping-like objects
+        try:
+            return dict(item)  # type: ignore[arg-type]
+        except Exception:
+            return None
+
+    normalized_parts: list[dict[str, Any]] = []
+    if isinstance(parts, list):
+        for item in parts:
+            try:
+                coerced = _coerce_part_item(item)
+                if coerced is None:
+                    continue
+                normalized_parts.append(coerced)
+            except Exception:
+                continue
+    parts = normalized_parts
+
     with transaction.atomic():
         obj, created = InvoiceCoreDetails.objects.update_or_create(
             claim_number=claim_number,
@@ -1020,16 +1087,16 @@ def digitization_save_invoice_details(request):
                         # Expected formats:
                         # - digitization/<TEMP>/<filename>
                         # - digitization/classified/<TEMP>/<filename>
-                        parts = current_key.split("/")
-                        if len(parts) >= 3 and parts[0] == "digitization":
-                            if parts[1] == "classified" and len(parts) >= 4:
+                        key_parts = current_key.split("/")
+                        if len(key_parts) >= 3 and key_parts[0] == "digitization":
+                            if key_parts[1] == "classified" and len(key_parts) >= 4:
                                 # digitization/classified/<id>/...
-                                parts[2] = claim_number
-                                new_key = "/".join(parts)
+                                key_parts[2] = claim_number
+                                new_key = "/".join(key_parts)
                             else:
                                 # digitization/<id>/...
-                                parts[1] = claim_number
-                                new_key = "/".join(parts)
+                                key_parts[1] = claim_number
+                                new_key = "/".join(key_parts)
                         if new_key and new_key != current_key:
                             move_s3_object(current_key, new_key)
                             src_doc.file.name = new_key
@@ -1094,23 +1161,31 @@ def digitization_save_invoice_details(request):
 
         # Also de-dupe within the incoming payload itself
         seen_incoming: set[tuple[str, int | None, str | None, str | None]] = set()
+
         for p in parts:
+            # parts are normalized to dicts before transaction, but keep a final safety check
             if not isinstance(p, dict):
                 continue
-            incoming_id = _to_int(p.get("id"))
-            desc_raw = (p.get("description") or "")
-            desc_norm = str(desc_raw).strip()
-            if desc_norm == "":
+            try:
+                incoming_id = _to_int(p.get("id"))
+                desc_raw = (p.get("description") or "")
+                desc_norm = str(desc_raw).strip()
+                if desc_norm == "":
+                    continue
+                qty_int = _to_int(p.get("quantity"))
+                unit_dec = _to_decimal(p.get("unitPrice"))
+                amt_dec = _to_decimal(p.get("amount"))
+                sig = (
+                    desc_norm.lower(),
+                    qty_int,
+                    str(unit_dec) if unit_dec is not None else None,
+                    str(amt_dec) if amt_dec is not None else None,
+                )
+                if sig in seen_incoming:
+                    continue
+                seen_incoming.add(sig)
+            except Exception:
                 continue
-            sig = (
-                desc_norm.lower(),
-                _to_int(p.get("quantity")),
-                str(_to_decimal(p.get("unitPrice"))) if _to_decimal(p.get("unitPrice")) is not None else None,
-                str(_to_decimal(p.get("amount"))) if _to_decimal(p.get("amount")) is not None else None,
-            )
-            if sig in seen_incoming:
-                continue
-            seen_incoming.add(sig)
 
             # If no id provided, try to match an existing row by signature to avoid duplicates.
             if incoming_id is None and sig in existing_by_signature:
@@ -1118,9 +1193,9 @@ def digitization_save_invoice_details(request):
 
             defaults = {
                 "description": desc_norm[:255] or None,
-                "quantity": sig[1],
-                "unit_price": _to_decimal(p.get("unitPrice")),
-                "amount": _to_decimal(p.get("amount")),
+                "quantity": qty_int,
+                "unit_price": unit_dec,
+                "amount": amt_dec,
                 "updated_by": user_id,
             }
 
@@ -1133,13 +1208,18 @@ def digitization_save_invoice_details(request):
                     existing_by_signature[sig] = incoming_id
                     continue
 
-            created_obj = InvoicePartDetails.objects.create(
-                claim_number=obj,
-                created_by=user_id,
-                **defaults,
-            )
-            saved_ids.append(created_obj.id)
-            existing_by_signature[sig] = created_obj.id
+            # Explicitly set the FK column value. This is more robust for managed=False
+            # tables where FK object assignment can behave unexpectedly with existing schemas.
+            try:
+                created_obj = InvoicePartDetails.objects.create(
+                    claim_number_id=claim_number,
+                    created_by=user_id,
+                    **defaults,
+                )
+                saved_ids.append(created_obj.id)
+                existing_by_signature[sig] = created_obj.id
+            except Exception:
+                continue
 
         # Return current parts for UI to keep DB ids
         parts_out: list[dict[str, Any]] = []
@@ -1237,6 +1317,67 @@ def invoice_history_detail(request, claim_number: str):
         "file_url": "",
         "original_filename": "",
     }
+    def _heal_stale_s3_key(doc: DigitizationDocument) -> DigitizationDocument:
+        """
+        If DB still contains an old DIGI-... key but the file was moved to MC...,
+        detect the new key (head_object) and update DB so edit-from-history loads.
+        """
+        if not s3_enabled():
+            return doc
+        try:
+            current_key = str(getattr(doc.file, "name", "") or "")
+            if not current_key or "digitization/" not in current_key:
+                return doc
+            # Only attempt if key contains DIGI- and we have an MC claim_number
+            if "DIGI-" not in current_key or not claim_number:
+                return doc
+
+            parts = current_key.split("/")
+            if len(parts) < 3 or parts[0] != "digitization":
+                return doc
+
+            candidate = current_key
+            if parts[1] == "classified" and len(parts) >= 4:
+                parts[2] = claim_number
+                candidate = "/".join(parts)
+            else:
+                parts[1] = claim_number
+                candidate = "/".join(parts)
+
+            if candidate != current_key and s3_object_exists(candidate):
+                doc.file.name = candidate
+                if doc.complaint_id != claim_number:
+                    doc.complaint_id = claim_number
+                doc.save(update_fields=["complaint_id", "file"])
+        except Exception:
+            return doc
+        return doc
+
+    def _set_document_info_from_doc(doc: DigitizationDocument) -> None:
+        """
+        Populate document_info with a working URL (prefer presigned S3 when enabled).
+        """
+        try:
+            document_info["original_filename"] = getattr(doc, "original_filename", "") or getattr(
+                doc.file, "name", ""
+            ).split("/")[-1]
+        except Exception:
+            document_info["original_filename"] = ""
+
+        # Try the existing helper first
+        try:
+            document_info["file_url"] = build_digitization_file_url(request, doc) or ""
+        except Exception:
+            document_info["file_url"] = ""
+
+        # If S3 is enabled but storage URL isn't directly usable, fall back to presign from key
+        if not document_info.get("file_url") and s3_enabled():
+            try:
+                key = str(getattr(doc.file, "name", "") or "")
+                document_info["file_url"] = presigned_get_url(key) or ""
+            except Exception:
+                pass
+
     try:
         extraction = (
             DigitizationExtraction.objects.filter(claim_number__iexact=claim_number)
@@ -1253,14 +1394,26 @@ def invoice_history_detail(request, claim_number: str):
                 .first()
             )
         if extraction and getattr(extraction, "document", None):
-            doc = extraction.document
-            document_info["original_filename"] = getattr(doc, "original_filename", "") or getattr(
-                doc.file, "name", ""
-            ).split("/")[-1]
-            document_info["file_url"] = build_digitization_file_url(request, doc) or ""
+            doc = _heal_stale_s3_key(extraction.document)
+            _set_document_info_from_doc(doc)
     except Exception:
         # If linkage fails, we still return core + parts.
         pass
+
+    # Fallback: for records where extraction linkage is missing, we still store DigitizationDocument
+    # complaint_id as the extracted claim_number (see save-invoice-details). Use that to locate the file.
+    if not document_info.get("file_url"):
+        try:
+            doc = (
+                DigitizationDocument.objects.filter(complaint_id=claim_number, file__isnull=False)
+                .order_by("-created_date")
+                .first()
+            )
+            if doc:
+                doc = _heal_stale_s3_key(doc)
+                _set_document_info_from_doc(doc)
+        except Exception:
+            pass
 
     return Response(
         {

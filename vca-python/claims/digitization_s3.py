@@ -44,6 +44,18 @@ def presigned_get_url(object_key: str) -> str | None:
         return None
 
 
+def s3_object_exists(object_key: str) -> bool:
+    if not s3_enabled() or not object_key:
+        return False
+    bucket = settings.AWS_STORAGE_BUCKET_NAME
+    client = _s3_client()
+    try:
+        client.head_object(Bucket=bucket, Key=object_key)
+        return True
+    except Exception:
+        return False
+
+
 def list_s3_objects(prefix: str = "digitization/", limit: int = 200) -> list[dict]:
     """
     List objects from S3 (most recent first). Returns dicts with Key/LastModified/Size.
