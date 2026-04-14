@@ -163,9 +163,14 @@ export default function ClaimDigitization() {
     getInvoiceHistoryDetail(editClaim)
       .then(async (res) => {
         let docFileUrl = res.document?.file_url || "";
-        // Normalize relative media URLs like "media/..." to "/media/..." so <img>/<iframe> resolves correctly.
-        if (docFileUrl && !/^https?:\/\//i.test(docFileUrl) && !docFileUrl.startsWith("blob:") && !docFileUrl.startsWith("/")) {
-          docFileUrl = `/${docFileUrl}`;
+        const apiBase = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/api\/?$/i, "");
+        const isHttp = /^https?:\/\//i.test(docFileUrl);
+        const isBlob = docFileUrl.startsWith("blob:");
+        // Normalize relative media URLs so the browser loads from Django (8000), not React (8080).
+        // Examples we may receive: "media/...", "/media/..."
+        if (docFileUrl && !isHttp && !isBlob) {
+          if (!docFileUrl.startsWith("/")) docFileUrl = `/${docFileUrl}`;
+          if (apiBase) docFileUrl = `${apiBase}${docFileUrl}`;
         }
         const docOriginalFilename = res.document?.original_filename || "";
         // If backend doesn't return a filename, infer it from the URL key (works for S3 presigned URLs).
@@ -256,14 +261,21 @@ export default function ClaimDigitization() {
     const makeCandidate = makeModel || vehicleName;
     const split = makeCandidate.split(" ");
 
-    const partsFromKv = Array.isArray(kv.parts) ? kv.parts : null;
+    const rawParts = (kv as any).parts as unknown;
+    const partsFromKv = Array.isArray(rawParts)
+      ? rawParts
+      : rawParts && typeof rawParts === "object"
+        ? [rawParts]
+        : null;
 
-    const fallbackPart: PartItem = {
-      id: `part-${Date.now()}`,
-      description: "PART DESCRIPTION",
-      quantity: "1",
-      unitPrice: "0",
-      amount: "0",
+    const toLooseKey = (k: string) => String(k || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^\w]/g, "");
+
+    const pickFirst = (row: Record<string, unknown>, keys: string[]) => {
+      for (const k of keys) {
+        const v = row[k as keyof typeof row];
+        if (v !== null && v !== undefined && String(v).trim() !== "") return v;
+      }
+      return null;
     };
 
     const mappedParts: PartItem[] =
@@ -272,25 +284,44 @@ export default function ClaimDigitization() {
             .filter((p) => p && typeof p === "object")
             .map((p, idx) => {
               const row = p as Record<string, unknown>;
+              // Normalize keys so we can accept outputs like "Description", "U/Price", "Qty", "Cost", etc.
+              const looseRow: Record<string, unknown> = {};
+              Object.entries(row).forEach(([k, v]) => {
+                looseRow[toLooseKey(k)] = v;
+              });
+
+              const desc = pickFirst(looseRow, [
+                "description",
+                "desc",
+                "part_description",
+                "part",
+                "item",
+                "name",
+                "part_name",
+              ]);
+              const qty = pickFirst(looseRow, ["quantity", "qty", "qnty", "no", "count"]);
+              const unit = pickFirst(looseRow, ["unit_price", "unitprice", "uprice", "rate", "price", "uprice_ss"]);
+              const amt = pickFirst(looseRow, ["amount", "amt", "cost", "total", "line_total", "linetotal"]);
               return {
                 id: `part-${Date.now()}-${idx}`,
                 dbId: typeof row.id === "number" ? row.id : undefined,
-                description: String(row.description ?? "").trim(),
+                description: String(desc ?? "").trim(),
                 quantity:
-                  row.quantity === null || row.quantity === undefined
+                  qty === null || qty === undefined
                     ? ""
-                    : String(row.quantity),
+                    : String(qty),
                 unitPrice:
-                  row.unit_price === null || row.unit_price === undefined
+                  unit === null || unit === undefined
                     ? ""
-                    : String(row.unit_price),
+                    : String(unit),
                 amount:
-                  row.amount === null || row.amount === undefined
+                  amt === null || amt === undefined
                     ? ""
-                    : String(row.amount),
+                    : String(amt),
               };
             })
-        : [fallbackPart];
+            .filter((r) => (r.description || "").trim().length > 0)
+        : [];
 
     return {
       rawData: kv,
