@@ -1,8 +1,10 @@
 from django.urls import path
 
 from .views import (
+    bulk_delete_fnol,
     get_fnol,
     get_claim_evaluation,
+    health_check,
     list_fnol,
     list_fraud_claims,
     login,
@@ -41,8 +43,21 @@ from .digitization_views import (
     invoice_history_detail,
     digitization_files_summary,
 )
+from .phase1_views import (
+    image_fraud_analysis,
+    image_fraud_results,
+    duplicate_candidates,
+    damage_assessment_detailed,
+    total_value,
+)
+from .card_insight_views import (
+    damage_assessment_card_details,
+    damage_assessment_card_refresh,
+    damage_assessment_cards,
+)
 
 urlpatterns = [
+    path("health", health_check, name="health_check"),
     path("login", login, name="login"),
     path("users/", list_users, name="list_users"),
     path("users/create", create_user, name="create_user"),
@@ -57,9 +72,13 @@ urlpatterns = [
     path("fnol/<str:complaint_id>/run-fraud-detection", run_fraud_detection, name="run_fraud_detection"),
     path("fraud-claims", list_fraud_claims, name="list_fraud_claims"),
     path("fnol", list_fnol, name="list_fnol"),
+    path("fnol/bulk-delete/", bulk_delete_fnol, name="bulk_delete_fnol_slash"),
+    path("fnol/bulk-delete", bulk_delete_fnol, name="bulk_delete_fnol"),
     path("fnol/<str:complaint_id>/evaluation", get_claim_evaluation, name="get_claim_evaluation"),
     path("fnol/<str:complaint_id>/recommendation-report/", recommendation_report_pdf, name="recommendation_report_pdf"),
     path("fnol/<str:pk>/", get_fnol, name="get_fnol"),
+    # Same view without trailing slash (avoids 301 redirect when clients do not follow redirects with auth)
+    path("fnol/<str:pk>", get_fnol, name="get_fnol_no_slash"),
 
     # Master tables CRUD
     path("masters/claim-types", claim_type_master_collection, name="claim_type_master_collection"),
@@ -84,4 +103,26 @@ urlpatterns = [
     path("invoice-history", invoice_history_list, name="invoice_history_list"),
     path("invoice-history/<str:claim_number>", invoice_history_detail, name="invoice_history_detail"),
     path("digitization/files-summary", digitization_files_summary, name="digitization_files_summary"),
+
+    # FNOL-scoped: image fraud, damage breakdown, valuation
+    path("fnol/<str:complaint_id>/image-fraud-analysis", image_fraud_analysis, name="image_fraud_analysis"),
+    path("fnol/<str:complaint_id>/image-fraud-results", image_fraud_results, name="image_fraud_results"),
+    path("fnol/<str:complaint_id>/duplicate-candidates", duplicate_candidates, name="duplicate_candidates"),
+    path(
+        "fnol/<str:complaint_id>/damage-assessment/cards/<str:card_key>/refresh",
+        damage_assessment_card_refresh,
+        name="damage_assessment_card_refresh",
+    ),
+    path(
+        "fnol/<str:complaint_id>/damage-assessment/cards/<str:card_key>/details",
+        damage_assessment_card_details,
+        name="damage_assessment_card_details",
+    ),
+    path(
+        "fnol/<str:complaint_id>/damage-assessment/cards",
+        damage_assessment_cards,
+        name="damage_assessment_cards",
+    ),
+    path("fnol/<str:complaint_id>/damage-assessment-detailed", damage_assessment_detailed, name="damage_assessment_detailed"),
+    path("fnol/<str:complaint_id>/total-value", total_value, name="total_value"),
 ]

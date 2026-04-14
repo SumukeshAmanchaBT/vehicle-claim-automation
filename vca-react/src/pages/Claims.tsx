@@ -1,8 +1,24 @@
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { Loader2, FileDown, Plus, Trash2, ZoomIn } from "lucide-react";
+
+import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { AppLayout } from "@/components/layout/AppLayout";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { ClaimsListSkeleton, StatusWrapper } from "@/components/ui/status-wrapper";
 import {
   Table,
   TableBody,
@@ -11,26 +27,38 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { StatusBadge } from "@/components/ui/status-badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
-import { Loader2, ZoomIn, Plus, FileDown } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import {
+  bulkDeleteFnol,
+  deleteFnol,
+  getFnolList,
+  getRecommendationReportPdf,
+  type FnolResponse,
+} from "@/lib/api";
+import {
+  CLAIM_STATUS_META,
+  type ClaimStatusKey,
+  normalizeClaimStatus,
+} from "@/lib/claimStatus";
+import { getApiErrorSummary } from "@/lib/httpClient";
 import { formatDate } from "@/lib/utils";
-import { getFnolList, getRecommendationReportPdf, saveFnol, type FnolResponse } from "@/lib/api";
-import type { FnolPayload } from "@/models/fnol";
 
-type BadgeVariant = "approved" | "pending" | "rejected" | "processing" | "default";
+type DisplayClaim = {
+  id: string;
+  claimNumber: string;
+  policyNumber: string;
+  customerName: string;
+  vehicleInfo: string;
+  claimRequestedDate?: string | null;
+  claimType: string;
+  estimatedAmount: number;
+  statusKey: ClaimStatusKey;
+};
 
 function ClaimReportPdfButton({ complaintId }: { complaintId: string }) {
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+
   const handleDownload = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -43,13 +71,21 @@ function ClaimReportPdfButton({ complaintId }: { complaintId: string }) {
       a.download = `Motor_Claim_Recommendation_Report_${complaintId}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-      toast({ title: "Report downloaded", description: "Recommendation report PDF has been downloaded." });
+      toast({
+        title: "Report downloaded",
+        description: "Recommendation report PDF has been downloaded.",
+      });
     } catch {
-      toast({ title: "Download failed", description: "Could not generate recommendation report.", variant: "destructive" });
+      toast({
+        title: "Download failed",
+        description: "Could not generate recommendation report.",
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
   };
+
   return (
     <Button
       variant="ghost"
@@ -57,235 +93,105 @@ function ClaimReportPdfButton({ complaintId }: { complaintId: string }) {
       onClick={handleDownload}
       disabled={loading}
       title="Generate Recommendation Report (PDF)"
+      aria-label={`Download recommendation report for ${complaintId}`}
     >
-      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}
+      {loading ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <FileDown className="h-4 w-4" />
+      )}
     </Button>
   );
 }
 
-type ClaimStatusKey =
-  | "auto_approved"
-  | "fraudulent"
-  | "manual_review"
-  | "open"
-  | "pending"
-  | "pending_damage_detection";
-
-const CLAIM_STATUS_META: Record<
-  ClaimStatusKey,
-  { label: string; badge: BadgeVariant }
-> = {
-  auto_approved: { label: "Recommendation shared", badge: "approved" },
-  fraudulent: { label: "Business Rule Validation-fail", badge: "rejected" },
-  manual_review: { label: "Recommendation shared", badge: "pending" },
-  open: { label: "FNOL", badge: "processing" },
-  pending: { label: "Pending", badge: "pending" },
-  pending_damage_detection: {
-    label: "Business Rule Validation-pass",
-    badge: "pending",
-  },
-};
-
-/** Thai first names for random mock insured. */
-const THAI_FIRST_NAMES = [
-  "Somchai", "Anan", "Kanya", "Prasert", "Sakda", "Chaiwat", "Pim", "Noi",
-  "Thanawat", "Siriporn", "Niran", "Wasan", "Sombat", "Duangjai", "Surasak",
-  "Nattaya", "Wichai", "Rattana", "Somsak", "Yupadee", "Sukhumvit", "Malee",
-];
-
-/** Thai last/family names for random mock insured. */
-const THAI_LAST_NAMES = [
-  "Vejjajiva", "Wongchai", "Srisuk", "Chaiyaporn", "Rattanakul", "Boonmee",
-  "Srisombat", "Thongmee", "Jaidee", "Sombat", "Pongprayoon", "Sutthirat",
-  "Chanthara", "Phongpaichit", "Siriwan", "Nakorn", "Prasertsuk", "Wongsa",
-];
-
-/** Thailand-style policy number prefixes. */
-const THAI_POLICY_PREFIXES = ["MTR", "MTL", "PA", "CAR", "MOT"];
-
-function randomChoice<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-function randomThaiName(): string {
-  return `${randomChoice(THAI_FIRST_NAMES)} ${randomChoice(THAI_LAST_NAMES)}`;
-}
-
-/** Generate a Thailand-style policy number (e.g. MTR-2567-00012345, MTL-67-084721). */
-function randomThaiPolicyNumber(): string {
-  const prefix = randomChoice(THAI_POLICY_PREFIXES);
-  const year = 2567 + Math.floor(Math.random() * 3); // 2567–2569 (BE)
-  const shortYear = year % 100;
-  const num = String(Math.floor(100000 + Math.random() * 900000));
-  if (prefix === "MTR" || prefix === "PA") {
-    return `${prefix}-${year}-${num}`;
-  }
-  return `${prefix}-${shortYear}-${num}`;
-}
-
-/** Coverage types for random default. */
-const COVERAGE_TYPES = ["Type 2+", "Type 1", "Type 3+"] as const;
-
-/** Default incident description when no previous claims / for Fetch FNOL Data. */
-const DEFAULT_LOSS_DESCRIPTION =
-  "Front-end collision resulting in major damage to hood, bumper, and driver-side front quarter panel.";
-
-/** Pick a random incident description from previous claims, or default. */
-function randomIncidentDescription(previousClaims: FnolResponse[]): string {
-  const descriptions = previousClaims
-    .map((c) => c.raw_response?.incident?.loss_description ?? c.incident_description ?? "")
-    .filter((s) => s.trim().length > 0);
-  if (descriptions.length === 0) return DEFAULT_LOSS_DESCRIPTION;
-  return randomChoice(descriptions);
-}
-
-/** Build one mock FNOL payload with a dynamic claim_id (used once per "Fetch FNOL Data" click). */
-function getMockFnolPayload(claimId: string, previousClaims: FnolResponse[] = []): FnolPayload {
-  const now = new Date();
-  const policyNum = randomThaiPolicyNumber();
-  const driverName = randomThaiName();
-  return {
-    claim_id: claimId,
-    policy: {
-      policy_number: policyNum,
-      policy_status: "Active",
-      coverage_type: randomChoice([...COVERAGE_TYPES]),
-      policy_start_date: "2026-01-01",
-      policy_end_date: "2026-12-31",
-    },
-    vehicle: {
-      registration_number: "KA01AB1234",
-      make: "Hyundai",
-      model: "Creta",
-      year: 2023,
-    },
-    incident: {
-      date_time_of_loss: now.toISOString(),
-      loss_description: DEFAULT_LOSS_DESCRIPTION,
-      claim_type: "Own Damage",
-      estimated_amount: 45000,
-      excess_amount: 7000,
-    },
-    claimant: {
-      driver_name: driverName,
-      driving_license_number: "DL-001-2020",
-      license_valid_till: "2028-05-15",
-    },
-    documents: {
-      rc_copy_uploaded: true,
-      dl_copy_uploaded: true,
-      photos_uploaded: true,
-      fir_uploaded: true,
-      photos: ["CLM_D002_1.jpg", "CLM_D002_2.jpg"],
-    },
-    history: { previous_claims_last_12_months: 0 },
-  };
-}
-
-/** Derive next claim ID from existing claims (e.g. CLM-001, CLM-002, ...). */
-function getNextClaimId(claims: FnolResponse[]): string {
-  const prefix = "CLM-";
-  const numbers = claims
-    .map((c) => {
-      const id = c.complaint_id || "";
-      if (!id.startsWith(prefix)) return 0;
-      const num = parseInt(id.slice(prefix.length), 10);
-      return Number.isNaN(num) ? 0 : num;
-    })
-    .filter((n) => n > 0);
-  const nextNum = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
-  // Keep three-digit sequence like CLM-019, CLM-020, CLM-021...
-  return `${prefix}${String(nextNum).padStart(3, "0")}`;
-}
-
-function normalizeStatus(raw?: string | null): ClaimStatusKey {
-  const value = (raw || "").trim().toLowerCase();
-  if (value === "recommendation shared" || value === "closed damage detection") {
-    return "auto_approved";
-  }
-  if (
-    value === "business rule validation-fail" ||
-    value === "fraudulent"
-  ) {
-    return "fraudulent";
-  }
-  if (value === "manual review" || value === "manual_review") {
-    return "manual_review";
-  }
-  if (
-    value === "fnol" ||
-    value === "open" ||
-    value === "open-fnol" ||
-    value === "open to fnol"
-  ) {
-    return "open";
-  }
-  if (
-    value === "business rule validation-pass" ||
-    value === "pending damage detection" ||
-    value === "pending_damage_detection"
-  ) {
-    return "pending_damage_detection";
-  }
-  // Fallback
-  return "pending";
-}
-
-function fnolToDisplay(fnol: FnolResponse) {
-  const r = fnol.raw_response;
-  const vehicle = r?.vehicle
-    ? `${r.vehicle.year} ${r.vehicle.make} ${r.vehicle.model}`
+function fnolToDisplay(fnol: FnolResponse): DisplayClaim {
+  const response = fnol.raw_response;
+  const vehicle = response?.vehicle
+    ? `${response.vehicle.year} ${response.vehicle.make} ${response.vehicle.model}`
     : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
       ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
       : "—";
-  const normalizedStatus = normalizeStatus((fnol as { status?: string }).status);
+  const normalizedStatus = normalizeClaimStatus(
+    (fnol as { status?: string }).status
+  );
 
   return {
     id: fnol.complaint_id,
-    claimNumber: r?.claim_id || fnol.complaint_id || `FNOL-${fnol.id}`,
-    policyNumber: r?.policy?.policy_number || fnol.policy_number || "—",
-    customerName: r?.claimant?.driver_name || fnol.policy_holder_name || "—",
+    claimNumber: response?.claim_id || fnol.complaint_id || `FNOL-${fnol.id}`,
+    policyNumber: response?.policy?.policy_number || fnol.policy_number || "—",
+    customerName:
+      response?.claimant?.driver_name || fnol.policy_holder_name || "—",
     vehicleInfo: vehicle,
-    claimRequestedDate: fnol.created_date || fnol.incident_date_time || r?.incident?.date_time_of_loss,
-    claimType: r?.incident?.claim_type || fnol.incident_type || "—",
-    estimatedAmount: r?.incident?.estimated_amount ?? 0,
+    claimRequestedDate:
+      fnol.created_date ||
+      fnol.incident_date_time ||
+      response?.incident?.date_time_of_loss,
+    claimType: response?.incident?.claim_type || fnol.incident_type || "—",
+    estimatedAmount: response?.incident?.estimated_amount ?? 0,
     statusKey: normalizedStatus,
   };
 }
 
+function toggleSelection(current: string[], claimId: string, checked: boolean): string[] {
+  if (checked) {
+    return current.includes(claimId) ? current : [...current, claimId];
+  }
+  return current.filter((id) => id !== claimId);
+}
+
 export default function Claims() {
   const { toast } = useToast();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const statusFilter = searchParams.get("status") || "all";
   const [search, setSearch] = useState("");
   const [claims, setClaims] = useState<FnolResponse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [fetchFnolLoading, setFetchFnolLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    getFnolList()
-      .then((data) => {
-        console.log("Fetched claims:", data);
-        if (!cancelled) setClaims(data);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load claims");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  const displayClaims = useMemo(() => claims.map(fnolToDisplay), [claims]);
+  const [error, setError] = useState<unknown>(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [selectedClaimIds, setSelectedClaimIds] = useState<string[]>([]);
+  const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
 
   type ClaimSortKey = "claimNumber" | "policy" | "customer" | "type" | "date" | "status";
   const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getFnolList()
+      .then((data) => {
+        if (!cancelled) {
+          setClaims(data);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setClaims([]);
+          setError(err);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  const errorSummary = error ? getApiErrorSummary(error) : null;
+
+  const displayClaims = useMemo(() => claims.map(fnolToDisplay), [claims]);
+  const claimsById = useMemo(
+    () => new Map(displayClaims.map((claim) => [claim.id, claim])),
+    [displayClaims]
+  );
 
   const filteredClaims = useMemo(() => {
     let list = displayClaims.filter((claim) => {
@@ -299,6 +205,7 @@ export default function Claims() {
         claim.statusKey === (statusFilter as ClaimStatusKey);
       return matchesSearch && matchesStatus;
     });
+
     if (sortKey) {
       list = [...list].sort((a, b) => {
         let cmp = 0;
@@ -316,7 +223,9 @@ export default function Claims() {
             cmp = a.claimType.localeCompare(b.claimType);
             break;
           case "date":
-            cmp = new Date(a.claimRequestedDate).getTime() - new Date(b.claimRequestedDate).getTime();
+            cmp =
+              new Date(a.claimRequestedDate || "").getTime() -
+              new Date(b.claimRequestedDate || "").getTime();
             break;
           case "status":
             cmp = a.statusKey.localeCompare(b.statusKey);
@@ -335,49 +244,142 @@ export default function Claims() {
     return filteredClaims.slice(start, start + pageSize);
   }, [filteredClaims, page, pageSize]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredClaims.length / pageSize) || 1);
+  const visibleClaimIds = useMemo(
+    () => paginatedClaims.map((claim) => claim.id),
+    [paginatedClaims]
+  );
+  const allVisibleSelected =
+    visibleClaimIds.length > 0 &&
+    visibleClaimIds.every((claimId) => selectedClaimIds.includes(claimId));
+  const someVisibleSelected =
+    visibleClaimIds.some((claimId) => selectedClaimIds.includes(claimId)) &&
+    !allVisibleSelected;
+  const deleteTargetClaims = useMemo(
+    () =>
+      deleteTargetIds
+        .map((claimId) => claimsById.get(claimId))
+        .filter((claim): claim is DisplayClaim => Boolean(claim)),
+    [claimsById, deleteTargetIds]
+  );
+
+  useEffect(() => {
+    setSelectedClaimIds((current) =>
+      current.filter((claimId) => claimsById.has(claimId))
+    );
+  }, [claimsById]);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
   const handleSort = (key: string) => {
-    const k = key as ClaimSortKey;
-    if (sortKey === k) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(k);
-      setSortDir(k === "date" ? "desc" : "asc");
+    const nextKey = key as ClaimSortKey;
+    if (sortKey === nextKey) {
+      setSortDir((direction) => (direction === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(nextKey);
+      setSortDir(nextKey === "date" ? "desc" : "asc");
     }
     setPage(1);
   };
 
-  const handleStatusChange = (value: string) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value === "all") next.delete("status");
-      else next.set("status", value);
-      return next;
-    });
+  const openDeleteDialog = (claimIds: string[]) => {
+    const normalizedIds = Array.from(
+      new Set(
+        claimIds
+          .map((claimId) => claimId.trim())
+          .filter((claimId) => claimsById.has(claimId))
+      )
+    );
+    if (normalizedIds.length === 0) {
+      return;
+    }
+    setDeleteTargetIds(normalizedIds);
+    setDeleteDialogOpen(true);
   };
 
-  const handleFetchFnolData = async () => {
-    setFetchFnolLoading(true);
-    try {
-      const claimId = getNextClaimId(claims);
-      const payload = getMockFnolPayload(claimId, claims);
-      await saveFnol(payload);
-      const data = await getFnolList();
-      setClaims(data);
-      setError(null);
-      toast({
-        title: "FNOL data saved",
-        description: `Claim ${claimId} saved to fnol_claims. List refreshed.`,
+  const closeDeleteDialog = () => {
+    if (deletePending) {
+      return;
+    }
+    setDeleteDialogOpen(false);
+    setDeleteTargetIds([]);
+  };
+
+  const handleToggleVisibleClaims = (checked: boolean | "indeterminate") => {
+    if (checked === true) {
+      setSelectedClaimIds((current) => {
+        const next = new Set(current);
+        visibleClaimIds.forEach((claimId) => next.add(claimId));
+        return Array.from(next);
       });
+      return;
+    }
+    setSelectedClaimIds((current) =>
+      current.filter((claimId) => !visibleClaimIds.includes(claimId))
+    );
+  };
+
+  const handleDelete = async () => {
+    if (deleteTargetIds.length === 0) {
+      return;
+    }
+
+    setDeletePending(true);
+    try {
+      const deletedIds =
+        deleteTargetIds.length === 1
+          ? [(await deleteFnol(deleteTargetIds[0])).complaint_id]
+          : (await bulkDeleteFnol(deleteTargetIds)).deleted_ids;
+
+      if (deletedIds.length === 0) {
+        toast({
+          title: "Nothing deleted",
+          description: "The selected claims could not be found anymore.",
+          variant: "destructive",
+        });
+      } else {
+        setClaims((current) =>
+          current.filter((claim) => !deletedIds.includes(claim.complaint_id))
+        );
+        setSelectedClaimIds((current) =>
+          current.filter((claimId) => !deletedIds.includes(claimId))
+        );
+        toast({
+          title: deletedIds.length === 1 ? "Claim deleted" : "Claims deleted",
+          description:
+            deletedIds.length === 1
+              ? "The claim and its saved analysis records were removed."
+              : `${deletedIds.length} claims and their saved analysis records were removed.`,
+        });
+      }
+
+      setDeleteDialogOpen(false);
+      setDeleteTargetIds([]);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to save FNOL data";
+      const description =
+        err instanceof Error ? err.message : "Could not delete the selected claims.";
       toast({
+        title: "Delete failed",
+        description,
         variant: "destructive",
-        title: "Fetch FNOL Data failed",
-        description: message,
       });
     } finally {
-      setFetchFnolLoading(false);
+      setDeletePending(false);
     }
   };
+
+  const deleteDialogTitle =
+    deleteTargetIds.length === 1 ? "Delete claim" : "Delete selected claims";
+  const deleteDialogDescription =
+    deleteTargetIds.length === 1
+      ? `This will permanently remove ${deleteTargetClaims[0]?.claimNumber || "the selected claim"} and its saved evaluations, image screening, duplicate matches, damage breakdown, valuation, and supporting claim records.`
+      : `This will permanently remove ${deleteTargetIds.length} selected claims and their saved evaluations, image screening, duplicate matches, damage breakdown, valuation, and supporting claim records.`;
+  const deleteDialogActionLabel =
+    deleteTargetIds.length === 1 ? "Delete claim" : "Delete claims";
 
   return (
     <AppLayout title="Claims List" subtitle="Manage and process insurance claims">
@@ -385,81 +387,113 @@ export default function Claims() {
         <TableToolbar
           searchPlaceholder="Search claims, policies, customers..."
           searchValue={search}
-          onSearchChange={(v) => { setSearch(v); setPage(1); }}
-          // filters={
-          //   <Select value={statusFilter} onValueChange={(v) => { handleStatusChange(v); setPage(1); }}>
-          //     <SelectTrigger className="w-[180px]">
-          //       <SelectValue placeholder="Status" />
-          //     </SelectTrigger>
-          //     <SelectContent>
-          //       <SelectItem value="all">All Status</SelectItem>
-          //       <SelectItem value="open">Open</SelectItem>
-          //       <SelectItem value="pending">Pending</SelectItem>
-          //       <SelectItem value="fraudulent">Fraudulent</SelectItem>
-          //       <SelectItem value="pending_damage_detection">
-          //         Pending Damage Detection
-          //       </SelectItem>
-          //       <SelectItem value="manual_review">Manual Review</SelectItem>
-                
-                
-          //     </SelectContent>
-          //   </Select>
-          //}
-          // primaryAction={(
-          //   <Button asChild>
-          //     <Link to="/claims/new">
-          //       <Plus className="mr-2 h-4 w-4" />
-          //       FNOL Response
-          //     </Link>
-          //   </Button>
-          // )}
-
-          primaryAction={(
-            <Button
-              onClick={handleFetchFnolData}
-              disabled={fetchFnolLoading}
-            >
-              {fetchFnolLoading ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Plus className="mr-2 h-4 w-4" />
-              )}
-              Fetch FNOL Data
-            </Button>
-          )}
+          onSearchChange={(value) => {
+            setSearch(value);
+            setPage(1);
+          }}
+          primaryAction={
+            <>
+              {selectedClaimIds.length > 0 ? (
+                <Button
+                  variant="destructive"
+                  onClick={() => openDeleteDialog(selectedClaimIds)}
+                  disabled={deletePending}
+                >
+                  {deletePending && deleteTargetIds.length > 1 ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  Delete selected ({selectedClaimIds.length})
+                </Button>
+              ) : null}
+              <Button asChild>
+                <Link to="/claims/new">
+                  <Plus className="mr-2 h-4 w-4" />
+                  Submit FNOL
+                </Link>
+              </Button>
+            </>
+          }
         />
 
-        {/* Claims Table */}
         <Card className="card-elevated overflow-hidden border-none">
-          {loading ? (
-            <div className="flex items-center justify-center py-16">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : error ? (
-            <div className="py-16 text-center">
-              <p className="text-destructive">{error}</p>
-              <p className="text-sm text-muted-foreground mt-2">
-                Ensure the backend is running
-              </p>
-            </div>
-          ) : (
+          <StatusWrapper
+            status={loading ? "loading" : errorSummary ? "error" : "success"}
+            loading={<ClaimsListSkeleton />}
+            loadingTitle="Loading claims"
+            loadingDescription="Fetching the claims table, latest evaluation state, and stored vehicle photos."
+            errorTitle="Could not load claims"
+            error={errorSummary}
+            onRetry={() => setReloadToken((value) => value + 1)}
+          >
             <>
               <Table>
                 <TableHeader className="table-header-bg">
                   <TableRow className="bg-muted/50 hover:bg-muted/50">
-                    <SortableTableHead sortKey="claimNumber" currentSortKey={sortKey} direction={sortDir} onSort={handleSort} className="pl-6">Claim No #</SortableTableHead>
-                    <SortableTableHead sortKey="policy" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Policy No</SortableTableHead>
-                    <SortableTableHead sortKey="customer" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Insured /Customer</SortableTableHead>
-                    <SortableTableHead sortKey="type" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Incident Type</SortableTableHead>
-                    <SortableTableHead sortKey="date" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Notification Date</SortableTableHead>
-                    <SortableTableHead sortKey="status" currentSortKey={sortKey} direction={sortDir} onSort={handleSort}>Claim Stage</SortableTableHead>
+                    <TableHead className="w-12 pl-6">
+                      <Checkbox
+                        aria-label="Select all visible claims"
+                        checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
+                        disabled={visibleClaimIds.length === 0 || deletePending}
+                        onCheckedChange={handleToggleVisibleClaims}
+                      />
+                    </TableHead>
+                    <SortableTableHead
+                      sortKey="claimNumber"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Claim No #
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="policy"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Policy No
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="customer"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Insured /Customer
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="type"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Incident Type
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="date"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Notification Date
+                    </SortableTableHead>
+                    <SortableTableHead
+                      sortKey="status"
+                      currentSortKey={sortKey}
+                      direction={sortDir}
+                      onSort={handleSort}
+                    >
+                      Claim Stage
+                    </SortableTableHead>
                     <TableHead className="pr-6 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredClaims.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
+                      <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
                         No claims found.{" "}
                         <Link to="/claims/new" className="text-primary hover:underline">
                           Submit a new claim
@@ -467,53 +501,79 @@ export default function Claims() {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    paginatedClaims.map((claim) => (
-                      <TableRow key={claim.id} className="group">
-                        <TableCell className="pl-6">
-                        <Link
-                          to={`/claims/${claim.id}`}
-                          className="font-medium text-primary hover:underline"
-                        >
-                          {claim.claimNumber}
-                        </Link>
-                        </TableCell>
-                        <TableCell className="font-mono text-sm">
-                          {claim.policyNumber}
-                        </TableCell>
-                        <TableCell>
-                          <div>
-                            <p className="font-medium">{claim.customerName}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {claim.vehicleInfo}
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>{claim.claimType}</TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {formatDate(claim.claimRequestedDate) || "—"}
-                        </TableCell>
-                        {/* <TableCell className="font-medium">
-                          {formatCurrency(claim.estimatedAmount)}
-                        </TableCell> */}
-                        <TableCell>
-                          <StatusBadge status={CLAIM_STATUS_META[claim.statusKey].badge}>
-                            {CLAIM_STATUS_META[claim.statusKey].label}
-                          </StatusBadge>
-                        </TableCell>
-                        <TableCell className="pr-6 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            {claim.statusKey === "auto_approved" && (
-                              <ClaimReportPdfButton complaintId={claim.id} />
-                            )}
-                            <Button variant="ghost" size="icon" asChild>
-                              <Link to={`/claims/${claim.id}`} title="View claim">
-                                <ZoomIn className="h-4 w-4" />
-                              </Link>
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))
+                    paginatedClaims.map((claim) => {
+                      const selected = selectedClaimIds.includes(claim.id);
+                      return (
+                        <TableRow key={claim.id} className="group" data-state={selected ? "selected" : undefined}>
+                          <TableCell className="pl-6">
+                            <Checkbox
+                              aria-label={`Select claim ${claim.claimNumber}`}
+                              checked={selected}
+                              disabled={deletePending}
+                              onCheckedChange={(checked) => {
+                                setSelectedClaimIds((current) =>
+                                  toggleSelection(current, claim.id, checked === true)
+                                );
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Link
+                              to={`/claims/${claim.id}`}
+                              className="font-medium text-primary hover:underline"
+                            >
+                              {claim.claimNumber}
+                            </Link>
+                          </TableCell>
+                          <TableCell className="font-mono text-sm">
+                            {claim.policyNumber}
+                          </TableCell>
+                          <TableCell>
+                            <div>
+                              <p className="font-medium">{claim.customerName}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {claim.vehicleInfo}
+                              </p>
+                            </div>
+                          </TableCell>
+                          <TableCell>{claim.claimType}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {formatDate(claim.claimRequestedDate) || "—"}
+                          </TableCell>
+                          <TableCell>
+                            <StatusBadge status={CLAIM_STATUS_META[claim.statusKey].badge}>
+                              {CLAIM_STATUS_META[claim.statusKey].label}
+                            </StatusBadge>
+                          </TableCell>
+                          <TableCell className="pr-6 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              {claim.statusKey === "auto_approved" ? (
+                                <ClaimReportPdfButton complaintId={claim.id} />
+                              ) : null}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                title={`Delete claim ${claim.claimNumber}`}
+                                aria-label={`Delete claim ${claim.claimNumber}`}
+                                disabled={deletePending}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  openDeleteDialog([claim.id]);
+                                }}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                              <Button variant="ghost" size="icon" asChild>
+                                <Link to={`/claims/${claim.id}`} title="View claim">
+                                  <ZoomIn className="h-4 w-4" />
+                                </Link>
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>
@@ -522,13 +582,64 @@ export default function Claims() {
                 page={page}
                 pageSize={pageSize}
                 onPageChange={setPage}
-                onPageSizeChange={(size) => { setPageSize(size); setPage(1); }}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
                 itemLabel="claims"
               />
             </>
-          )}
+          </StatusWrapper>
         </Card>
       </div>
+
+      <AlertDialog
+        open={deleteDialogOpen}
+        onOpenChange={(open) => {
+          if (open) {
+            setDeleteDialogOpen(true);
+            return;
+          }
+          closeDeleteDialog();
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{deleteDialogTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteDialogDescription}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteTargetClaims.length > 1 ? (
+            <div className="rounded-md border bg-muted/30 p-3 text-sm text-muted-foreground">
+              <p className="font-medium text-foreground">Selected claims</p>
+              <p>{deleteTargetClaims.map((claim) => claim.claimNumber).join(", ")}</p>
+            </div>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={closeDeleteDialog} disabled={deletePending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDelete();
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deletePending}
+            >
+              {deletePending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                deleteDialogActionLabel
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppLayout>
   );
 }

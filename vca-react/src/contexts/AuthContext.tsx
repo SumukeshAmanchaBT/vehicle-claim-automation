@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, ReactNode, useEffect, useCallback } from "react";
+import axios from "axios";
 import type { LoginUser } from "@/services/authService";
 import { getCurrentUserMe, type CurrentUserMe } from "@/services/userService";
+import { VCA_SESSION_EXPIRED_EVENT } from "@/lib/authEvents";
 
 interface AuthContextValue {
   user: LoginUser | null;
@@ -26,14 +28,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const storedUser = localStorage.getItem("vca_user");
-    const storedToken = localStorage.getItem("vca_token");
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
+    let storedToken = localStorage.getItem("vca_token");
+    if (storedUser && !storedToken) {
+      localStorage.removeItem("vca_user");
     }
-    if (storedToken) {
-      setToken(storedToken);
+    if (storedToken && !localStorage.getItem("vca_user")) {
+      localStorage.removeItem("vca_token");
+      storedToken = null;
     }
+    const u = localStorage.getItem("vca_user");
+    const t = localStorage.getItem("vca_token");
+    if (u) {
+      try {
+        setUser(JSON.parse(u));
+      } catch {
+        localStorage.removeItem("vca_user");
+      }
+    }
+    if (t) setToken(t);
     setInitializing(false);
+  }, []);
+
+  useEffect(() => {
+    const onExpired = () => {
+      setUser(null);
+      setToken(null);
+      setMe(null);
+    };
+    window.addEventListener(VCA_SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(VCA_SESSION_EXPIRED_EVENT, onExpired);
   }, []);
 
   useEffect(() => {
@@ -43,7 +66,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     getCurrentUserMe()
       .then(setMe)
-      .catch(() => setMe(null));
+      .catch((err) => {
+        setMe(null);
+        if (axios.isAxiosError(err) && err.response?.status === 401) {
+          setUser(null);
+          setToken(null);
+          localStorage.removeItem("vca_user");
+          localStorage.removeItem("vca_token");
+        }
+      });
   }, [token]);
 
   const login = (nextUser: LoginUser, nextToken: string) => {
@@ -61,17 +92,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem("vca_token");
   };
 
-  /** True only if this permission is actually assigned to the user's role (no auto-grant for Admin). */
+  /** Matches backend core.permissions: admin users bypass permission list; others need role permission. */
+  const isAdmin = useCallback(() => {
+    if (!me) return false;
+    if (me.is_staff || me.is_superuser) return true;
+    return me.role?.name?.toLowerCase() === "admin";
+  }, [me]);
+
   const hasPermission = useCallback(
     (codename: string) => {
       if (!me) return false;
+      if (me.is_staff || me.is_superuser || me.role?.name?.toLowerCase() === "admin") return true;
       return me.permissions?.some((p) => p.codename === codename) ?? false;
     },
-    [me]
-  );
-
-  const isAdmin = useCallback(
-    () => me?.role?.name?.toLowerCase() === "admin",
     [me]
   );
 

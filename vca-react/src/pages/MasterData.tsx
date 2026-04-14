@@ -18,6 +18,7 @@ import {
 import { useToast } from "@/components/ui/use-toast";
 import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { Plus, Edit2, Trash2, Settings2 } from "lucide-react";
+import { formatCurrency } from "@/lib/market";
 import {
   Dialog,
   DialogContent,
@@ -1747,7 +1748,9 @@ export default function MasterData() {
                             {config.config_key}
                           </TableCell>
                           <TableCell>{config.config_name}</TableCell>
-                          <TableCell className="max-w-[120px] truncate">฿ {Number(config.config_value.replace(/\D/g, '')).toLocaleString()}</TableCell>
+                          <TableCell className="max-w-[120px] truncate">
+                            {formatCurrency(Number(config.config_value.replace(/\D/g, "")) || 0)}
+                          </TableCell>
                           <TableCell>
                             <Switch
                               checked={config.is_active}

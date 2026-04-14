@@ -149,3 +149,64 @@ class PricingConfigSerializer(serializers.ModelSerializer):
             "updated_by",
         ]
         read_only_fields = ["config_id", "created_date"]
+
+
+class DamageAssessmentCardSummarySerializer(serializers.Serializer):
+    """Outbound shape for one damage-assessment summary card (analyzer-driven)."""
+
+    card_key = serializers.CharField()
+    title = serializers.CharField()
+    headline = serializers.CharField(allow_blank=True)
+    status = serializers.CharField()
+    primary_metric = serializers.JSONField()
+    secondary_metrics = serializers.ListField(
+        child=serializers.JSONField(),
+        required=False,
+        default=list,
+    )
+    view_details_enabled = serializers.BooleanField()
+    last_generated_at = serializers.CharField(
+        allow_null=True, required=False, allow_blank=True
+    )
+    caveats = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        default=list,
+    )
+
+
+class DamageAssessmentCardsResponseSerializer(serializers.Serializer):
+    complaint_id = serializers.CharField()
+    cards = DamageAssessmentCardSummarySerializer(many=True)
+
+
+class DamageAssessmentCardDetailsSerializer(serializers.Serializer):
+    """Outbound shape for drawer / detail payload for one card."""
+
+    complaint_id = serializers.CharField()
+    card_key = serializers.CharField()
+    title = serializers.CharField()
+    headline = serializers.CharField(allow_blank=True)
+    status = serializers.CharField()
+    confidence = serializers.JSONField()
+    claim_context = serializers.JSONField()
+    metrics = serializers.ListField(child=serializers.JSONField())
+    evidence = serializers.ListField(child=serializers.JSONField())
+    caveats = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        default=list,
+    )
+    unsupported_fields = serializers.ListField(
+        child=serializers.CharField(allow_blank=True),
+        required=False,
+        default=list,
+    )
+    raw_evidence_bundle = serializers.JSONField(required=False)
+    narrative = serializers.JSONField(
+        required=False
+    )  # Prompt 3 shape: summary, why_it_matters, key_takeaways, recommended_attention
+    source_snapshot_hash = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
+    insight = serializers.JSONField(required=False, allow_null=True)

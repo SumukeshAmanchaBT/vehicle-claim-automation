@@ -25,13 +25,6 @@ def _get_username(request):
     return getattr(getattr(request, "user", None), "username", None) or "api_user"
 
 
-def _is_admin(user):
-    return is_admin(user)
-
-
-def _has_permission(user, codename):
-    return has_permission(user, codename)
-
 
 # ---------- Role APIs ----------
 
@@ -183,6 +176,8 @@ def current_user_me(request):
         "first_name": user.first_name,
         "last_name": user.last_name,
         "is_active": user.is_active,
+        "is_staff": bool(getattr(user, "is_staff", False)),
+        "is_superuser": bool(getattr(user, "is_superuser", False)),
         "role": role_data,
         "permissions": perms,
     })

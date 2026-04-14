@@ -45,6 +45,7 @@ coverage.xml
 # 🌍 Environment variables
 .env
 .env.*
+!.env.example
 *.env
 
 # 🐍 Virtual environments
@@ -83,7 +84,12 @@ instance/
 
 # 🧾 SQLite DB
 *.sqlite3
+*.sqlite3-*
 *.db
+*.bak-*
+
+# 🧪 Generated validation / seed outputs
+demo_outputs/
 
 # 🖥️ OS files
 .DS_Store

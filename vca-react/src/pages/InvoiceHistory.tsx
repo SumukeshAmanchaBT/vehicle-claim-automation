@@ -1,73 +1,91 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, Pencil } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DataTablePagination, TableToolbar } from "@/components/data-table";
+import { TablePageSkeleton, StatusWrapper } from "@/components/ui/status-wrapper";
 import { listInvoiceHistory, type InvoiceHistoryItem } from "@/lib/api";
-import { useToast } from "@/components/ui/use-toast";
-import type { AxiosError } from "axios";
+import { getApiErrorSummary } from "@/lib/httpClient";
 
 export default function InvoiceHistory() {
   const navigate = useNavigate();
-  const { toast } = useToast();
   const [q, setQ] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   const [items, setItems] = useState<InvoiceHistoryItem[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
-  const loadList = async (search?: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await listInvoiceHistory({ q: search || "" });
-      setItems(res.items || []);
-      setPage(1);
-    } catch (e) {
-      const err = e as AxiosError<any>;
-      const msg = err?.response?.data?.error || "Failed to load invoice history.";
-      setError(msg);
-      toast({ title: "Error", description: msg, variant: "destructive" });
-    } finally {
-      setLoading(false);
-    }
-  };
+  const loadList = useCallback(
+    (search: string) => {
+      let cancelled = false;
+      setLoading(true);
+      setError(null);
+      listInvoiceHistory({ q: search })
+        .then((res) => {
+          if (!cancelled) {
+            setItems(res.items || []);
+            setPage(1);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+      return () => { cancelled = true; };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [reloadToken],
+  );
 
   useEffect(() => {
-    loadList("");
+    return loadList(q);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [reloadToken]);
+
+  const errorSummary = error ? getApiErrorSummary(error) : null;
 
   const paginatedItems = useMemo(() => {
+    const filtered = items.filter((inv) =>
+      !q ||
+      inv.claim_number?.toLowerCase().includes(q.toLowerCase()) ||
+      inv.vehicle_number?.toLowerCase().includes(q.toLowerCase())
+    );
     const start = (page - 1) * pageSize;
-    return items.slice(start, start + pageSize);
-  }, [items, page, pageSize]);
+    return { list: filtered.slice(start, start + pageSize), total: filtered.length };
+  }, [items, page, pageSize, q]);
 
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+    const totalPages = Math.max(1, Math.ceil(paginatedItems.total / pageSize));
     if (page > totalPages) setPage(totalPages);
-  }, [items.length, page, pageSize]);
+  }, [paginatedItems.total, page, pageSize]);
 
   return (
     <AppLayout title="Invoice History" subtitle="Processed invoices">
       <div className="space-y-4 animate-fade-in">
-        {error && <div className="rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
-
         <TableToolbar
           searchPlaceholder="Search claims, vehicles..."
           searchValue={q}
-          onSearchChange={(v) => {
-            setQ(v);
-            loadList(v);
-          }}
+          onSearchChange={(v) => setQ(v)}
           className="shadow-sm"
         />
 
-        <div className="overflow-hidden rounded-md border bg-background shadow-sm">
+        <StatusWrapper
+          status={loading ? "loading" : errorSummary ? "error" : "success"}
+          loading={<TablePageSkeleton rows={8} />}
+          loadingTitle="Loading invoice history"
+          loadingDescription="Fetching processed invoices and digitized claim documents."
+          errorTitle="Could not load invoice history"
+          error={errorSummary}
+          onRetry={() => setReloadToken((t) => t + 1)}
+        >
+          <div className="overflow-hidden rounded-md border bg-background shadow-sm">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/40">
@@ -82,14 +100,14 @@ export default function InvoiceHistory() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.length === 0 ? (
+                {paginatedItems.list.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-sm text-muted-foreground">
-                      {loading ? "Loading..." : "No invoices found."}
+                    <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
+                      No invoices found.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  paginatedItems.map((inv) => (
+                  paginatedItems.list.map((inv) => (
                     <TableRow key={inv.claim_number}>
                       <TableCell className="font-semibold">{inv.claim_number}</TableCell>
                       <TableCell>{inv.vehicle_number ?? "—"}</TableCell>
@@ -130,7 +148,7 @@ export default function InvoiceHistory() {
               </TableBody>
             </Table>
             <DataTablePagination
-              totalCount={items.length}
+              totalCount={paginatedItems.total}
               page={page}
               pageSize={pageSize}
               onPageChange={setPage}
@@ -141,8 +159,8 @@ export default function InvoiceHistory() {
               itemLabel="invoices"
             />
           </div>
+        </StatusWrapper>
       </div>
     </AppLayout>
   );
 }
-

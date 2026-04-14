@@ -3,7 +3,9 @@ Service layer for vehicle damage assessment.
 Handles YOLO damage detection, Keras severity model, and vision LLM analysis.
 """
 import base64
+import hashlib
 import json
+import logging
 import os
 import traceback
 import warnings
@@ -11,6 +13,12 @@ import warnings
 import numpy as np
 from pathlib import Path
 from django.conf import settings
+from django.db import IntegrityError
+
+from claims.phase1_runtime import get_claim_market_context, get_claim_vehicle_profile
+from damage_detection_llm.image_fraud_service import compute_file_sha256
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", message=".*input_shape.*input_dim.*")
 
@@ -169,8 +177,6 @@ _severity_load_failed = False
 
 
 def get_detection_model():
-    print(f'Base url {BASE_DIR}')
-
     """Lazy-load YOLO damage detection model."""
     global _detection_model
     if _detection_model is None:
@@ -187,31 +193,26 @@ def get_severity_model():
     (_inbound_nodes) when loaded with Keras 3.
     """
 
-    print('Checking Model')
     global _severity_model, _severity_load_failed
     if _severity_load_failed:
-        print('Severity Load Check Failed returning None')
+        logger.debug("Severity model load previously failed; returning None.")
         return None
     if _severity_model is None:
-        print('Severity is None Updating Latest')
         # Apply patch for Keras 3 + legacy H5 IndexError before loading
         _patch_keras_h5_loader()
         for path in [TRAINED_SEVERITY, API_SEVERITY]:
             if not os.path.exists(path):
-                print("No Trained LLM")
+                logger.debug("Severity model path not found: %s", path)
                 continue
             try:
                 from tensorflow.keras.models import load_model
                 _severity_model = load_model(path, compile=False, safe_mode=False)
-                print(f'>>> Here you go severity Model:  {_severity_model}')
                 break
             except Exception as e:
-                print("-----------------------")
                 traceback.print_exc()
-                print(f'Something wrong with the severity Model: {e}')
+                logger.warning("Failed to load severity model %s: %s", path, e)
                 _severity_model = None
         if _severity_model is None:
-            print(f'Severity Model returns NULL ****')
             _severity_load_failed = True
             return None
     return _severity_model
@@ -226,22 +227,16 @@ def allowed_file(filename):
 
 def predict_severity(image_path, model):
     """Run severity classification on an image using the given Keras model."""
-
-    print('Detecting the Image')
     from tensorflow.keras.preprocessing.image import load_img, img_to_array
     img = load_img(image_path, target_size=(256, 256))
     x = img_to_array(img)
     x = np.expand_dims(x, axis=0).astype(np.float32) / 255.0
     pred = model.predict(x, verbose=0)
-    print(f'Print Predict1: {pred}')
     pred = np.array(pred)
-    print(f'Print Predict2: {pred}')
     if pred.size == 0:
         return "minor"
     pred_flat = pred.flatten()
-    print(f'Print Predict3: {pred}')
     idx = int(np.argmax(pred_flat))
-    print(f'Prediction Index: {idx}')
 
     d = {0: "minor", 1: "moderate", 2: "severe"}
     return d.get(idx, "minor")
@@ -252,11 +247,13 @@ FLOOD_KEYWORDS = ("flood", "flooded", "submerged", "inundated", "water damage")
 
 def _analyze_damage_with_vision_llm(image_path: str) -> tuple[list[str], str] | None:
     """
-    Analyze vehicle damage image using OpenAI Vision (GPT-4o or gpt-4o-mini).
-    Returns (damages: list, severity: str) or None if API key missing or call fails.
+    Analyze vehicle damage image using Azure OpenAI or OpenAI vision (env-configured).
+    Returns (damages: list, severity: str) or None if no LLM configured or call fails.
     """
-    api_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
-    if not api_key or not str(api_key).strip():
+    from claim_automation.llm_client import get_chat_completion_client_and_model
+
+    client, model = get_chat_completion_client_and_model()
+    if client is None or not model:
         return None
     if not os.path.isfile(image_path):
         return None
@@ -280,10 +277,8 @@ Respond in this exact JSON format only, no other text:
 {"damages": ["dent"], "severity": "moderate"}
 Severity: minor, moderate, or severe."""
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
         resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini"),
+            model=model,
             messages=[
                 {
                     "role": "user",
@@ -347,7 +342,7 @@ def _is_flood_indicated(incident_description: str | None, flood_coverage: bool =
 def run_damage_assessment(image_path, incident_description=None, flood_coverage=False, image_url=None):
     """
     Run damage detection and severity prediction on an image file.
-    Uses vision LLM (OpenAI) when OPENAI_API_KEY is set; otherwise YOLO + Keras.
+    Uses vision LLM when Azure OpenAI or OpenAI is configured (see .env.example); otherwise YOLO + Keras.
     incident_description: optional claim description; if flood keywords found, adds "flooded".
     flood_coverage: if True, adds "flooded" to damages.
     image_url: optional URL/path hint; if contains "fire" or "flood", adds that type when YOLO misses it.
@@ -372,7 +367,7 @@ def run_damage_assessment(image_path, incident_description=None, flood_coverage=
         try:
             severity = predict_severity(image_path, severity_model)
         except Exception as e:
-            print(f"Severity prediction failed: {e}")
+            logger.warning("Severity prediction failed: %s", e)
             severity = "unknown"
     else:
         severity = "unknown"
@@ -433,3 +428,674 @@ def run_damage_assessment(image_path, incident_description=None, flood_coverage=
         damages = ["damage"]
 
     return damages, severity
+
+
+# =============================================================================
+# Detailed damage breakdown with part-level assessment
+# =============================================================================
+
+CANONICAL_DAMAGE_ASSESSMENT_VERSION = "phase1-image-assessment-v1"
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+
+def _build_damage_assessment_context(
+    *, market_context: dict | None, vehicle_profile: dict | None
+) -> dict:
+    market_context = market_context or {}
+    vehicle_profile = vehicle_profile or {}
+    return {
+        "version": CANONICAL_DAMAGE_ASSESSMENT_VERSION,
+        "market_context": {
+            "country": market_context.get("country"),
+            "city": market_context.get("city"),
+            "currency_code": market_context.get("currency_code"),
+            "market_label": market_context.get("market_label"),
+        },
+        "vehicle_profile": {
+            "make": vehicle_profile.get("make"),
+            "model": vehicle_profile.get("model"),
+            "year": vehicle_profile.get("year"),
+        },
+    }
+
+
+def _compute_damage_assessment_context_key(context: dict) -> str:
+    payload = json.dumps(_json_safe(context), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _part_breakdown_sort_key(part: dict) -> tuple:
+    return (
+        str(part.get("part") or "").strip().lower(),
+        str(part.get("damage_type") or "").strip().lower(),
+        str(part.get("repair_action") or "").strip().upper(),
+        int(part.get("severity_percent") or 0),
+        round(float(part.get("estimated_cost") or 0), 2),
+    )
+
+
+def _normalize_part_breakdown(part_breakdown: list[dict] | None) -> list[dict]:
+    normalized: list[dict] = []
+    seen: set[tuple] = set()
+    for raw in part_breakdown or []:
+        if not isinstance(raw, dict):
+            continue
+        part = str(raw.get("part", "")).strip()
+        if not part:
+            continue
+        damage_type = str(raw.get("damage_type", "")).strip().lower()
+        repair_action = str(raw.get("repair_action", "REPAIR")).strip().upper()
+        if repair_action not in ("REPAIR", "REPLACE", "PAINT", "NONE"):
+            repair_action = "REPAIR"
+        try:
+            severity_percent = int(float(raw.get("severity_percent", 0) or 0))
+        except (TypeError, ValueError):
+            severity_percent = 0
+        severity_percent = max(0, min(100, severity_percent))
+        try:
+            estimated_cost = round(float(raw.get("estimated_cost", 0) or 0), 2)
+        except (TypeError, ValueError):
+            estimated_cost = 0.0
+
+        entry = {
+            "part": part,
+            "damage_type": damage_type,
+            "severity_percent": severity_percent,
+            "repair_action": repair_action,
+            "estimated_cost": estimated_cost,
+        }
+        dedupe_key = (
+            entry["part"].lower(),
+            entry["damage_type"],
+            entry["severity_percent"],
+            entry["repair_action"],
+            entry["estimated_cost"],
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(entry)
+
+    return sorted(normalized, key=_part_breakdown_sort_key)
+
+
+def _rows_to_part_breakdown(rows) -> list[dict]:
+    return _normalize_part_breakdown(
+        [
+            {
+                "part": row.part_name,
+                "damage_type": row.damage_type,
+                "severity_percent": float(row.severity_percent or 0),
+                "repair_action": row.repair_action,
+                "estimated_cost": float(row.estimated_amount or 0),
+            }
+            for row in rows
+        ]
+    )
+
+
+def _build_reuse_pipeline_metadata(
+    *,
+    base_metadata: dict | None,
+    analysis_source: str,
+    source_claim_id: str | None,
+    source_photo_path: str | None,
+    currency_code: str,
+) -> dict:
+    metadata = dict(base_metadata or {})
+    metadata.setdefault("currency_code", currency_code)
+    metadata["consistency_source"] = analysis_source
+    metadata["canonical_reuse"] = analysis_source != "fresh_llm_assessment"
+    if source_claim_id:
+        metadata["canonical_source_claim_id"] = source_claim_id
+    if source_photo_path:
+        metadata["canonical_source_photo_path"] = source_photo_path
+    return _json_safe(metadata)
+
+
+def _find_seeded_canonical_snapshot(
+    *,
+    sha256_hex: str,
+    context_key: str,
+    currency_code: str,
+) -> dict | None:
+    from claims.models import DamagePartAssessment, FnolClaim, ImageFraudResult
+
+    candidate_rows = (
+        ImageFraudResult.objects.filter(sha256_hex=sha256_hex)
+        .select_related("complaint")
+        .order_by("created_at", "complaint_id", "id")
+    )
+
+    for fraud_row in candidate_rows:
+        source_claim = fraud_row.complaint
+        source_context_key = _compute_damage_assessment_context_key(
+            _build_damage_assessment_context(
+                market_context=get_claim_market_context(claim=source_claim),
+                vehicle_profile=get_claim_vehicle_profile(claim=source_claim),
+            )
+        )
+        if source_context_key != context_key:
+            continue
+
+        part_rows = list(
+            DamagePartAssessment.objects.filter(
+                complaint=source_claim,
+                source_image_url=fraud_row.photo_path,
+            ).order_by("sort_order", "id")
+        )
+        if not part_rows:
+            continue
+
+        part_breakdown = _rows_to_part_breakdown(part_rows)
+        if not part_breakdown:
+            continue
+
+        return {
+            "analysis_source": "seeded_from_exact_image_claim",
+            "source_claim_id": source_claim.complaint_id,
+            "source_photo_path": fraud_row.photo_path,
+            "part_breakdown": part_breakdown,
+            "currency_code": currency_code,
+            "pipeline_metadata": _build_reuse_pipeline_metadata(
+                base_metadata={
+                    "pipeline": "canonical_exact_image_reuse",
+                    "pricing_source": "stored_exact_image_assessment",
+                    "confidence_level": "high",
+                    "web_search_used": False,
+                    "reasoning_summary": (
+                        "Reused part-level assessment from an exact image match "
+                        f"already persisted on claim {source_claim.complaint_id}."
+                    ),
+                },
+                analysis_source="seeded_from_exact_image_claim",
+                source_claim_id=source_claim.complaint_id,
+                source_photo_path=fraud_row.photo_path,
+                currency_code=currency_code,
+            ),
+        }
+
+    return None
+
+
+def _resolve_part_breakdown_for_image(
+    *,
+    image_path: str,
+    complaint_id: str,
+    incident_description: str | None,
+    flood_coverage: bool,
+    image_url: str,
+    market_context: dict,
+    vehicle_profile: dict,
+    enable_web_search: bool,
+) -> tuple[list[str], str, list[dict], dict]:
+    from claims.models import CanonicalImageDamageAssessment
+    from damage_detection_llm.agentic_pipeline import run_agentic_pipeline
+
+    damages, severity = run_damage_assessment(
+        image_path,
+        incident_description=incident_description,
+        flood_coverage=flood_coverage,
+        image_url=image_url,
+    )
+
+    currency_code = (market_context.get("currency_code") or "THB").upper()
+    image_sha256 = compute_file_sha256(image_path)
+    assessment_context = _build_damage_assessment_context(
+        market_context=market_context,
+        vehicle_profile=vehicle_profile,
+    )
+    context_key = _compute_damage_assessment_context_key(assessment_context)
+
+    canonical = CanonicalImageDamageAssessment.objects.filter(
+        sha256_hex=image_sha256,
+        assessment_context_key=context_key,
+    ).first()
+    if canonical and canonical.part_breakdown_json:
+        return (
+            damages,
+            severity,
+            _normalize_part_breakdown(canonical.part_breakdown_json),
+            _build_reuse_pipeline_metadata(
+                base_metadata=canonical.pipeline_metadata_json,
+                analysis_source=canonical.analysis_source or "canonical_snapshot",
+                source_claim_id=canonical.source_claim_id or None,
+                source_photo_path=canonical.source_photo_path or None,
+                currency_code=canonical.currency_code or currency_code,
+            ),
+        )
+
+    seeded = _find_seeded_canonical_snapshot(
+        sha256_hex=image_sha256,
+        context_key=context_key,
+        currency_code=currency_code,
+    )
+    if seeded:
+        try:
+            canonical = CanonicalImageDamageAssessment.objects.create(
+                sha256_hex=image_sha256,
+                assessment_context_key=context_key,
+                assessment_context_json=assessment_context,
+                analysis_source=seeded["analysis_source"],
+                source_claim_id=seeded["source_claim_id"],
+                source_photo_path=seeded["source_photo_path"],
+                part_breakdown_json=seeded["part_breakdown"],
+                total_estimated_cost=round(
+                    sum(p.get("estimated_cost", 0) for p in seeded["part_breakdown"]), 2
+                ),
+                currency_code=seeded["currency_code"],
+                pipeline_metadata_json=seeded["pipeline_metadata"],
+            )
+        except IntegrityError:
+            canonical = CanonicalImageDamageAssessment.objects.get(
+                sha256_hex=image_sha256,
+                assessment_context_key=context_key,
+            )
+        return (
+            damages,
+            severity,
+            _normalize_part_breakdown(canonical.part_breakdown_json),
+            _build_reuse_pipeline_metadata(
+                base_metadata=canonical.pipeline_metadata_json,
+                analysis_source=canonical.analysis_source or seeded["analysis_source"],
+                source_claim_id=canonical.source_claim_id or seeded["source_claim_id"],
+                source_photo_path=canonical.source_photo_path
+                or seeded["source_photo_path"],
+                currency_code=canonical.currency_code or seeded["currency_code"],
+            ),
+        )
+
+    part_breakdown: list[dict] = []
+    pipeline_metadata: dict = {}
+    agentic_result = None
+    try:
+        agentic_result = run_agentic_pipeline(
+            image_path=image_path,
+            complaint_id=complaint_id,
+            incident_description=incident_description,
+            region=market_context["market_label"],
+            currency_code=currency_code,
+            vehicle_profile=vehicle_profile,
+            market_context=market_context,
+            enable_web_search=enable_web_search,
+        )
+    except Exception as agentic_err:
+        logger.debug(
+            "Agentic pipeline import/exec error (will fall back): %s", agentic_err
+        )
+
+    if agentic_result and agentic_result.get("final_parts"):
+        part_breakdown = _normalize_part_breakdown(agentic_result["final_parts"])
+        pipeline_metadata = agentic_result.get("pipeline_metadata", {})
+        logger.info(
+            "run_damage_assessment_detailed: agentic pipeline produced %d parts for %s",
+            len(part_breakdown),
+            complaint_id,
+        )
+    else:
+        part_breakdown = _analyze_damage_part_level(
+            image_path,
+            market_context=market_context,
+            vehicle_profile=vehicle_profile,
+        ) or []
+        part_breakdown = _normalize_part_breakdown(part_breakdown)
+        pipeline_metadata = {
+            "pipeline": "vision_llm_direct",
+            "pricing_source": "vision_llm_initial",
+            "confidence_level": "medium",
+            "cost_range": None,
+            "web_search_used": False,
+            "reasoning_summary": (
+                "LangGraph pipeline unavailable; using Vision LLM direct analysis."
+            ),
+            "regional_context": market_context["market_label"],
+            "currency_code": currency_code,
+            "vehicle_profile": vehicle_profile,
+        }
+        if part_breakdown:
+            logger.info(
+                "run_damage_assessment_detailed: fallback Vision LLM produced %d parts for %s",
+                len(part_breakdown),
+                complaint_id,
+            )
+
+    persisted_pipeline_metadata = _build_reuse_pipeline_metadata(
+        base_metadata=pipeline_metadata,
+        analysis_source="fresh_llm_assessment",
+        source_claim_id=complaint_id,
+        source_photo_path=image_url,
+        currency_code=currency_code,
+    )
+
+    try:
+        canonical = CanonicalImageDamageAssessment.objects.create(
+            sha256_hex=image_sha256,
+            assessment_context_key=context_key,
+            assessment_context_json=assessment_context,
+            analysis_source="fresh_llm_assessment",
+            source_claim_id=complaint_id,
+            source_photo_path=image_url,
+            part_breakdown_json=part_breakdown,
+            total_estimated_cost=round(
+                sum(p.get("estimated_cost", 0) for p in part_breakdown), 2
+            ),
+            currency_code=currency_code,
+            pipeline_metadata_json=persisted_pipeline_metadata,
+        )
+        part_breakdown = _normalize_part_breakdown(canonical.part_breakdown_json)
+    except IntegrityError:
+        canonical = CanonicalImageDamageAssessment.objects.get(
+            sha256_hex=image_sha256,
+            assessment_context_key=context_key,
+        )
+        part_breakdown = _normalize_part_breakdown(canonical.part_breakdown_json)
+        persisted_pipeline_metadata = _build_reuse_pipeline_metadata(
+            base_metadata=canonical.pipeline_metadata_json,
+            analysis_source=canonical.analysis_source or "canonical_snapshot",
+            source_claim_id=canonical.source_claim_id or None,
+            source_photo_path=canonical.source_photo_path or None,
+            currency_code=canonical.currency_code or currency_code,
+        )
+
+    return damages, severity, part_breakdown, persisted_pipeline_metadata
+
+def _analyze_damage_part_level(
+    image_path: str,
+    *,
+    market_context: dict | None = None,
+    vehicle_profile: dict | None = None,
+) -> list[dict] | None:
+    """
+    Analyze image using vision LLM for part-level damage breakdown.
+
+    Returns list of dicts with:
+    - part: str (e.g., "Front Bumper", "Left Door")
+    - damage_type: str (scratch, dent, crack, etc.)
+    - severity_percent: int (0-100)
+    - repair_action: str (REPAIR, REPLACE, PAINT, NONE)
+    - estimated_cost: float
+    """
+    from claim_automation.llm_client import get_chat_completion_client_and_model
+
+    client, model = get_chat_completion_client_and_model()
+    if client is None or not model:
+        return None
+    if not os.path.isfile(image_path):
+        return None
+
+    try:
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+    except OSError:
+        return None
+
+    ext = Path(image_path).suffix.lower() or ".jpg"
+    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png" if ext == ".png" else "image/webp"
+
+    market_context = market_context or {}
+    currency_code = (market_context.get("currency_code") or "THB").upper()
+    market_label = (
+        market_context.get("market_label") or "Thailand vehicle repair market"
+    )
+    market_location = (
+        market_context.get("accident_location")
+        or market_context.get("city")
+        or "Bangkok, Thailand"
+    )
+    vehicle_profile = vehicle_profile or {}
+    vehicle_summary = (
+        vehicle_profile.get("display_name")
+        or " ".join(
+            str(bit).strip()
+            for bit in (
+                vehicle_profile.get("year"),
+                vehicle_profile.get("make"),
+                vehicle_profile.get("model"),
+            )
+            if bit not in (None, "")
+        ).strip()
+        or "not provided"
+    )
+
+    prompt = f"""Analyze this vehicle damage image and provide a detailed breakdown of damaged parts.
+
+Vehicle profile: {vehicle_summary}
+Use the vehicle profile only when it materially affects parts pricing. Do not infer policy-specific pricing.
+
+For each visible damage, provide:
+- part: The specific vehicle part (e.g., "Front Bumper", "Left Front Door", "Hood", "Rear Quarter Panel", "Windshield", "Headlight", "Taillight")
+- damage_type: The type of damage (scratch, dent, crack, chip, scuff, deformation, tear)
+- severity_percent: Severity as a percentage from 0-100 (25 = minor, 50 = moderate, 75 = major, 100 = severe/total loss)
+- repair_action: Recommended action (REPAIR for fixable damage, REPLACE for broken/severely damaged parts, PAINT for cosmetic damage, NONE if unsure)
+- estimated_cost: Estimated repair cost in {currency_code} for this specific damage, using current pricing in the {market_label} around {market_location}
+
+Respond in this exact JSON format:
+{{
+    "damages": [
+        {{
+            "part": "Front Bumper",
+            "damage_type": "scratch",
+            "severity_percent": 25,
+            "repair_action": "PAINT",
+            "estimated_cost": 180.00
+        }}
+    ]
+}}
+
+If no damage visible, respond with damages: []."""
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_data}"}},
+                    ],
+                }
+            ],
+            max_tokens=800,
+            temperature=0.1,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        if not text:
+            return None
+
+        # Extract JSON from response
+        start = text.find("{")
+        if start >= 0:
+            end = text.rfind("}")
+            if end > start:
+                text = text[start : end + 1]
+
+        data = json.loads(text)
+        damages = data.get("damages") or []
+
+        # Normalize and validate
+        valid_damages = []
+        for d in damages:
+            if not isinstance(d, dict):
+                continue
+            part = str(d.get("part", "")).strip()
+            if not part:
+                continue
+
+            damage_type = str(d.get("damage_type", "")).strip().lower()
+            severity = int(d.get("severity_percent", 50) or 50)
+            severity = max(0, min(100, severity))
+
+            repair_action = str(d.get("repair_action", "REPAIR")).strip().upper()
+            if repair_action not in ("REPAIR", "REPLACE", "PAINT", "NONE"):
+                repair_action = "REPAIR"
+
+            try:
+                estimated_cost = float(d.get("estimated_cost", 0) or 0)
+            except (ValueError, TypeError):
+                estimated_cost = 0.0
+
+            valid_damages.append({
+                "part": part,
+                "damage_type": damage_type,
+                "severity_percent": severity,
+                "repair_action": repair_action,
+                "estimated_cost": estimated_cost,
+            })
+
+        return valid_damages
+
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+def save_part_assessments(
+    complaint_id: str,
+    part_data_list: list[dict],
+    image_url: str = "",
+    *,
+    replace_scope: str = "image",
+):
+    """
+    Save part-level damage assessments to DamagePartAssessment model.
+
+    Args:
+        complaint_id: The claim ID
+        part_data_list: List of part assessment dicts from _analyze_damage_part_level
+        image_url: Source image path/URL for reference (used to scope replacements)
+        replace_scope:
+            - ``image`` (default): remove existing rows for this claim with the same
+              ``source_image_url``, then append new rows after current max ``sort_order``.
+              Use this when one claim has multiple photos so later images do not wipe earlier parts.
+            - ``claim``: delete all part rows for the claim, then insert from 0 (single-image / full reset).
+    """
+    from django.db.models import Max
+
+    from claims.models import FnolClaim, DamagePartAssessment
+
+    normalized_parts = _normalize_part_breakdown(part_data_list)
+    if not normalized_parts:
+        return 0
+
+    try:
+        claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
+        if not claim:
+            logger.warning(f"Cannot save part assessments: claim {complaint_id} not found")
+            return 0
+
+        if replace_scope == "claim":
+            DamagePartAssessment.objects.filter(complaint=claim).delete()
+            start_order = 0
+        elif replace_scope == "image":
+            DamagePartAssessment.objects.filter(
+                complaint=claim, source_image_url=image_url
+            ).delete()
+            agg = DamagePartAssessment.objects.filter(complaint=claim).aggregate(
+                m=Max("sort_order")
+            )
+            start_order = (agg["m"] if agg["m"] is not None else -1) + 1
+        else:
+            raise ValueError(f"Unknown replace_scope: {replace_scope}")
+
+        created_count = 0
+        for idx, part_data in enumerate(normalized_parts):
+            DamagePartAssessment.objects.create(
+                complaint=claim,
+                part_name=part_data["part"],
+                damage_type=part_data["damage_type"],
+                severity_percent=part_data["severity_percent"],
+                repair_action=part_data["repair_action"],
+                estimated_amount=part_data["estimated_cost"],
+                source_image_url=image_url,
+                sort_order=start_order + idx,
+            )
+            created_count += 1
+
+        return created_count
+
+    except Exception:
+        logger.exception("Failed to save part assessments")
+        return 0
+
+
+def run_damage_assessment_detailed(
+    image_path: str,
+    complaint_id: str,
+    incident_description: str | None = None,
+    flood_coverage: bool = False,
+    image_url: str = "",
+    enable_web_search: bool = True,
+    persist_claim_rows: bool = True,
+) -> dict:
+    """
+    Run detailed damage assessment with part-level breakdown.
+
+    Orchestration hierarchy (graceful degradation):
+      1. LangGraph Agentic Pipeline (Part Segmentation → Pricing Agent → Estimation)
+         — uses web search + LLM reasoning for market-accurate costs.
+         — requires: pip install langgraph duckduckgo-search
+      2. Existing Vision LLM (_analyze_damage_part_level) — current behaviour.
+      3. YOLO + Keras severity only (no cost breakdown, part_breakdown=[]).
+
+    Args:
+        image_path: Path to the image file on disk.
+        complaint_id: Claim ID to associate assessments with.
+        incident_description: Optional claim description for LLM context.
+        flood_coverage: Whether flood coverage applies.
+        image_url: Source image URL / storage key (used for DB scoping).
+        enable_web_search: Pass False to disable live pricing searches (test envs).
+
+    Returns:
+        Dict with:
+          - damages, severity: from YOLO/LLM (unchanged)
+          - part_breakdown: list[dict] with part, damage_type, severity_percent,
+                            repair_action, estimated_cost (and persisted to DB)
+          - total_parts, total_estimated_cost
+          - pipeline_metadata (new, additive): transparency data from agentic pipeline
+    """
+    market_context = get_claim_market_context(complaint_id=complaint_id)
+    vehicle_profile = get_claim_vehicle_profile(complaint_id=complaint_id)
+    currency_code = market_context["currency_code"]
+
+    damages, severity, part_breakdown, pipeline_metadata = _resolve_part_breakdown_for_image(
+        image_path=image_path,
+        complaint_id=complaint_id,
+        incident_description=incident_description,
+        flood_coverage=flood_coverage,
+        image_url=image_url,
+        market_context=market_context,
+        vehicle_profile=vehicle_profile,
+        enable_web_search=enable_web_search,
+    )
+
+    # Persist part assessments (per-image scope — multi-photo claims accumulate rows)
+    if persist_claim_rows and part_breakdown and complaint_id:
+        save_part_assessments(
+            complaint_id, part_breakdown, image_url, replace_scope="image"
+        )
+
+    total_cost = sum(p.get("estimated_cost", 0) for p in part_breakdown)
+
+    return {
+        "damages": damages,
+        "severity": severity,
+        "part_breakdown": part_breakdown,
+        "total_parts": len(part_breakdown),
+        "total_estimated_cost": total_cost,
+        "currency_code": currency_code,
+        "market_context": market_context,
+        "pipeline_metadata": pipeline_metadata,
+    }

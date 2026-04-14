@@ -16,6 +16,57 @@ The system acts as an evaluation and automation layer integrated with a core ins
 
 ---
 
+## Local Phase 1 Quick Start
+
+Use the validated launcher scripts in `scripts\` for local Phase 1 work instead of starting Django and Vite manually.
+
+### Start the full local stack
+
+Run from `D:\vehicle-claim-automation\vehicle-claim-automation`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-dev-stack.ps1
+```
+
+What this does:
+
+- runs Django migrations
+- seeds Phase 1 config and demo data into SQLite
+- starts the backend on `http://127.0.0.1:8000`
+- starts the frontend on `http://127.0.0.1:5173`
+- writes runtime logs under `.runtime\dev-stack\`
+
+### Stop the local stack
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop-dev-stack.ps1
+```
+
+### Start only one side
+
+Backend only:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-dev-backend.ps1
+```
+
+Frontend only:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-dev-frontend.ps1
+```
+
+### Phase 1 tester login
+
+- Username: `phase1_runtime_check`
+- Password: `Phase1Check123!`
+
+### Canonical user guide
+
+See `D:\vehicle-claim-automation\my_docs\phase1-e2e-ui-testing-guide.md` for the current seeded demo claims, click path, and expected Phase 1 results.
+
+---
+
 ## 🎯 Objectives
 
 - Automate high-volume, low-value motor insurance claims  

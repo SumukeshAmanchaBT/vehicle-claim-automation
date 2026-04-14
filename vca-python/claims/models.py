@@ -9,7 +9,8 @@ class FnolClaim(models.Model):
     """
 
     complaint_id = models.CharField(max_length=20, primary_key=True)
-    coverage_type = models.CharField(max_length=50, null=True, blank=True)
+    # Insurer product labels (e.g. Thai motor classes, regional naming) — keep long enough for PAS strings
+    coverage_type = models.CharField(max_length=128, null=True, blank=True)
     policy_number = models.CharField(max_length=50, null=True, blank=True)
     policy_status = models.CharField(max_length=20, null=True, blank=True)
     policy_start_date = models.DateField(null=True, blank=True)
@@ -55,6 +56,16 @@ class FnolClaim(models.Model):
 
     class Meta:
         db_table = "fnol_claims"
+        indexes = [
+            models.Index(
+                fields=["incident_date_time", "complaint_id"],
+                name="fnol_incident_claim_idx",
+            ),
+            models.Index(
+                fields=["re_open", "incident_date_time"],
+                name="fnol_reopen_incident_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"FnolClaim(complaint_id={self.complaint_id})"
@@ -113,6 +124,17 @@ class ClaimEvaluationResponse(models.Model):
     decision = models.CharField(max_length=20, null=True, blank=True)
     claim_status = models.CharField(max_length=50, null=True, blank=True)
     reason = models.TextField(null=True, blank=True)
+    fraud_band = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        help_text="Normalized fraud band from business-rule validation (e.g. Low, High).",
+    )
+    fraud_rule_results = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Persisted Business Rule Validation rule-by-rule snapshot for UI and reports.",
+    )
     llm_damages = models.TextField(
         null=True,
         blank=True,
@@ -136,10 +158,250 @@ class ClaimEvaluationResponse(models.Model):
         db_table = "claim_evaluation_response"
         indexes = [
             models.Index(fields=["complaint_id", "is_latest"], name="cer_complaint_latest"),
+            models.Index(fields=["complaint_id", "version"], name="cer_complaint_version"),
         ]
 
     def __str__(self) -> str:
         return f"ClaimEvaluationResponse(id={self.id}, complaint_id={self.complaint_id}, v={self.version})"
+
+
+class ImageFraudResult(models.Model):
+    """
+    Per-image fraud / media-trust signals (hashes, EXIF, ELA, composite score, optional LLM notes).
+    One row per analysis run per image source (re-runs create new rows).
+    """
+
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="image_fraud_results",
+    )
+    damage_photo = models.ForeignKey(
+        "FnolDamagePhoto",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="fraud_results",
+    )
+    image_source_url = models.TextField(blank=True, default="")
+    photo_path = models.CharField(max_length=512, blank=True, default="")
+    sha256_hex = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    p_hash = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    d_hash = models.CharField(max_length=32, blank=True, default="", db_index=True)
+    a_hash = models.CharField(max_length=32, blank=True, default="")
+    exif_json = models.JSONField(null=True, blank=True)
+    ela_score = models.FloatField(null=True, blank=True)
+    fraud_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    signals_json = models.JSONField(null=True, blank=True)
+    llm_authenticity_notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "image_fraud_results"
+        indexes = [
+            models.Index(fields=["complaint", "-created_at"], name="ifr_complaint_created"),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"ImageFraudResult(id={self.id}, complaint_id={self.complaint_id})"
+
+
+class ClaimDuplicateCandidate(models.Model):
+    """
+    Cross-claim image reuse / near-duplicate hints (pHash/dHash/etc.).
+    """
+
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="duplicate_candidates",
+    )
+    other_complaint_id = models.CharField(max_length=20, db_index=True)
+    match_reason = models.CharField(max_length=64)
+    similarity_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    evidence_json = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "claim_duplicate_candidates"
+        indexes = [
+            models.Index(
+                fields=["complaint", "other_complaint_id"],
+                name="cdc_complaint_other",
+            ),
+        ]
+        ordering = ["-similarity_score", "-created_at"]
+
+    def __str__(self) -> str:
+        return f"ClaimDuplicateCandidate({self.complaint_id} -> {self.other_complaint_id})"
+
+
+class DamagePartAssessment(models.Model):
+    """
+    Structured part-level damage lines (part, type, severity %, repair action, estimated cost).
+    """
+
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="damage_part_assessments",
+    )
+    part_name = models.CharField(max_length=255)
+    damage_type = models.CharField(max_length=128, blank=True, default="")
+    severity_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    repair_action = models.CharField(max_length=255, blank=True, default="")
+    estimated_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    source_image_url = models.TextField(blank=True, default="")
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "damage_part_assessments"
+        indexes = [
+            models.Index(fields=["complaint", "sort_order"], name="dpa_complaint_sort"),
+        ]
+        ordering = ["sort_order", "id"]
+
+    def __str__(self) -> str:
+        return f"DamagePartAssessment({self.complaint_id}: {self.part_name})"
+
+
+class ClaimPhase1Valuation(models.Model):
+    """
+    Snapshot of gross repair estimate, excess/deductible, and net payable (from part rows + rules).
+    """
+
+    complaint = models.OneToOneField(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="phase1_valuation",
+        primary_key=True,
+    )
+    gross_estimate = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    excess_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    net_payable = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    currency_code = models.CharField(max_length=8, blank=True, default="")
+    breakdown_json = models.JSONField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_phase1_valuation"
+
+    def __str__(self) -> str:
+        return f"ClaimPhase1Valuation(complaint_id={self.complaint_id})"
+
+
+class CanonicalImageDamageAssessment(models.Model):
+    """
+    Shared, context-aware assessment snapshot for an exact image.
+
+    This lets identical image bytes reuse the same part breakdown and pricing
+    when the legitimate pricing context is also the same.
+    """
+
+    sha256_hex = models.CharField(max_length=64, db_index=True)
+    assessment_context_key = models.CharField(max_length=64, db_index=True)
+    assessment_context_json = models.JSONField(default=dict)
+    analysis_source = models.CharField(max_length=32, blank=True, default="")
+    source_claim_id = models.CharField(max_length=20, blank=True, default="")
+    source_photo_path = models.CharField(max_length=512, blank=True, default="")
+    part_breakdown_json = models.JSONField(default=list)
+    total_estimated_cost = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    currency_code = models.CharField(max_length=8, blank=True, default="")
+    pipeline_metadata_json = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "canonical_image_damage_assessments"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sha256_hex", "assessment_context_key"],
+                name="uniq_canonical_image_damage_assessment",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["sha256_hex", "assessment_context_key"],
+                name="cida_sha_ctx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            "CanonicalImageDamageAssessment("
+            f"sha256={self.sha256_hex[:12]}, ctx={self.assessment_context_key[:12]})"
+        )
+
+
+class ClaimCardInsight(models.Model):
+    """
+    Persisted snapshot of structured damage-assessment card summaries/details per claim.
+    One row per (claim, card_key); refreshed without mutating ClaimEvaluationResponse.
+    """
+
+    class CardKey(models.TextChoices):
+        IMAGE_AUTHENTICITY = "image_authenticity", "Image authenticity"
+        DUPLICATE_SCREENING = "duplicate_screening", "Duplicate screening"
+        ESTIMATED_VALUE = "estimated_value", "Estimated value"
+        DAMAGE_DETECTION = "damage_detection", "Damage detection"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        READY = "ready", "Ready"
+        PARTIAL = "partial", "Partial"
+        FAILED = "failed", "Failed"
+
+    claim = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="card_insights",
+    )
+    card_key = models.CharField(max_length=64, choices=CardKey.choices)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    summary_json = models.JSONField(default=dict)
+    evidence_json = models.JSONField(default=dict)
+    narrative_json = models.JSONField(default=dict)
+    source_snapshot_hash = models.CharField(max_length=128, null=True, blank=True)
+    model_version = models.CharField(max_length=64, null=True, blank=True)
+    generated_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    error_json = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_card_insights"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["claim", "card_key"],
+                name="uniq_claim_card_insight",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["claim", "card_key"], name="cci_claim_card"),
+            models.Index(fields=["status"], name="cci_status"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ClaimCardInsight({self.claim_id}, {self.card_key})"
 
 
 class ClaimRuleMaster(models.Model):
@@ -391,6 +653,15 @@ class PricingConfig(models.Model):
         return f"{self.config_key}: {self.config_value}"
 
 
+def digitization_document_upload_to(instance, filename):
+    """
+    Store files under digitization/<complaint_id>/ so S3 listing can derive Claim ID.
+    """
+    from pathlib import Path
+    safe_name = Path(filename).name
+    return f"digitization/{instance.complaint_id}/{safe_name}"
+
+
 class DigitizationDocument(models.Model):
     """
     Stores uploaded documents for claim digitization (repair invoice, other docs, etc.).
@@ -409,15 +680,7 @@ class DigitizationDocument(models.Model):
     id = models.BigAutoField(primary_key=True)
     complaint_id = models.CharField(max_length=20, db_index=True)
 
-    @staticmethod
-    def _upload_to(instance: "DigitizationDocument", filename: str) -> str:
-        """
-        Store files under digitization/<complaint_id>/ so S3 listing can derive Claim ID.
-        """
-        safe_name = Path(filename).name
-        return f"digitization/{instance.complaint_id}/{safe_name}"
-
-    file = models.FileField(upload_to=_upload_to)
+    file = models.FileField(upload_to=digitization_document_upload_to)
     original_filename = models.CharField(max_length=255, blank=True, default="")
 
     document_category = models.CharField(

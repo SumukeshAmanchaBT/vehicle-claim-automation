@@ -87,6 +87,8 @@ export interface FnolResponse {
   updated_by: string | null;
   /** 1 = re-opened claim (show Re-validation of Business Rules on claim detail) */
   re_open?: number;
+  /** Backend-derived lifecycle; same values as `ClaimWorkflowState` in api.ts. */
+  workflow_state?: string;
 }
 
 export interface FraudRuleResult {

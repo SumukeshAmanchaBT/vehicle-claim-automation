@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from django.conf import settings
+from django.db import DatabaseError
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -33,6 +35,8 @@ from .models import (
     InvoicePartDetails,
     PartsMaster,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_json_from_text(text: str) -> dict[str, Any]:
@@ -85,12 +89,14 @@ def _to_decimal(value: Any) -> Decimal | None:
 
 def _openai_extract_invoice_data(image_path: str) -> tuple[dict[str, Any], str | None]:
     """
-    Extract invoice/repair parts details from an image using OpenAI Vision.
+    Extract invoice/repair parts details from an image using Azure OpenAI or OpenAI vision.
     Returns: (parsed_json, error_message)
     """
-    api_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
-    if not api_key or not str(api_key).strip():
-        return {}, "OPENAI_API_KEY is not configured"
+    from claim_automation.llm_client import get_chat_completion_client_and_model
+
+    client, model = get_chat_completion_client_and_model()
+    if client is None or not model:
+        return {}, "No LLM configured (set AZURE_OPENAI_* or OPENAI_API_KEY — see .env.example)"
     if not os.path.isfile(image_path):
         return {}, f"File not found: {image_path}"
 
@@ -137,11 +143,8 @@ def _openai_extract_invoice_data(image_path: str) -> tuple[dict[str, Any], str |
     )
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key)
         resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini"),
+            model=model,
             messages=[
                 {
                     "role": "user",
@@ -195,14 +198,16 @@ def _extract_text_from_pdf(pdf_path: str) -> tuple[str, str | None]:
 
 def _openai_extract_kv_from_text(text: str) -> tuple[dict[str, Any], str | None]:
     """
-    Use OpenAI LLM to convert document text into key-value JSON.
+    Use Azure OpenAI or OpenAI to convert document text into key-value JSON.
     """
-    api_key = os.getenv("OPENAI_API_KEY") or getattr(settings, "OPENAI_API_KEY", None)
-    if not api_key or not str(api_key).strip():
-        # Graceful fallback when OpenAI isn't configured.
-        # This keeps the UI usable and still returns key-value JSON.
+    from claim_automation.llm_client import get_chat_completion_client_and_model
+
+    client, model = get_chat_completion_client_and_model()
+    if client is None or not model:
         kv = _fallback_extract_kv_from_text(text)
-        kv["_warning"] = "OPENAI_API_KEY is not configured; used fallback extraction."
+        kv["_warning"] = (
+            "No LLM configured (AZURE_OPENAI_* or OPENAI_API_KEY); used fallback extraction."
+        )
         return kv, None
     if not text.strip():
         return {}, "Input text is empty"
@@ -218,11 +223,8 @@ def _openai_extract_kv_from_text(text: str) -> tuple[dict[str, Any], str | None]
     )
     trimmed = text[:16000]
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=api_key)
         resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini"),
+            model=model,
             messages=[
                 {"role": "system", "content": "Return strict JSON only."},
                 {"role": "user", "content": f"{prompt}\n\nDOCUMENT TEXT:\n{trimmed}"},
@@ -1175,34 +1177,39 @@ def invoice_history_list(request):
     """
     q = (request.query_params.get("q") or "").strip()
 
-    qs = InvoiceCoreDetails.objects.all().order_by("-created_date")
-    if q:
-        from django.db.models import Q
+    try:
+        qs = InvoiceCoreDetails.objects.all().order_by("-created_date")
+        if q:
+            from django.db.models import Q
 
-        qs = qs.filter(
-            Q(claim_number__icontains=q)
-            | Q(vehicle_number__icontains=q)
-            | Q(engine_number__icontains=q)
-            | Q(chassis_number__icontains=q)
-            | Q(make__icontains=q)
-            | Q(model_number__icontains=q)
-        )
+            qs = qs.filter(
+                Q(claim_number__icontains=q)
+                | Q(vehicle_number__icontains=q)
+                | Q(engine_number__icontains=q)
+                | Q(chassis_number__icontains=q)
+                | Q(make__icontains=q)
+                | Q(model_number__icontains=q)
+            )
 
-    items: list[dict[str, Any]] = []
-    for row in qs[:200]:
-        items.append(
-            {
-                "claim_number": row.claim_number,
-                "vehicle_number": row.vehicle_number,
-                "engine_number": row.engine_number,
-                "chassis_number": row.chassis_number,
-                "make": row.make,
-                "model_number": row.model_number,
-                "amount": str(row.amount) if row.amount is not None else None,
-                "created_date": row.created_date,
-                "updated_date": row.updated_date,
-            }
-        )
+        items: list[dict[str, Any]] = []
+        for row in qs[:200]:
+            items.append(
+                {
+                    "claim_number": row.claim_number,
+                    "vehicle_number": row.vehicle_number,
+                    "engine_number": row.engine_number,
+                    "chassis_number": row.chassis_number,
+                    "make": row.make,
+                    "model_number": row.model_number,
+                    "amount": str(row.amount) if row.amount is not None else None,
+                    "created_date": row.created_date,
+                    "updated_date": row.updated_date,
+                }
+            )
+    except DatabaseError as exc:
+        # Unmanaged legacy table (e.g. vehicle_invoice_details) may be absent on fresh SQLite dev DB.
+        logger.warning("invoice_history_list: %s", exc)
+        items = []
 
     return Response({"items": items}, status=status.HTTP_200_OK)
 
@@ -1217,67 +1224,76 @@ def invoice_history_detail(request, claim_number: str):
     if not claim_number:
         return Response({"error": "claim_number is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    core = get_object_or_404(InvoiceCoreDetails, claim_number=claim_number)
-    parts_qs = InvoicePartDetails.objects.filter(claim_number_id=claim_number).order_by("id")
-    parts: list[dict[str, Any]] = []
-    for p in parts_qs:
-        parts.append(
-            {
-                "id": p.id,
-                "description": p.description,
-                "quantity": p.quantity,
-                "unit_price": str(p.unit_price) if p.unit_price is not None else None,
-                "amount": str(p.amount) if p.amount is not None else None,
-            }
-        )
-
-    # Best-effort: link this invoice back to its original uploaded source document.
-    # We can do this via DigitizationExtraction.claim_number -> DigitizationDocument.file.
-    document_info: dict[str, Any] = {
-        "file_url": "",
-        "original_filename": "",
-    }
     try:
-        extraction = (
-            DigitizationExtraction.objects.filter(claim_number__iexact=claim_number)
-            .order_by("-updated_date")
-            .select_related("document")
-            .first()
-        )
-        if not extraction:
-            # Fallback: try a best-effort search in extracted_json for older data.
+        core = get_object_or_404(InvoiceCoreDetails, claim_number=claim_number)
+        parts_qs = InvoicePartDetails.objects.filter(claim_number_id=claim_number).order_by("id")
+        parts: list[dict[str, Any]] = []
+        for p in parts_qs:
+            parts.append(
+                {
+                    "id": p.id,
+                    "description": p.description,
+                    "quantity": p.quantity,
+                    "unit_price": str(p.unit_price) if p.unit_price is not None else None,
+                    "amount": str(p.amount) if p.amount is not None else None,
+                }
+            )
+
+        # Best-effort: link this invoice back to its original uploaded source document.
+        # We can do this via DigitizationExtraction.claim_number -> DigitizationDocument.file.
+        document_info: dict[str, Any] = {
+            "file_url": "",
+            "original_filename": "",
+        }
+        try:
             extraction = (
-                DigitizationExtraction.objects.filter(extracted_json__icontains=claim_number)
+                DigitizationExtraction.objects.filter(claim_number__iexact=claim_number)
                 .order_by("-updated_date")
                 .select_related("document")
                 .first()
             )
-        if extraction and getattr(extraction, "document", None):
-            doc = extraction.document
-            document_info["original_filename"] = getattr(doc, "original_filename", "") or getattr(
-                doc.file, "name", ""
-            ).split("/")[-1]
-            document_info["file_url"] = build_digitization_file_url(request, doc) or ""
-    except Exception:
-        # If linkage fails, we still return core + parts.
-        pass
+            if not extraction:
+                # Fallback: try a best-effort search in extracted_json for older data.
+                extraction = (
+                    DigitizationExtraction.objects.filter(extracted_json__icontains=claim_number)
+                    .order_by("-updated_date")
+                    .select_related("document")
+                    .first()
+                )
+            if extraction and getattr(extraction, "document", None):
+                doc = extraction.document
+                document_info["original_filename"] = getattr(doc, "original_filename", "") or getattr(
+                    doc.file, "name", ""
+                ).split("/")[-1]
+                document_info["file_url"] = build_digitization_file_url(request, doc) or ""
+        except Exception:
+            # If linkage fails, we still return core + parts.
+            pass
 
-    return Response(
-        {
-            "core": {
-                "claim_number": core.claim_number,
-                "vehicle_number": core.vehicle_number,
-                "engine_number": core.engine_number,
-                "chassis_number": core.chassis_number,
-                "make": core.make,
-                "model_number": core.model_number,
-                "amount": str(core.amount) if core.amount is not None else None,
+        return Response(
+            {
+                "core": {
+                    "claim_number": core.claim_number,
+                    "vehicle_number": core.vehicle_number,
+                    "engine_number": core.engine_number,
+                    "chassis_number": core.chassis_number,
+                    "make": core.make,
+                    "model_number": core.model_number,
+                    "amount": str(core.amount) if core.amount is not None else None,
+                },
+                "parts": parts,
+                "document": document_info,
             },
-            "parts": parts,
-            "document": document_info,
-        },
-        status=status.HTTP_200_OK,
-    )
+            status=status.HTTP_200_OK,
+        )
+    except DatabaseError as exc:
+        logger.warning("invoice_history_detail: %s", exc)
+        return Response(
+            {
+                "error": "Invoice history storage is not available (legacy invoice tables missing in this database).",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
 
 @api_view(["GET"])

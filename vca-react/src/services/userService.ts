@@ -67,7 +67,7 @@ export interface ResetPasswordRequest {
   new_password: string;
 }
  
-/** Current user with role and permissions (for testing "which permissions do I have?") */
+/** Current user with role and permissions for permission-aware UI decisions. */
 export interface CurrentUserMe {
   id: number;
   username: string;
@@ -75,6 +75,9 @@ export interface CurrentUserMe {
   first_name: string;
   last_name: string;
   is_active: boolean;
+  /** Mirrors Django; staff/superuser get full nav like backend is_admin / has_permission. */
+  is_staff?: boolean;
+  is_superuser?: boolean;
   role: { id: number; name: string; description: string } | null;
   permissions: { id: number; codename: string; name: string; module: string }[];
 }
