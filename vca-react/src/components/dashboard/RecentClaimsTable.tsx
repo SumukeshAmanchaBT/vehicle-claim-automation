@@ -10,8 +10,8 @@ import {
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { Eye } from "lucide-react";
-import { mockClaims, type Claim } from "@/lib/mock-data";
 import { Link } from "react-router-dom";
+import { formatCurrency } from "@/lib/market";
 
 export type DashboardClaimRow = {
   id: string;
@@ -49,32 +49,13 @@ const getStatusLabel = (statusKey: string): string => {
   return labels[statusKey] || statusKey;
 };
 
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("th-TH", {
-    style: "currency",
-    currency: "THB",
-    minimumFractionDigits: 0,
-  }).format(amount);
-};
 
 interface RecentClaimsTableProps {
   claims?: DashboardClaimRow[] | null;
 }
 
 export function RecentClaimsTable({ claims: claimsProp }: RecentClaimsTableProps) {
-  const useMock = !claimsProp || claimsProp.length === 0;
-  const rows: DashboardClaimRow[] = useMock
-    ? mockClaims.slice(0, 5).map((c) => ({
-        id: c.id,
-        claimNumber: c.claimNumber,
-        customerName: c.customerName,
-        vehicleInfo: c.vehicleInfo,
-        claimType: c.claimType,
-        estimatedAmount: c.estimatedAmount,
-        statusKey: c.status,
-        aiConfidence: c.aiConfidence,
-      }))
-    : claimsProp;
+  const rows: DashboardClaimRow[] = claimsProp ?? [];
 
   return (
     <Card className="card-elevated">
@@ -97,7 +78,14 @@ export function RecentClaimsTable({ claims: claimsProp }: RecentClaimsTableProps
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((claim) => (
+            {rows.length === 0 ? (
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                  No recent claims to show.
+                </TableCell>
+              </TableRow>
+            ) : (
+            rows.map((claim) => (
               <TableRow key={claim.id} className="group">
                 <TableCell className="pl-6 font-medium">
                   <Link to={`/claims/${claim.id}`} className="text-primary hover:underline">
@@ -132,7 +120,8 @@ export function RecentClaimsTable({ claims: claimsProp }: RecentClaimsTableProps
                   </Button>
                 </TableCell>
               </TableRow>
-            ))}
+            ))
+            )}
           </TableBody>
         </Table>
       </CardContent>

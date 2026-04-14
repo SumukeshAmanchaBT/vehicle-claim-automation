@@ -1,17 +1,22 @@
 import io
 import json
+import logging
 import os
-import random
 import re
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
+from functools import partial
 from html import escape as html_escape
 from typing import Optional, Tuple
+
+from claim_automation.vca_config import cfg as _vca_cfg
 
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User, Group
-from django.db import connection
-from django.db.models import Max, Q
+from django.db import DatabaseError, connection, transaction
+from django.db.models import Count, Max, Prefetch, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
@@ -32,10 +37,25 @@ from .models import (
     ClaimStatus,
     DamageCodeMaster,
     ClaimEvaluationResponse,
+    ClaimDuplicateCandidate,
+    ClaimPhase1Valuation,
     FnolClaim,
     FnolDamagePhoto,
     Claim,
+    DamagePartAssessment,
+    DigitizationDocument,
+    ImageFraudResult,
+    InvoiceCoreDetails,
     PricingConfig,
+)
+from .workflow_state import compute_claim_workflow_state, effective_claim_status
+from .decisioning import sync_claim_evaluation_decision_state
+
+from .phase1_runtime import (
+    get_claim_amount_settings,
+    get_claim_market_context,
+    get_claim_type_settings,
+    get_major_claim_threshold,
 )
 from .serializers import (
     LoginSerializer,
@@ -50,23 +70,113 @@ from .serializers import (
     PricingConfigSerializer,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def _run_parallel(callables: list, *, max_workers: int = 4) -> list:
+    """
+    Execute a list of zero-argument callables concurrently in separate threads.
+    Each thread gets its own Django DB connection (thread-local).  Connections are
+    closed on the worker thread after each task so the pool does not leak them.
+
+    Returns results in the same order as *callables*.  Re-raises the first
+    exception encountered.
+    """
+    from django.db import close_old_connections
+
+    if len(callables) < 2 or connection.in_atomic_block or not connection.get_autocommit():
+        return [fn() for fn in callables]
+
+    def _wrap(fn):
+        close_old_connections()
+        try:
+            return fn()
+        finally:
+            close_old_connections()
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(callables))) as pool:
+        futures = [pool.submit(_wrap, fn) for fn in callables]
+        return [f.result() for f in futures]
+
+
+def _api_error_response(
+    request,
+    *,
+    message: str,
+    developer_message: str,
+    error_code: str,
+    status_code: int,
+) -> Response:
+    payload = {
+        "error": error_code,
+        "message": message,
+        "developer_message": developer_message,
+    }
+    request_id = getattr(request, "request_id", None)
+    if request_id:
+        payload["request_id"] = request_id
+    return Response(payload, status=status_code)
+
+
+def _safe_counted_delete(queryset, label: str) -> int:
+    """
+    Best-effort delete helper for optional/legacy tables.
+    Returns number of deleted rows, or 0 if the table is unavailable.
+    """
+    try:
+        table_name = queryset.model._meta.db_table
+        if table_name not in connection.introspection.table_names():
+            return 0
+        with transaction.atomic():
+            deleted, _ = queryset.delete()
+        return int(deleted)
+    except DatabaseError as exc:
+        logger.warning("%s delete skipped due to database error: %s", label, exc)
+        return 0
+
+
+def _delete_fnol_claim_record(claim: FnolClaim) -> dict[str, int]:
+    """
+    Remove one FNOL claim and all persisted rows that should disappear with it.
+    This explicitly cleans complaint-id keyed tables and reverse duplicate links
+    that do not cascade automatically from FnolClaim.
+    """
+    complaint_id = claim.complaint_id
+    deleted_counts = {
+        "legacy_claim_rows": _safe_counted_delete(
+            Claim.objects.filter(fnol=claim),
+            "legacy Claim rows",
+        ),
+        "evaluation_rows": _safe_counted_delete(
+            ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id),
+            "claim evaluation rows",
+        ),
+        "reverse_duplicate_rows": _safe_counted_delete(
+            ClaimDuplicateCandidate.objects.filter(other_complaint_id=complaint_id).exclude(
+                complaint__complaint_id=complaint_id
+            ),
+            "reverse duplicate rows",
+        ),
+        "digitization_document_rows": _safe_counted_delete(
+            DigitizationDocument.objects.filter(complaint_id=complaint_id),
+            "digitization document rows",
+        ),
+        "invoice_rows": _safe_counted_delete(
+            InvoiceCoreDetails.objects.filter(claim_number=complaint_id),
+            "invoice rows",
+        ),
+    }
+    with transaction.atomic():
+        cascade_rows, _ = claim.delete()
+    deleted_counts["cascade_rows"] = int(cascade_rows)
+    return deleted_counts
+
 
 def _is_admin_user(user) -> bool:
     """True if user can perform admin actions: Django staff or in 'Admin' group."""
     if user.is_staff:
         return True
     return user.groups.filter(name__iexact="admin").exists()
-
-
-def _get_pricing_config_value(key: str, default: float) -> float:
-    """Get numeric config value from PricingConfig by config_key."""
-    try:
-        row = PricingConfig.objects.filter(config_key=key, is_active=True).first()
-        if row and row.config_value:
-            return float(row.config_value)
-    except (ValueError, TypeError, AttributeError):
-        pass
-    return default
 
 
 def estimate_claim_amount_from_config(
@@ -78,11 +188,12 @@ def estimate_claim_amount_from_config(
     Config keys: claim_base_amount, claim_rate_per_damage,
                  severity_multiplier_minor, severity_multiplier_moderate, severity_multiplier_severe
     """
-    base = _get_pricing_config_value("claim_base_amount", 10000.0)
-    rate_per_damage = _get_pricing_config_value("claim_rate_per_damage", 2000.0)
-    mult_minor = _get_pricing_config_value("severity_multiplier_minor", 1.0)
-    mult_moderate = _get_pricing_config_value("severity_multiplier_moderate", 1.2)
-    mult_severe = _get_pricing_config_value("severity_multiplier_severe", 1.5)
+    settings = get_claim_amount_settings()
+    base = settings["base_amount"]
+    rate_per_damage = settings["rate_per_damage"]
+    mult_minor = settings["multiplier_minor"]
+    mult_moderate = settings["multiplier_moderate"]
+    mult_severe = settings["multiplier_severe"]
 
     severity_lower = (severity or "").strip().lower()
     if severity_lower == "minor":
@@ -231,16 +342,10 @@ def activate_user(request, pk):
     return Response({"message": "User activated."}, status=status.HTTP_200_OK)
 
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def soft_delete_user(request, pk):
-    if not _is_admin_user(request.user):
-        return Response({"error": "Forbidden - Admin role required"}, status=status.HTTP_403_FORBIDDEN)
-
-    user = get_object_or_404(User, pk=pk)
-    user.is_active = False
-    user.save()
-    return Response({"message": "User soft deleted."}, status=status.HTTP_200_OK)
+# soft_delete_user is identical to deactivate_user (both set is_active=False).
+# The URL /users/<pk>/soft-delete/ is kept for backwards-compatibility and
+# now delegates to the canonical deactivate_user implementation.
+soft_delete_user = deactivate_user
 
 
 @api_view(['POST'])
@@ -274,12 +379,12 @@ def login(request):
     serializer = LoginSerializer(data=request.data)
     
     if not serializer.is_valid():
-        return Response(
-            {
-                "error": serializer.errors,
-                "message": "Invalid credentials provided."
-            },
-            status=status.HTTP_400_BAD_REQUEST
+        return _api_error_response(
+            request,
+            message="Invalid credentials provided.",
+            developer_message=json.dumps(serializer.errors, default=str),
+            error_code="bad_request",
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
     
     username = serializer.validated_data.get('username')
@@ -289,12 +394,12 @@ def login(request):
     user = authenticate(username=username, password=password)
     
     if user is None:
-        return Response(
-            {
-                "error": "Invalid username or password.",
-                "message": "Authentication failed."
-            },
-            status=status.HTTP_401_UNAUTHORIZED
+        return _api_error_response(
+            request,
+            message="Authentication failed.",
+            developer_message="Invalid username or password.",
+            error_code="unauthorized",
+            status_code=status.HTTP_401_UNAUTHORIZED,
         )
     
     # Get or create token for user
@@ -318,11 +423,11 @@ def product_rule(policy: dict) -> bool:
     Currently checks that policy status is Active.
     Rule definition is stored in claim_rule_master (type 'Policy Status').
     """
-    _ = (
-        ClaimRuleMaster.objects.filter(
-            rule_type__iexact="Policy Status", is_active=True
-        ).first()
-    )
+    active_rule = ClaimRuleMaster.objects.filter(
+        rule_type__iexact="Policy Status", is_active=True
+    ).first()
+    if not active_rule:
+        return True
     return (policy.get("policy_status") or "").strip().lower() == "active"
 
 
@@ -544,6 +649,10 @@ def _evaluate_single_fraud_rule(
         passed = bool((incident.get("loss_description") or "").strip())
         return passed, desc
 
+    if rule_type == "Policy Status":
+        passed = (policy.get("policy_status") or "").strip().lower() == "active"
+        return passed, desc
+
     if rule_type == "Vehicle Year Invalid":
         vehicle_year = vehicle.get("year")
         passed = True
@@ -640,7 +749,15 @@ def damage_detection(incident: dict) -> int:
     description = (incident.get("loss_description") or "").lower()
     base_confidence = 50.0
 
-    for damage in DamageCodeMaster.objects.filter(is_active=True):
+    try:
+        damage_rows = list(DamageCodeMaster.objects.filter(is_active=True))
+    except DatabaseError as exc:
+        # Legacy DBs may still use PK column damage_code while the model expects damage_id;
+        # migration 0008 fixes SQLite; this keeps process_claim from returning 500.
+        logger.warning("damage_detection: DamageCodeMaster query failed (%s); using base confidence", exc)
+        return 50
+
+    for damage in damage_rows:
         damage_keyword = (damage.damage_type or "").lower()
         if damage_keyword and damage_keyword in description:
             base_confidence += float(damage.severity_percentage or 0)
@@ -658,10 +775,14 @@ def _get_claim_type_threshold(
     Returns (threshold, claim_type_name).
     """
     amount = incident.get("estimated_amount") or 0
+    settings = get_claim_type_settings()
+    simple_max_amount = settings["simple_max_amount"]
+    medium_max_amount = settings["medium_max_amount"]
+    fallback_threshold = settings["fallback_threshold_percent"] / 100.0
 
-    if amount <= 25000:
+    if amount <= simple_max_amount:
         claim_type_name = "SIMPLE"
-    elif amount <= 50000:
+    elif amount <= medium_max_amount:
         claim_type_name = "MEDIUM"
     else:
         claim_type_name = "COMPLEX"
@@ -671,34 +792,22 @@ def _get_claim_type_threshold(
     ).first()
 
     if not row:
-        # Fallback to previous static threshold of 0.75
-        return 0.75, None
+        return fallback_threshold, None
 
     try:
         threshold = float(row.risk_percentage) / 100.0
     except (TypeError, ValueError):
-        threshold = 0.75
+        threshold = fallback_threshold
 
     return threshold, claim_type_name
 
 
 def evaluate_score(confidence: int, amount: float) -> float:
     base = confidence / 100
-    if amount > 50000:
-        base *= 0.7
+    settings = get_claim_type_settings()
+    if amount > settings["medium_max_amount"]:
+        base *= settings["high_amount_score_factor"]
     return round(base, 2)
-
-
-def _fraud_band_to_numeric(band: str) -> float:
-    """Convert fraud band (Low/Medium/High) to numeric score."""
-    band_lower = (band or "").strip().lower()
-    if band_lower == "low":
-        return 10.0
-    if band_lower == "medium":
-        return 50.0
-    if band_lower == "high":
-        return 90.0
-    return 0.0
 
 
 def _get_claim_status_label_for_evaluation(result: dict) -> str:
@@ -711,6 +820,11 @@ def _get_claim_status_label_for_evaluation(result: dict) -> str:
     status = (result.get("claim_status") or "").strip()
     if decision == "Reject" or status == "Rejected":
         return "Business Rule Validation-fail"
+    fraud_rule_results = result.get("fraud_rule_results") or []
+    if fraud_rule_results and not all(
+        bool(rule.get("passed")) for rule in fraud_rule_results if isinstance(rule, dict)
+    ):
+        return "Business Rule Validation-fail"
     return "Business Rule Validation-pass"
 
 
@@ -718,33 +832,31 @@ def _get_claim_status_for_result(result: dict) -> ClaimStatus | None:
     """
     Map run_fraud_detection result to fnol_claims.claim_status (claim_status table).
     Business Rule Validation (match your claim_status table):
-      - decision Reject → claim_status_id = 2 (Business Rule Validation-fail)
-      - All fraud rules passed → claim_status_id = 3 (Business Rule Validation-pass)
-      - Any fraud rule failed → claim_status_id = 2
+      - decision Reject → Business Rule Validation-fail (fallback: Rejected)
+      - All fraud rules passed → Business Rule Validation-pass (fallback: Open)
+      - Any fraud rule failed → Business Rule Validation-fail (fallback: Rejected)
     Uses fraud_rule_results so stored status matches what the user sees in the UI.
     """
+    def _resolve_status(*preferred_names: str) -> ClaimStatus | None:
+        for name in preferred_names:
+            status = ClaimStatus.objects.filter(status_name__iexact=name).first()
+            if status:
+                return status
+        return None
+
     decision = (result.get("decision") or "").strip()
     if decision == "Reject":
-        status = ClaimStatus.objects.filter(pk=2).first()
-        return status or ClaimStatus.objects.filter(
-            status_name__iexact="Business Rule Validation-fail"
-        ).first()
+        return _resolve_status("Business Rule Validation-fail", "Rejected")
 
     # When not Reject, derive from fraud_rule_results so DB matches UI rule list
     fraud_rule_results = result.get("fraud_rule_results") or []
     if fraud_rule_results:
         all_passed = all(r.get("passed", False) for r in fraud_rule_results)
         if not all_passed:
-            status = ClaimStatus.objects.filter(pk=2).first()
-            return status or ClaimStatus.objects.filter(
-                status_name__iexact="Business Rule Validation-fail"
-            ).first()
+            return _resolve_status("Business Rule Validation-fail", "Rejected")
 
     # All rules passed (or no rules) → pass
-    status = ClaimStatus.objects.filter(pk=3).first()
-    return status or ClaimStatus.objects.filter(
-        status_name__iexact="Business Rule Validation-pass"
-    ).first()
+    return _resolve_status("Business Rule Validation-pass", "Open")
 
 
 def _run_process_claim_logic(data: dict) -> dict:
@@ -760,6 +872,9 @@ def _run_process_claim_logic(data: dict) -> dict:
     complaint_id = data.get("claim_id", "")
 
     estimated_amount = incident.get("estimated_amount") or 0
+    fallback_threshold = (
+        get_claim_type_settings()["fallback_threshold_percent"] / 100.0
+    )
     fraud_rule_results = _get_fraud_evaluation_rules(
         incident, policy, vehicle, documents, complaint_id=complaint_id or None
     )
@@ -774,7 +889,7 @@ def _run_process_claim_logic(data: dict) -> dict:
             "damage_confidence": 0,
             "fraud_score": "Low",
             "evaluation_score": 0,
-            "threshold": 0.75,
+            "threshold": fallback_threshold,
             "claim_type": None,
             "estimated_amount": estimated_amount,
         }
@@ -792,7 +907,7 @@ def _run_process_claim_logic(data: dict) -> dict:
             "damage_confidence": 0,
             "fraud_score": fraud_score,
             "evaluation_score": 0,
-            "threshold": 0.75,
+            "threshold": fallback_threshold,
             "claim_type": None,
             "estimated_amount": estimated_amount,
         }
@@ -809,7 +924,7 @@ def _run_process_claim_logic(data: dict) -> dict:
             "damage_confidence": damage_detection(incident),
             "fraud_score": fraud_score,
             "evaluation_score": 0,
-            "threshold": 0.75,
+            "threshold": fallback_threshold,
             "claim_type": None,
             "estimated_amount": estimated_amount,
         }
@@ -839,9 +954,230 @@ def _run_process_claim_logic(data: dict) -> dict:
     }
 
 
-def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
+def _build_fnol_photo_maps(
+    complaint_ids: list[str],
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """
+    Build both public photo URLs and normalized stored paths in one query so MySQL-backed
+    list views do not re-fetch photos per claim.
+    """
+    from claims.media_paths import (
+        damage_photo_public_relative_url,
+        normalize_stored_photo_path,
+    )
+
+    public_urls: dict[str, list[str]] = defaultdict(list)
+    normalized_paths: dict[str, list[str]] = defaultdict(list)
+
+    if not complaint_ids:
+        return public_urls, normalized_paths
+
+    photo_rows = (
+        FnolDamagePhoto.objects.filter(complaint_id__in=complaint_ids)
+        .order_by("id")
+        .values_list("complaint_id", "photo_path")
+    )
+    for complaint_id, path in photo_rows:
+        if not path:
+            continue
+        public_url = damage_photo_public_relative_url(path)
+        if public_url:
+            public_urls[complaint_id].append(public_url)
+        normalized = normalize_stored_photo_path(path)
+        if normalized:
+            normalized_paths[complaint_id].append(normalized)
+
+    return public_urls, normalized_paths
+
+
+# Cap evaluation history rows per claim for /fraud-claims.
+# Sourced from cfg so it scales with MYSQL_READ_TIMEOUT — see vca_config.py.
+_EVAL_RECORDS_PER_CLAIM_CAP = _vca_cfg.eval_records_per_claim_cap
+
+
+def _photo_maps_from_prefetched_fnol_claims(
+    claims: list,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """
+    Build photo URL maps from Prefetch(to_attr="_ordered_damage_photos") so list_fnol
+    does not run a second query against fnol_damage_photos.
+    """
+    from claims.media_paths import (
+        damage_photo_public_relative_url,
+        normalize_stored_photo_path,
+    )
+
+    public_urls: dict[str, list[str]] = defaultdict(list)
+    normalized_paths: dict[str, list[str]] = defaultdict(list)
+    for claim in claims:
+        cid = claim.complaint_id
+        rows = getattr(claim, "_ordered_damage_photos", None) or []
+        for row in rows:
+            path = getattr(row, "photo_path", None) or ""
+            if not path:
+                continue
+            public_url = damage_photo_public_relative_url(path)
+            if public_url:
+                public_urls[cid].append(public_url)
+            normalized = normalize_stored_photo_path(path)
+            if normalized:
+                normalized_paths[cid].append(normalized)
+    return public_urls, normalized_paths
+
+
+def _evaluation_counts_by_complaint(complaint_ids: list[str]) -> dict[str, int]:
+    if not complaint_ids:
+        return {}
+    rows = (
+        ClaimEvaluationResponse.objects.filter(complaint_id__in=complaint_ids)
+        .values("complaint_id")
+        .annotate(c=Count("id"))
+        .values_list("complaint_id", "c")
+    )
+    return {str(cid): int(c) for cid, c in rows}
+
+
+def _evaluation_records_by_complaint_capped(
+    complaint_ids: list[str],
+    *,
+    per_claim_limit: int = _EVAL_RECORDS_PER_CLAIM_CAP,
+) -> dict[str, list[dict[str, object]]]:
+    """
+    Latest N evaluation versions per complaint (by version DESC), using a window query
+    when supported (MySQL 8+, PostgreSQL, SQLite 3.25+). Falls back to a full scan +
+    Python truncation on older MySQL or if the query fails.
+    """
+    records_by_complaint: dict[str, list[dict[str, object]]] = defaultdict(list)
+    if not complaint_ids or per_claim_limit < 1:
+        return records_by_complaint
+
+    try:
+        placeholders = ", ".join(["%s"] * len(complaint_ids))
+        sql = f"""
+            SELECT complaint_id, version, threshold_value, claim_status, reason
+            FROM (
+                SELECT complaint_id, version, threshold_value, claim_status, reason,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY complaint_id ORDER BY version DESC
+                       ) AS rn
+                FROM claim_evaluation_response
+                WHERE complaint_id IN ({placeholders})
+            ) ranked
+            WHERE ranked.rn <= %s
+            ORDER BY complaint_id ASC, version ASC
+        """
+        params = list(complaint_ids) + [per_claim_limit]
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            desc = [c[0] for c in (cursor.description or [])]
+            for row in cursor.fetchall():
+                rec = dict(zip(desc, row))
+                cid = str(rec["complaint_id"])
+                reason_raw = rec.get("reason")
+                claim_st = rec.get("claim_status")
+                records_by_complaint[cid].append(
+                    {
+                        "complaint_id": cid,
+                        "version": rec["version"],
+                        "threshold_value": rec["threshold_value"],
+                        "claim_status": (claim_st or "—") or "—",
+                        "reason": ((reason_raw or "").strip() or "—"),
+                    }
+                )
+        return records_by_complaint
+    except Exception as exc:
+        logger.warning(
+            "evaluation history window query failed (%s); using full scan + truncate",
+            exc,
+        )
+
+    full = _evaluation_records_by_complaint(complaint_ids)
+    out: dict[str, list[dict[str, object]]] = {}
+    for cid in complaint_ids:
+        rows = full.get(cid, [])
+        if len(rows) > per_claim_limit:
+            out[cid] = rows[-per_claim_limit:]
+        else:
+            out[cid] = rows
+    return out
+
+
+def _latest_evaluations_by_complaint(
+    complaint_ids: list[str],
+    *,
+    for_list: bool = False,
+) -> dict[str, ClaimEvaluationResponse]:
+    """
+    Batch-load latest evaluation rows. When for_list=True, omit large TextField columns
+    (llm_damages) so MySQL list endpoints stay fast for many claims.
+    """
+    if not complaint_ids:
+        return {}
+    qs = ClaimEvaluationResponse.objects.filter(
+        complaint_id__in=complaint_ids,
+        is_latest=True,
+    )
+    if for_list:
+        qs = qs.only(
+            "complaint_id",
+            "claim_status",
+            "estimated_amount",
+            "claim_amount",
+            "decision",
+            "reason",
+            "created_date",
+        )
+    else:
+        qs = qs.only(
+            "complaint_id",
+            "claim_status",
+            "estimated_amount",
+            "claim_amount",
+            "llm_damages",
+            "llm_severity",
+            "decision",
+            "reason",
+            "created_date",
+        )
+    return {row.complaint_id: row for row in qs}
+
+
+def _evaluation_records_by_complaint(
+    complaint_ids: list[str],
+) -> dict[str, list[dict[str, object]]]:
+    records_by_complaint: dict[str, list[dict[str, object]]] = defaultdict(list)
+    if not complaint_ids:
+        return records_by_complaint
+
+    eval_rows = (
+        ClaimEvaluationResponse.objects.filter(complaint_id__in=complaint_ids)
+        .order_by("complaint_id", "version")
+        .values("complaint_id", "version", "threshold_value", "claim_status", "reason")
+    )
+    for row in eval_rows:
+        complaint_id = row["complaint_id"]
+        records_by_complaint[complaint_id].append(
+            {
+                "complaint_id": complaint_id,
+                "version": row["version"],
+                "threshold_value": row["threshold_value"],
+                "claim_status": row["claim_status"] or "—",
+                "reason": (row["reason"] or "").strip() or "—",
+            }
+        )
+    return records_by_complaint
+
+
+def _fnol_claim_to_raw_response(
+    claim: FnolClaim, normalized_photo_paths: Optional[list[str]] = None
+) -> dict:
     """Build FnolPayload-like dict from FnolClaim for process_claim compatibility."""
-    photos = [p.photo_path for p in claim.damage_photos.all() if p.photo_path]
+
+    photos = normalized_photo_paths
+    if photos is None:
+        _, normalized_photo_map = _build_fnol_photo_maps([claim.complaint_id])
+        photos = normalized_photo_map.get(claim.complaint_id, [])
+
     incident_dt = claim.incident_date_time.isoformat() if claim.incident_date_time else None
     return {
         "claim_id": claim.complaint_id,
@@ -863,11 +1199,19 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
             "loss_description": claim.incident_description or "",
             "claim_type": claim.incident_type or "",
             "estimated_amount": 0,  # fnol_claims schema doesn't include this; can be extended
+            "accident_location": getattr(claim, "accident_location", "") or "",
             "liability_admission": getattr(claim, "liability_admission", None),
             "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
             "injury_indicator": getattr(claim, "injury_indicator", None),
             "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+            "flood_coverage": getattr(claim, "flood_coverage", None),
         },
+        "accident_location": getattr(claim, "accident_location", "") or "",
+        "liability_admission": getattr(claim, "liability_admission", None),
+        "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+        "injury_indicator": getattr(claim, "injury_indicator", None),
+        "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+        "flood_coverage": getattr(claim, "flood_coverage", None),
         "claimant": {"driver_name": claim.policy_holder_name or ""},
         "documents": {
             "rc_copy_uploaded": False,
@@ -880,11 +1224,30 @@ def _fnol_claim_to_raw_response(claim: FnolClaim) -> dict:
     }
 
 
-def _fnol_claim_to_response(claim: FnolClaim) -> dict:
+def _fnol_claim_to_response(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None = None,
+    photo_urls: Optional[list[str]] = None,
+    normalized_photo_paths: Optional[list[str]] = None,
+    *,
+    list_mode: bool = False,
+) -> dict:
     """Convert FnolClaim to API response format. Includes latest evaluation amounts when available."""
-    latest_eval = ClaimEvaluationResponse.objects.filter(
-        complaint_id=claim.complaint_id, is_latest=True
-    ).first()
+    if latest_eval is None and not list_mode:
+        latest_eval = ClaimEvaluationResponse.objects.filter(
+            complaint_id=claim.complaint_id, is_latest=True
+        ).only(
+            "complaint_id",
+            "claim_status",
+            "estimated_amount",
+            "claim_amount",
+            "llm_damages",
+            "llm_severity",
+            "decision",
+            "reason",
+            "created_date",
+        ).first()
+
     estimated_amount = None
     claim_amount = None
     llm_damages = None
@@ -892,15 +1255,16 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
     if latest_eval:
         estimated_amount = float(latest_eval.estimated_amount or 0)
         claim_amount = float(latest_eval.claim_amount or 0)
-        llm_damages = latest_eval.llm_damages  # JSON string
-        llm_severity = latest_eval.llm_severity
+        if not list_mode:
+            llm_damages = latest_eval.llm_damages
+            llm_severity = latest_eval.llm_severity
 
-    BASE_URL = "media/vehicle_damage/"
-
-    photo_urls = [
-        f"{BASE_URL}{path}"
-        for path in claim.damage_photos.values_list("photo_path", flat=True)
-    ]
+    if photo_urls is None or normalized_photo_paths is None:
+        photo_url_map, normalized_photo_map = _build_fnol_photo_maps([claim.complaint_id])
+        if photo_urls is None:
+            photo_urls = photo_url_map.get(claim.complaint_id, [])
+        if normalized_photo_paths is None:
+            normalized_photo_paths = normalized_photo_map.get(claim.complaint_id, [])
 
     return {
         "id": claim.complaint_id,
@@ -918,13 +1282,23 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "incident_type": claim.incident_type,
         "incident_description": claim.incident_description,
         "incident_date_time": claim.incident_date_time.isoformat() if claim.incident_date_time else None,
+        "accident_location": getattr(claim, "accident_location", None),
+        "liability_admission": getattr(claim, "liability_admission", None),
+        "dashcam_cctv_evidence": getattr(claim, "dashcam_cctv_evidence", None),
+        "injury_indicator": getattr(claim, "injury_indicator", None),
+        "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
+        "flood_coverage": getattr(claim, "flood_coverage", None),
+        "previous_claims_last_12_months": 0,
         "fir_document_copy": claim.fir_document_copy,
         "insurance_document_copy": claim.insurance_document_copy,
         "damage_photos": photo_urls,
-        "raw_response": _fnol_claim_to_raw_response(claim),
-        "status": claim.claim_status.status_name if claim.claim_status else "Open",
+        "raw_response": _fnol_claim_to_raw_response(
+            claim, normalized_photo_paths=normalized_photo_paths
+        ),
+            "status": effective_claim_status(claim, latest_eval),
         "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
+        "excess_amount": float(claim.excess_amount) if claim.excess_amount is not None else None,
         "llm_damages": llm_damages,
         "llm_severity": llm_severity,
         "created_date": claim.created_date.isoformat() if getattr(claim, "created_date", None) else None,
@@ -932,6 +1306,7 @@ def _fnol_claim_to_response(claim: FnolClaim) -> dict:
         "updated_date": claim.updated_date.isoformat() if getattr(claim, "updated_date", None) else None,
         "updated_by": getattr(claim, "updated_by", None),
         "re_open": 1 if getattr(claim, "re_open", 0) == 1 else 0,
+        "workflow_state": compute_claim_workflow_state(claim.complaint_id),
     }
 
 
@@ -941,86 +1316,94 @@ def list_fraud_claims(request):
     """
     Return re-open claims only (fnol_claims.re_open = 1) that have been through fraud detection.
     Used by Re-Open Claims page - shows only claims marked for re-open.
+    The three dependent queries run in parallel to reduce wall-clock time on a remote DB.
     """
-    # Re-open claims only (re_open=1) that exist in claim_evaluation_response
-    fnol_claims = (
-        FnolClaim.objects.filter(
-            complaint_id__in=ClaimEvaluationResponse.objects.values_list(
-                "complaint_id", flat=True
-            ).distinct(),
-            re_open=1,
-        )
-        .select_related("claim_status")
-        .order_by("-incident_date_time", "-complaint_id")
-    )
     results = []
-    for claim in fnol_claims:
-        eval_row = ClaimEvaluationResponse.objects.filter(
-            complaint_id=claim.complaint_id, is_latest=True
-        ).first()
-        if not eval_row:
-            continue
-        status_name = (claim.claim_status.status_name if claim.claim_status else "") or ""
-        status_lower = status_name.lower()
-        if "fraud" in status_lower or status_lower == "fraudulent":
-            ui_status = "confirmed"
-        elif status_lower in ("auto approved", "closed"):
-            ui_status = "cleared"
-        else:
-            ui_status = "under_review"
-
-        decision = (eval_row.decision or "").lower()
-        if decision == "reject":
-            risk_score = 90
-        elif decision == "manual review":
-            risk_score = 65
-        else:
-            risk_score = 25
-
-        reason = eval_row.reason or eval_row.decision or "—"
-
-        re_open = getattr(claim, "re_open", None)
-        if re_open is None:
-            re_open = 0
-        try:
-            re_open = int(re_open)
-        except (TypeError, ValueError):
-            re_open = 0
-
-        eval_records = (
-            ClaimEvaluationResponse.objects.filter(complaint_id=claim.complaint_id)
-            .order_by("version")
-            .values("complaint_id", "version", "threshold_value", "claim_status", "reason")
+    try:
+        fnol_claims = list(
+            FnolClaim.objects.filter(re_open=1)
+            .select_related("claim_status")
+            .order_by("-incident_date_time", "-complaint_id")
         )
-        evaluation_records = [
-            {
-                "complaint_id": r["complaint_id"],
-                "version": r["version"],
-                "threshold_value": r["threshold_value"],
-                "claim_status": r["claim_status"] or "—",
-                "reason": (r["reason"] or "").strip() or "—",
-            }
-            for r in eval_records
-        ]
-        times_processed = len(evaluation_records)
+        complaint_ids = [claim.complaint_id for claim in fnol_claims]
 
-        latest_claim_status = (eval_row.claim_status or "").strip() or "—"
+        if not complaint_ids:
+            return Response([])
 
-        results.append({
-            "complaint_id": claim.complaint_id,
-            "claimNumber": claim.complaint_id,
-            "customer": claim.policy_holder_name or "—",
-            "riskScore": risk_score,
-            "reason": reason,
-            "amount": float(eval_row.estimated_amount or eval_row.claim_amount or 0),
-            "status": ui_status,
-            "latest_claim_status": latest_claim_status,
-            "detectedAt": eval_row.created_date.isoformat() if eval_row.created_date else None,
-            "indicators": [reason] if reason and reason != "—" else [],
-            "re_open": re_open,
-            "times_processed": times_processed,
-            "evaluation_records": evaluation_records,
-        })
+        # Run the three independent follow-up queries in parallel
+        latest_eval_map, evaluation_records_map, evaluation_counts_map = _run_parallel(
+            [
+                partial(_latest_evaluations_by_complaint, complaint_ids, for_list=True),
+                partial(_evaluation_records_by_complaint_capped, complaint_ids),
+                partial(_evaluation_counts_by_complaint, complaint_ids),
+            ]
+        )
+
+        for claim in fnol_claims:
+            eval_row = latest_eval_map.get(claim.complaint_id)
+            if not eval_row:
+                continue
+            status_name = effective_claim_status(claim, eval_row)
+            status_lower = status_name.lower()
+            if "fraud" in status_lower or status_lower == "fraudulent":
+                ui_status = "confirmed"
+            elif status_lower in ("auto approved", "closed"):
+                ui_status = "cleared"
+            else:
+                ui_status = "under_review"
+
+            decision = (eval_row.decision or "").lower()
+            if decision == "reject":
+                risk_score = 90
+            elif decision == "manual review":
+                risk_score = 65
+            else:
+                risk_score = 25
+
+            reason = eval_row.reason or eval_row.decision or "—"
+
+            re_open = getattr(claim, "re_open", None)
+            if re_open is None:
+                re_open = 0
+            try:
+                re_open = int(re_open)
+            except (TypeError, ValueError):
+                re_open = 0
+
+            evaluation_records = evaluation_records_map.get(
+                str(claim.complaint_id), []
+            )
+            times_processed = evaluation_counts_map.get(str(claim.complaint_id), 0)
+
+            latest_claim_status = status_name or "—"
+
+            results.append({
+                "complaint_id": claim.complaint_id,
+                "claimNumber": claim.complaint_id,
+                "customer": claim.policy_holder_name or "—",
+                "riskScore": risk_score,
+                "reason": reason,
+                "amount": float(eval_row.estimated_amount or eval_row.claim_amount or 0),
+                "status": ui_status,
+                "latest_claim_status": latest_claim_status,
+                "detectedAt": eval_row.created_date.isoformat() if eval_row.created_date else None,
+                "indicators": [reason] if reason and reason != "—" else [],
+                "re_open": re_open,
+                "times_processed": times_processed,
+                "evaluation_records": evaluation_records,
+            })
+    except DatabaseError as exc:
+        logger.exception(
+            "list_fraud_claims: database error while building re-open claim queue: %s",
+            exc,
+        )
+        return _api_error_response(
+            request,
+            message="Unable to load the re-open claim queue right now.",
+            developer_message=str(exc),
+            error_code="fraud_claims_unavailable",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     return Response(results)
 
 
@@ -1029,23 +1412,153 @@ def list_fraud_claims(request):
 def list_fnol(request):
     """
     Return a list of FNOL claims.
+    Photo maps are derived from the in-memory prefetch result; the evaluation query
+    runs as a second, independent DB call.
     """
-    qs = FnolClaim.objects.all().order_by("-incident_date_time", "-complaint_id")
-    data = [_fnol_claim_to_response(obj) for obj in qs]
-    return Response(data)
+    try:
+        prefetch_photos = Prefetch(
+            "damage_photos",
+            queryset=FnolDamagePhoto.objects.order_by("id"),
+            to_attr="_ordered_damage_photos",
+        )
+        qs = list(
+            FnolClaim.objects.all()
+            .select_related("claim_status")
+            .prefetch_related(prefetch_photos)
+            .order_by("-incident_date_time", "-complaint_id")
+        )
+        complaint_ids = [obj.complaint_id for obj in qs]
+
+        if not complaint_ids:
+            return Response([])
+
+        # Evaluations query and photo-map building can run concurrently:
+        # photo maps use already-prefetched in-memory data (no DB call), so
+        # we let it run on the same thread while the eval query goes async.
+        latest_eval_map = _latest_evaluations_by_complaint(
+            complaint_ids, for_list=True
+        )
+        photo_urls_by_claim, normalized_photos_by_claim = (
+            _photo_maps_from_prefetched_fnol_claims(qs)
+        )
+        data = [
+            _fnol_claim_to_response(
+                obj,
+                latest_eval=latest_eval_map.get(obj.complaint_id),
+                photo_urls=photo_urls_by_claim.get(obj.complaint_id, []),
+                normalized_photo_paths=normalized_photos_by_claim.get(
+                    obj.complaint_id, []
+                ),
+                list_mode=True,
+            )
+            for obj in qs
+        ]
+        return Response(data)
+    except DatabaseError as exc:
+        logger.exception("list_fnol: database error while loading claim list: %s", exc)
+        return _api_error_response(
+            request,
+            message="Unable to load claims right now.",
+            developer_message=str(exc),
+            error_code="fnol_list_unavailable",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
 
-@api_view(['GET'])
+@api_view(['GET', 'DELETE'])
+@permission_classes([IsAuthenticated])
 def get_fnol(request, pk: str):
     """
-    Return a single FNOL claim by complaint_id.
+    Return or delete a single FNOL claim by complaint_id.
     """
-    obj = get_object_or_404(FnolClaim, complaint_id=pk)
-    data = _fnol_claim_to_response(obj)
+    obj = get_object_or_404(
+        FnolClaim.objects.select_related("claim_status"), complaint_id=pk
+    )
+    if request.method == "DELETE":
+        deleted_counts = _delete_fnol_claim_record(obj)
+        return Response(
+            {
+                "message": "Claim deleted.",
+                "complaint_id": pk,
+                "deleted_counts": deleted_counts,
+            },
+            status=status.HTTP_200_OK,
+        )
+    latest_eval_map = _latest_evaluations_by_complaint([pk], for_list=False)
+    photo_urls_by_claim, normalized_photos_by_claim = _build_fnol_photo_maps([pk])
+    data = _fnol_claim_to_response(
+        obj,
+        latest_eval=latest_eval_map.get(pk),
+        photo_urls=photo_urls_by_claim.get(pk, []),
+        normalized_photo_paths=normalized_photos_by_claim.get(pk, []),
+        list_mode=False,
+    )
     return Response(data)
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def bulk_delete_fnol(request):
+    """
+    Delete multiple FNOL claims by complaint_id in one request.
+    """
+    complaint_ids_raw = request.data.get("complaint_ids")
+    if not isinstance(complaint_ids_raw, list):
+        return Response(
+            {"error": "complaint_ids must be a non-empty list."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    complaint_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in complaint_ids_raw:
+        complaint_id = str(raw_id or "").strip()
+        if complaint_id and complaint_id not in seen:
+            complaint_ids.append(complaint_id)
+            seen.add(complaint_id)
+
+    if not complaint_ids:
+        return Response(
+            {"error": "complaint_ids must contain at least one claim id."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    claims_by_id = {
+        claim.complaint_id: claim
+        for claim in FnolClaim.objects.filter(complaint_id__in=complaint_ids)
+    }
+    deleted_ids: list[str] = []
+    not_found_ids: list[str] = []
+    deleted_rows = 0
+    deleted_counts_by_claim: dict[str, dict[str, int]] = {}
+
+    for complaint_id in complaint_ids:
+        claim = claims_by_id.get(complaint_id)
+        if claim is None:
+            not_found_ids.append(complaint_id)
+            continue
+
+        deleted_counts = _delete_fnol_claim_record(claim)
+        deleted_counts_by_claim[complaint_id] = deleted_counts
+        deleted_ids.append(complaint_id)
+        deleted_rows += sum(int(value) for value in deleted_counts.values())
+
+    return Response(
+        {
+            "message": "Claims deleted." if deleted_ids else "No matching claims found.",
+            "requested_count": len(complaint_ids),
+            "deleted_count": len(deleted_ids),
+            "deleted_ids": deleted_ids,
+            "not_found_ids": not_found_ids,
+            "deleted_rows": deleted_rows,
+            "deleted_counts_by_claim": deleted_counts_by_claim,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_claim_evaluation(request, complaint_id: str):
     """
     Return the latest claim evaluation response for a complaint_id.
@@ -1057,10 +1570,44 @@ def get_claim_evaluation(request, complaint_id: str):
         complaint_id=complaint_id, is_latest=True
     ).first()
     if not latest:
+        # Fresh claim: no evaluation row yet — expected empty state (not an HTTP error).
         return Response(
-            {"error": f"No evaluation found for complaint_id: {complaint_id}"},
-            status=status.HTTP_404_NOT_FOUND,
+            {
+                "complaint_id": complaint_id,
+                "not_started": True,
+                "workflow_state": compute_claim_workflow_state(complaint_id),
+                "version": None,
+                "is_latest": None,
+                "damage_confidence": None,
+                "estimated_amount": None,
+                "claim_amount": None,
+                "excess_amount": None,
+                "estimated_repair": None,
+                "threshold_value": None,
+                "claim_type": None,
+                "claim_complexity": None,
+                "claim_complexity_threshold": None,
+                "claim_complexity_amount": None,
+                "severity": None,
+                "decision": None,
+                "claim_status": None,
+                "reason": None,
+                "fraud_score": None,
+                "fraud_rule_results": [],
+                "decision_summary": None,
+                "llm_damages": None,
+                "llm_severity": None,
+                "created_date": None,
+                "updated_date": None,
+            },
+            status=status.HTTP_200_OK,
         )
+    decision_summary = sync_claim_evaluation_decision_state(
+        complaint_id=complaint_id,
+        latest_eval=latest,
+    )
+    latest.refresh_from_db()
+
     damages = None
     if latest.llm_damages:
         try:
@@ -1076,17 +1623,26 @@ def get_claim_evaluation(request, complaint_id: str):
 
     # Severity from claim type: SIMPLE=minor, MEDIUM=moderate, COMPLEX=severe
     claim_type_upper = (latest.claim_type or "").strip().upper()
-    if claim_type_upper == "SIMPLE":
-        severity = "minor"
-    elif claim_type_upper == "MEDIUM":
-        severity = "moderate"
-    elif claim_type_upper == "COMPLEX":
-        severity = "severe"
-    else:
-        severity = latest.llm_severity or None
+    severity = _CLAIM_TYPE_SEVERITY.get(claim_type_upper) or latest.llm_severity or None
+
+    rules_snapshot = latest.fraud_rule_results
+    if not isinstance(rules_snapshot, list):
+        rules_snapshot = []
+
+    # ── Claim complexity (Simple Claim / Major Claim) ──────────────────────────
+    # Prefer the persisted DA gross estimate (ClaimPhase1Valuation) so the
+    # classification reflects actual assessed repair cost, not the FNOL estimate.
+    # Falls back to claim_amount → estimated_amount → 0 when DA has not run yet.
+    major_threshold = get_major_claim_threshold()
+    valuation = ClaimPhase1Valuation.objects.filter(complaint=fnol).first() if fnol else None
+    da_gross = float(valuation.gross_estimate or 0) if valuation else 0
+    complexity_amount = da_gross or claim_amount or float(latest.estimated_amount or 0)
+    claim_complexity = "Major Claim" if complexity_amount >= major_threshold else "Simple Claim"
 
     return Response({
         "complaint_id": latest.complaint_id,
+        "not_started": False,
+        "workflow_state": compute_claim_workflow_state(complaint_id),
         "version": latest.version,
         "is_latest": latest.is_latest,
         "damage_confidence": float(latest.damage_confidence or 0),
@@ -1096,12 +1652,19 @@ def get_claim_evaluation(request, complaint_id: str):
         "estimated_repair": estimated_repair,
         "threshold_value": latest.threshold_value,
         "claim_type": latest.claim_type,
+        # Binary claim complexity classification (driven by MAJOR_CLAIM_THRESHOLD PricingConfig)
+        "claim_complexity": claim_complexity,
+        "claim_complexity_threshold": major_threshold,
+        "claim_complexity_amount": complexity_amount,
         "severity": severity,
         "decision": latest.decision,
         "claim_status": latest.claim_status,
         "reason": latest.reason,
+        "decision_summary": decision_summary,
         "llm_damages": damages,
         "llm_severity": latest.llm_severity,
+        "fraud_score": latest.fraud_band or None,
+        "fraud_rule_results": rules_snapshot,
         "created_date": latest.created_date.isoformat() if latest.created_date else None,
         "updated_date": latest.updated_date.isoformat() if latest.updated_date else None,
     })
@@ -1257,6 +1820,20 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
     claimant = data.get("claimant") or {}
     documents = data.get("documents") or {}
     complaint_id = data.get("claim_id") or ""
+    accident_location = (
+        incident.get("accident_location")
+        or data.get("accident_location")
+        or ""
+    )
+
+    def _incident_bool(field_name: str):
+        if incident.get(field_name) is not None:
+            return incident.get(field_name)
+        return data.get(field_name)
+
+    excess_amount = incident.get("excess_amount")
+    if excess_amount in ("", None):
+        excess_amount = data.get("excess_amount")
     incident_dt = incident.get("date_time_of_loss")
     if incident_dt:
         try:
@@ -1265,9 +1842,13 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
             incident_dt = None
     policy_start = parse_date(policy.get("policy_start_date")) if policy.get("policy_start_date") else None
     policy_end = parse_date(policy.get("policy_end_date")) if policy.get("policy_end_date") else None
+    coverage_raw = policy.get("coverage_type")
+    coverage_stripped = (
+        str(coverage_raw).strip() if coverage_raw not in (None, "") else ""
+    )
     return {
         "complaint_id": complaint_id,
-        "coverage_type": policy.get("coverage_type"),
+        "coverage_type": coverage_stripped or None,
         "policy_number": policy.get("policy_number"),
         "policy_status": policy.get("policy_status"),
         "policy_start_date": policy_start,
@@ -1280,13 +1861,21 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "incident_type": incident.get("claim_type"),
         "incident_description": incident.get("loss_description"),
         "incident_date_time": incident_dt,
+        "accident_location": str(accident_location).strip() or None,
+        "liability_admission": _incident_bool("liability_admission"),
+        "dashcam_cctv_evidence": _incident_bool("dashcam_cctv_evidence"),
+        "injury_indicator": _incident_bool("injury_indicator"),
+        "commercial_vehicle": _incident_bool("commercial_vehicle"),
+        "flood_coverage": _incident_bool("flood_coverage"),
         "fir_document_copy": documents.get("fir_path") if isinstance(documents.get("fir_path"), str) else None,
         "insurance_document_copy": documents.get("insurance_path") if isinstance(documents.get("insurance_path"), str) else None,
+        "excess_amount": excess_amount if excess_amount not in ("", None) else 0,
         "re_open": 0,  # New/fetched claim: set to 0 when saving via Fetch FNOL Data
     }
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def save_fnol(request):
     """
     Save FNOL to fnol_claims and fnol_damage_photos.
@@ -1313,14 +1902,17 @@ def save_fnol(request):
         defaults=claim_data,
     )
 
-    # Handle damage photos
+    # Handle damage photos (strings or { image: { url } } objects — normalized to basename)
     documents = data.get("documents") or {}
     photo_paths = documents.get("photos")
     if isinstance(photo_paths, list):
+        from claims.media_paths import coerce_fnol_photo_entry
+
         record.damage_photos.all().delete()
-        for path in photo_paths:
-            if isinstance(path, str) and path.strip():
-                FnolDamagePhoto.objects.create(complaint=record, photo_path=path.strip())
+        for item in photo_paths:
+            normalized = coerce_fnol_photo_entry(item)
+            if normalized:
+                FnolDamagePhoto.objects.create(complaint=record, photo_path=normalized)
 
     return Response(
         {
@@ -1332,6 +1924,7 @@ def save_fnol(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def process_claim(request):
     """
     Run claim validation (product rule, fraud check, damage detection, etc.).
@@ -1386,7 +1979,14 @@ def run_fraud_detection(request, complaint_id: str):
         is_latest=False
     )
     evaluation_claim_status = _get_claim_status_label_for_evaluation(result)
-    ClaimEvaluationResponse.objects.create(
+    _fs = result.get("fraud_score")
+    fraud_band = None
+    if _fs is not None and str(_fs).strip():
+        fraud_band = str(_fs).strip()[:20]
+    fraud_rules_snapshot = result.get("fraud_rule_results")
+    if fraud_rules_snapshot is not None and not isinstance(fraud_rules_snapshot, list):
+        fraud_rules_snapshot = None
+    latest_eval = ClaimEvaluationResponse.objects.create(
         complaint_id=complaint_id,
         version=next_version,
         is_latest=True,
@@ -1398,6 +1998,8 @@ def run_fraud_detection(request, complaint_id: str):
         decision=(result.get("decision") or "")[:20],
         claim_status=(evaluation_claim_status or "")[:50],
         reason=result.get("reason"),
+        fraud_band=fraud_band,
+        fraud_rule_results=fraud_rules_snapshot,
         created_by=user_id,
         updated_by=user_id,
     )
@@ -1408,8 +2010,20 @@ def run_fraud_detection(request, complaint_id: str):
         fnol_claim.claim_status = new_status
         fnol_claim.save(update_fields=["claim_status"])
 
+    sync_claim_evaluation_decision_state(
+        complaint_id=complaint_id,
+        latest_eval=latest_eval,
+    )
+
     return Response(result, status=status.HTTP_200_OK)
 
+
+# Severity label keyed by claim_type (upper-case). Used in get_claim_evaluation.
+_CLAIM_TYPE_SEVERITY: dict[str, str] = {
+    "SIMPLE": "minor",
+    "MEDIUM": "moderate",
+    "COMPLEX": "severe",
+}
 
 # Report brand colors (blue and orange)
 _REPORT_BLUE = colors.HexColor("#00205B")
@@ -1507,6 +2121,22 @@ def _section_heading(text, use_orange=False):
     return Paragraph(text, style)
 
 
+def _safe_report_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _truncate_report_text(value: str | None, limit: int = 140) -> str:
+    text = (value or "").strip()
+    if not text:
+        return "—"
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1].rstrip()}…"
+
+
 def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result: dict) -> bytes:
     """Build MOTOR CLAIM RECOMMENDATION REPORT PDF with blue/orange styling and tabular sections."""
     buffer = io.BytesIO()
@@ -1520,6 +2150,16 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     )
     story = []
     styles = getSampleStyleSheet()
+    fraud_rows = list(
+        ImageFraudResult.objects.filter(complaint=claim).order_by("-fraud_score", "-created_at")
+    )
+    duplicate_rows = list(
+        ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by("-similarity_score", "-created_at")
+    )
+    part_rows = list(
+        DamagePartAssessment.objects.filter(complaint=claim).order_by("sort_order", "id")
+    )
+    valuation = ClaimPhase1Valuation.objects.filter(complaint=claim).first()
 
     # ----- Title (left-aligned; no line under heading per request) -----
     title_style = ParagraphStyle(
@@ -1597,54 +2237,169 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
         )
     story.append(KeepTogether([_section_heading("4. Business Rule Validation", use_orange=True), t4, _sp()]))
 
-    # ----- 5. Damage Assessment -----
-    if evaluation:
-        llm_d = evaluation.llm_damages
-        damages_str = "—"
-        if llm_d:
-            try:
-                damages = json.loads(llm_d) if isinstance(llm_d, str) else llm_d
-                if isinstance(damages, list):
-                    parts = [
-                        d.get("damage_type", str(d)) if isinstance(d, dict) else str(d)
-                        for d in damages if d
-                    ]
-                    damages_str = ", ".join(parts) if parts else "—"
-                else:
-                    damages_str = str(llm_d)
-            except (TypeError, json.JSONDecodeError):
-                damages_str = str(llm_d)
-        damage_rows = [
-            ["Damage Confidence (%)", str(evaluation.damage_confidence or 0)],
-            ["Damages detected", damages_str],
-            ["Damage Severity", evaluation.llm_severity or "—"],
-        ]
-        t5 = _table_style_header_blue([["Item", "Value"]] + damage_rows)
-    else:
-        t5 = _table_style_header_blue([["Item", "Value"], ["—", "—"]])
-    story.append(KeepTogether([_section_heading("5. Damage Assessment"), t5, _sp()]))
+    # ----- 5. Media Trust & Duplicate Review -----
+    top_fraud_result = fraud_rows[0] if fraud_rows else None
+    max_fraud_score = round(
+        max((_safe_report_float(row.fraud_score) for row in fraud_rows), default=0.0),
+        2,
+    )
+    avg_fraud_score = round(
+        sum(_safe_report_float(row.fraud_score) for row in fraud_rows) / len(fraud_rows),
+        2,
+    ) if fraud_rows else 0.0
+    high_risk_count = sum(
+        1 for row in fraud_rows if _safe_report_float(row.fraud_score) >= 60
+    )
+    exif_warnings = sorted(
+        {
+            warning
+            for row in fraud_rows
+            for warning in ((row.exif_json or {}).get("warnings") or [])
+            if warning
+        }
+    )
+    top_duplicate = duplicate_rows[0] if duplicate_rows else None
+    media_rows = [
+        ["Photos Screened", str(len(fraud_rows))],
+        ["Highest Fraud Score", str(int(round(max_fraud_score))) if fraud_rows else "0"],
+        ["Average Fraud Score", str(int(round(avg_fraud_score))) if fraud_rows else "0"],
+        ["High-risk Images", str(high_risk_count)],
+    ]
+    if exif_warnings:
+        media_rows.append(["Metadata Warnings", _truncate_report_text(", ".join(exif_warnings))])
+    if top_duplicate:
+        media_rows.extend([
+            ["Strongest Duplicate Match", top_duplicate.other_complaint_id],
+            ["Duplicate Match Reason", _truncate_report_text(top_duplicate.match_reason.replace(",", ", "))],
+            ["Duplicate Similarity", f"{_safe_report_float(top_duplicate.similarity_score):.0f}%"],
+        ])
+    if top_fraud_result and top_fraud_result.llm_authenticity_notes:
+        media_rows.append(["Authenticity Note", _truncate_report_text(top_fraud_result.llm_authenticity_notes)])
+    t5 = _table_style_header_blue([["Item", "Value"]] + media_rows)
+    story.append(KeepTogether([_section_heading("5. Media Trust & Duplicate Review", use_orange=True), t5, _sp()]))
 
-    # ----- 6. Claim Evaluation / Final Recommendation -----
-    fnol = FnolClaim.objects.filter(complaint_id=claim.complaint_id).first()
-    excess_amount = float(fnol.excess_amount or 0) if fnol and getattr(fnol, "excess_amount", None) is not None else 0
-    claim_amount = float(evaluation.claim_amount or 0)
-    estimated_repair = max(0, claim_amount - excess_amount)
+    # ----- 6. Damage Assessment & Part-Level Breakdown -----
+    llm_d = evaluation.llm_damages if evaluation else None
+    damages_str = "—"
+    if llm_d:
+        try:
+            damages = json.loads(llm_d) if isinstance(llm_d, str) else llm_d
+            if isinstance(damages, list):
+                parts = [
+                    d.get("damage_type", str(d)) if isinstance(d, dict) else str(d)
+                    for d in damages if d
+                ]
+                damages_str = ", ".join(parts) if parts else "—"
+            else:
+                damages_str = str(llm_d)
+        except (TypeError, json.JSONDecodeError):
+            damages_str = str(llm_d)
+
+    currency_code = (
+        valuation.currency_code
+        if valuation and valuation.currency_code
+        else get_claim_market_context(claim=claim)["currency_code"]
+    ) or "THB"
+    part_total = round(sum(_safe_report_float(row.estimated_amount) for row in part_rows), 2)
+    gross_estimate = _safe_report_float(
+        valuation.gross_estimate if valuation and valuation.gross_estimate is not None else (
+            part_total if part_rows else (evaluation.estimated_amount or evaluation.claim_amount if evaluation else 0)
+        )
+    )
+    computed_excess = _safe_report_float(
+        valuation.excess_amount if valuation and valuation.excess_amount is not None else 0
+    )
+    policy_excess = _safe_report_float(claim.excess_amount) if claim.excess_amount is not None else 0.0
+    net_payable = _safe_report_float(
+        valuation.net_payable if valuation and valuation.net_payable is not None else (
+            evaluation.claim_amount if evaluation else max(0, gross_estimate - computed_excess)
+        )
+    )
+    damage_summary_rows = [
+        ["Damage Confidence (%)", str(evaluation.damage_confidence or 0) if evaluation else "—"],
+        ["Damages Detected", damages_str],
+        ["Damage Severity", evaluation.llm_severity if evaluation and evaluation.llm_severity else "—"],
+        ["Part Rows", str(len(part_rows))],
+        ["Line-item Total", f"{part_total:,.2f} {currency_code}" if part_rows else "—"],
+    ]
+    t6_summary = _table_style_header_blue([["Item", "Value"]] + damage_summary_rows)
+    story.append(KeepTogether([_section_heading("6. Damage Assessment & Part-Level Breakdown"), t6_summary]))
+    story.append(Spacer(1, 0.12 * inch))
+
+    if part_rows:
+        part_table_rows = [["Part", "Damage", "Severity %", "Action", f"Amount ({currency_code})"]]
+        for row in part_rows[:12]:
+            part_table_rows.append(
+                [
+                    row.part_name or "—",
+                    row.damage_type or "—",
+                    f"{_safe_report_float(row.severity_percent):.0f}%",
+                    row.repair_action or "—",
+                    f"{_safe_report_float(row.estimated_amount):,.2f}",
+                ]
+            )
+        if len(part_rows) > 12:
+            part_table_rows.append(
+                [f"{len(part_rows) - 12} more row(s) omitted", "—", "—", "—", "—"]
+            )
+        t6_parts = _table_style_header_blue(
+            part_table_rows,
+            col_widths=[1.55 * inch, 1.2 * inch, 0.85 * inch, 1.45 * inch, 1.15 * inch],
+            row_height=30,
+        )
+    else:
+        t6_parts = _table_style_header_blue(
+            [["Part", "Damage", "Severity %", "Action", f"Amount ({currency_code})"], ["No part-level damage rows saved", "—", "—", "—", "—"]],
+            col_widths=[1.55 * inch, 1.2 * inch, 0.85 * inch, 1.45 * inch, 1.15 * inch],
+            row_height=30,
+        )
+    story.append(t6_parts)
+    story.append(_sp())
+
+    # ----- 7. Valuation Summary -----
+    valuation_rows = [
+        ["Currency", currency_code],
+        ["Gross Estimate", f"{gross_estimate:,.2f} {currency_code}"],
+        ["Line-item Total", f"{part_total:,.2f} {currency_code}" if part_rows else "—"],
+        [
+            "Cross-check Status",
+            "Aligned" if (part_rows and abs(part_total - gross_estimate) < 0.01) else (
+                "No part rows" if not part_rows else "Review needed"
+            ),
+        ],
+        ["Computed Excess", f"{computed_excess:,.2f} {currency_code}"],
+        ["Policy Excess (FNOL)", f"{policy_excess:,.2f} {currency_code}" if claim.excess_amount is not None else "—"],
+        ["Net Payable", f"{net_payable:,.2f} {currency_code}"],
+        ["Part Count", str(len(part_rows))],
+    ]
+    t7 = _table_style_header_blue([["Field", "Value"]] + valuation_rows)
+    story.append(KeepTogether([_section_heading("7. Valuation Summary", use_orange=True), t7, _sp()]))
+
+    # ----- 8. Claim Evaluation / Final Recommendation -----
+    assessment_flags = []
+    if max_fraud_score >= 60:
+        assessment_flags.append(f"High fraud score {int(round(max_fraud_score))}")
+    if top_duplicate:
+        assessment_flags.append(f"Duplicate match {top_duplicate.other_complaint_id}")
+    if not assessment_flags:
+        assessment_flags.append("No material media alerts")
+
     if evaluation:
         eval_rows = [
-            ["Claim Amount (THB)", str(evaluation.claim_amount or evaluation.estimated_amount or "—")],
-            ["Excess Amount (THB)", str(excess_amount or "—")],
-            ["Estimated Repair (THB)", str(estimated_repair or "—")],
-            ["Claim Type", evaluation.claim_type or "—"],
             ["Decision", evaluation.decision or "—"],
             ["Claim Status", evaluation.claim_status or "—"],
-            # ["Conclusion", evaluation.reason or (evaluation.decision or "—")],
+            ["Claim Type", evaluation.claim_type or "—"],
+            ["Recommended Net Payable", f"{net_payable:,.2f} {currency_code}"],
+            ["Assessment Evidence Summary", _truncate_report_text("; ".join(assessment_flags))],
         ]
+        if evaluation.reason:
+            eval_rows.append(["Conclusion", _truncate_report_text(evaluation.reason, 180)])
         if evaluation.created_date:
             eval_rows.append(["Evaluated On", evaluation.created_date.strftime("%d/%m/%Y %H:%M")])
-        t6 = _table_style_header_blue([["Field", "Value"]] + eval_rows)
+        t8 = _table_style_header_blue([["Field", "Value"]] + eval_rows)
     else:
-        t6 = _table_style_header_blue([["Field", "Value"], ["—", "—"]])
-    story.append(KeepTogether([_section_heading("6. Final Recommendation", use_orange=True), t6]))
+        t8 = _table_style_header_blue([["Field", "Value"], ["—", "—"]])
+    story.append(KeepTogether([_section_heading("8. Final Recommendation", use_orange=True), t8]))
 
     doc.build(story)
     buffer.seek(0)
@@ -1657,20 +2412,21 @@ def recommendation_report_pdf(request, complaint_id: str):
     """
     Generate and return MOTOR CLAIM RECOMMENDATION REPORT as PDF.
     Available when claim status is Recommendation shared.
-    Contains: Claim Details, Vehicle Images, Fraud Evaluation, Damage Assessment, Claim Evaluation.
+    Contains: business-rule validation, media trust and duplicate evidence, part-level damage
+    breakdown, valuation summary, and final recommendation.
     """
     claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
-    status_name = (claim.claim_status.status_name if claim.claim_status else "").strip()
-    if status_name.lower() != "recommendation shared":
-        return Response(
-            {"detail": "Recommendation report is only available for claims with status 'Recommendation shared'."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
     evaluation = (
         ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
         .order_by("-created_date")
         .first()
     )
+    status_name = effective_claim_status(claim, evaluation)
+    if status_name.lower() != "recommendation shared":
+        return Response(
+            {"detail": "Recommendation report is only available for claims with status 'Recommendation shared'."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     if not evaluation:
         return Response(
             {"detail": "No evaluation found for this claim."},
@@ -1684,3 +2440,33 @@ def recommendation_report_pdf(request, complaint_id: str):
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def health_check(request):
+    """
+    Lightweight liveness + DB connectivity check.
+    Returns { status: "ok"|"degraded", db: "ok"|"error", db_error: "..." }
+    Always responds quickly; never waits more than MYSQL_CONNECT_TIMEOUT.
+    """
+    import time as _time
+    db_status = "ok"
+    db_error = None
+    t0 = _time.perf_counter()
+    try:
+        with connection.cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception as exc:
+        db_status = "error"
+        db_error = str(exc)
+    db_ms = round((_time.perf_counter() - t0) * 1000)
+    overall = "ok" if db_status == "ok" else "degraded"
+    payload = {
+        "status": overall,
+        "db": db_status,
+        "db_response_ms": db_ms,
+    }
+    if db_error:
+        payload["db_error"] = db_error
+    http_status = status.HTTP_200_OK if overall == "ok" else status.HTTP_503_SERVICE_UNAVAILABLE
+    return Response(payload, status=http_status)

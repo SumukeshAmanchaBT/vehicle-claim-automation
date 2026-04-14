@@ -9,7 +9,6 @@ import {
   Legend,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { mockClaimsTrend } from "@/lib/mock-data";
 
 export type TrendDataPoint = { date: string; claims: number; approved: number };
 
@@ -18,7 +17,8 @@ interface ClaimsTrendChartProps {
 }
 
 export function ClaimsTrendChart({ data }: ClaimsTrendChartProps) {
-  const chartData = (data && data.length > 0) ? data : mockClaimsTrend;
+  const chartData = data && data.length > 0 ? data : [];
+  const hasData = chartData.length > 0;
   return (
     <Card className="card-elevated">
       <CardHeader className="pb-2">
@@ -26,6 +26,11 @@ export function ClaimsTrendChart({ data }: ClaimsTrendChartProps) {
       </CardHeader>
       <CardContent>
         <div className="h-[300px]">
+          {!hasData ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              No claim activity in the selected period yet.
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
               data={chartData}
@@ -103,6 +108,7 @@ export function ClaimsTrendChart({ data }: ClaimsTrendChartProps) {
               />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </div>
       </CardContent>
     </Card>

@@ -2,26 +2,22 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, ExternalLink } from "lucide-react";
-import { mockFraudAlerts } from "@/lib/mock-data";
 import { Link } from "react-router-dom";
 import type { FraudClaimItem } from "@/lib/api";
 
 interface FraudAlertsProps {
-  /** Business validation alerts (under_review or confirmed). When provided, uses API data; otherwise mock. */
+  /** Business validation alerts (under_review or confirmed) from the API. */
   alerts?: FraudClaimItem[] | null;
 }
 
 export function FraudAlerts({ alerts: alertsProp }: FraudAlertsProps) {
-  const useMock = !alertsProp || alertsProp.length === 0;
-  const alerts = useMock ? mockFraudAlerts : alertsProp;
-  const displayAlerts = useMock
-    ? mockFraudAlerts
-    : alertsProp!.map((a) => ({
-        id: a.complaint_id,
-        claimNumber: a.claimNumber,
-        riskScore: a.riskScore,
-        reason: a.reason,
-      }));
+  const fromApi = alertsProp ?? [];
+  const displayAlerts = fromApi.map((a) => ({
+    id: a.complaint_id,
+    claimNumber: a.claimNumber,
+    riskScore: a.riskScore,
+    reason: a.reason,
+  }));
 
   return (
     <Card className="card-elevated border-l-4 border-l-destructive">
@@ -42,29 +38,33 @@ export function FraudAlerts({ alerts: alertsProp }: FraudAlertsProps) {
         </Button>
       </CardHeader>
       <CardContent className="space-y-3">
-        {displayAlerts.map((alert) => (
-          <div
-            key={alert.id ?? alert.claimNumber}
-            className="flex items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-          >
-            <div className="flex-1 space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-sm">{alert.claimNumber}</span>
-                <StatusBadge
-                  status={alert.riskScore >= 70 ? "rejected" : "pending"}
-                >
-                  Risk: {alert.riskScore}%
-                </StatusBadge>
+        {displayAlerts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No active validation alerts.</p>
+        ) : (
+          displayAlerts.map((alert) => (
+            <div
+              key={alert.id ?? alert.claimNumber}
+              className="flex items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
+            >
+              <div className="flex-1 space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-sm">{alert.claimNumber}</span>
+                  <StatusBadge
+                    status={alert.riskScore >= 70 ? "rejected" : "pending"}
+                  >
+                    Risk: {alert.riskScore}%
+                  </StatusBadge>
+                </div>
+                <p className="text-xs text-muted-foreground">{alert.reason}</p>
               </div>
-              <p className="text-xs text-muted-foreground">{alert.reason}</p>
+              <Button variant="ghost" size="icon" className="shrink-0" asChild>
+                <Link to={`/claims/${alert.id}`}>
+                  <ExternalLink className="h-4 w-4" />
+                </Link>
+              </Button>
             </div>
-            <Button variant="ghost" size="icon" className="shrink-0" asChild>
-              <Link to={`/claims/${alert.id}`}>
-                <ExternalLink className="h-4 w-4" />
-              </Link>
-            </Button>
-          </div>
-        ))}
+          ))
+        )}
       </CardContent>
     </Card>
   );

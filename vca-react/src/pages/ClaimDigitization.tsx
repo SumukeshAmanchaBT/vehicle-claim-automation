@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, CircleCheck, Menu, Pencil, Plus, PlusCircle, RotateCcw, Trash2, Upload, X } from "lucide-react";
+import { Check, Pencil, Plus, RotateCcw, Trash2, Upload, X } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Button } from "@/components/ui/button";
@@ -10,8 +10,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   extractDigitizationKv,
   getInvoiceHistoryDetail,
-  verifyInvoiceParts,
-  addPartToMaster,
   saveInvoiceDetails,
   saveClassifiedDocumentLocal,
   uploadDigitizationDocuments,
@@ -63,8 +61,8 @@ export default function ClaimDigitization() {
   const [selectedDocId, setSelectedDocId] = useState<number | null>(null);
   const [docCategory, setDocCategory] = useState<DigitizationDocumentCategory>("repair");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
+  const [, setMessage] = useState<string | null>(null);
   const [localFileByDocId, setLocalFileByDocId] = useState<Record<number, File>>({});
   const [showValidation, setShowValidation] = useState(false);
   const [validationTab, setValidationTab] = useState<ValidationTab>("raw");
@@ -83,10 +81,6 @@ export default function ClaimDigitization() {
   const [coreEditMode, setCoreEditMode] = useState(false);
   const [rowEditByLocalId, setRowEditByLocalId] = useState<Record<string, boolean>>({});
   const [coreSnapshot, setCoreSnapshot] = useState<CoreDetails | null>(null);
-  const [rowSnapshotByLocalId, setRowSnapshotByLocalId] = useState<Record<string, PartItem>>({});
-  const [partVerifyByDbId, setPartVerifyByDbId] = useState<
-    Record<number, { verified: boolean; masterId: number | null; loading?: boolean }>
-  >({});
   const [serverDocIdByLocalId, setServerDocIdByLocalId] = useState<Record<number, number>>({});
   const [validationDataByLocalId, setValidationDataByLocalId] = useState<Record<number, ValidationData>>({});
   const [viewerZoom, setViewerZoom] = useState(1);
@@ -151,7 +145,6 @@ export default function ClaimDigitization() {
         setRawData({});
         setPartsDetails([]);
         setRemovedPartDbIds([]);
-        setPartVerifyByDbId({});
         setViewerZoom(1);
       }
       return nextDocs;
@@ -229,17 +222,6 @@ export default function ClaimDigitization() {
         setRemovedPartDbIds([]);
         setShowValidation(true);
         setValidationTab("core");
-
-        try {
-          const verified = await verifyInvoiceParts(core.claimNumber);
-          const map: Record<number, { verified: boolean; masterId: number | null }> = {};
-          (verified.parts || []).forEach((x) => {
-            map[x.part_detail_id] = { verified: x.verified, masterId: x.master_id };
-          });
-          setPartVerifyByDbId(map);
-        } catch {
-          // ignore verify failures
-        }
 
         notifySuccess(`Loaded ${core.claimNumber} for update.`);
       })
@@ -363,26 +345,12 @@ export default function ClaimDigitization() {
     setCoreEditMode(false);
     setCoreSnapshot(null);
     setRowEditByLocalId({});
-    setRowSnapshotByLocalId({});
   };
 
   const loadValidationForLocalDoc = async (localDocId: number) => {
     const cached = validationDataByLocalId[localDocId];
     if (cached) {
       applyValidationData(cached);
-      const claimNumber = (cached.coreDetails.claimNumber || "").trim();
-      if (claimNumber) {
-        try {
-          const verified = await verifyInvoiceParts(claimNumber);
-          const map: Record<number, { verified: boolean; masterId: number | null }> = {};
-          (verified.parts || []).forEach((x) => {
-            map[x.part_detail_id] = { verified: x.verified, masterId: x.master_id };
-          });
-          setPartVerifyByDbId(map);
-        } catch {
-          // ignore verify failures for now (UI still usable)
-        }
-      }
       return;
     }
     const serverDocId = serverDocIdByLocalId[localDocId];
@@ -394,20 +362,6 @@ export default function ClaimDigitization() {
       const built = buildValidationFromKv(kv);
       setValidationDataByLocalId((prev) => ({ ...prev, [localDocId]: built }));
       applyValidationData(built);
-      const claimNumber = (built.coreDetails.claimNumber || "").trim();
-      if (claimNumber) {
-        try {
-          const verified = await verifyInvoiceParts(claimNumber);
-          const map: Record<number, { verified: boolean; masterId: number | null }> = {};
-          (verified.parts || []).forEach((x) => {
-            map[x.part_detail_id] = { verified: x.verified, masterId: x.master_id };
-          });
-          setPartVerifyByDbId(map);
-        } catch {
-          // ignore verify failures for now (UI still usable)
-        }
-      }
-      console.log("AI Key-Value JSON:", kv);
     } catch (e) {
       const err = e as AxiosError<any>;
       const apiMsg = err?.response?.data?.error;
@@ -604,15 +558,6 @@ export default function ClaimDigitization() {
       }
       if (builtSelected) {
         applyValidationData(builtSelected);
-        const claimNumber = (builtSelected.coreDetails.claimNumber || "").trim();
-        if (claimNumber) {
-          const verified = await verifyInvoiceParts(claimNumber);
-          const map: Record<number, { verified: boolean; masterId: number | null }> = {};
-          (verified.parts || []).forEach((x) => {
-            map[x.part_detail_id] = { verified: x.verified, masterId: x.master_id };
-          });
-          setPartVerifyByDbId(map);
-        }
       }
       setRemovedPartDbIds([]);
       setShowValidation(true);
@@ -636,7 +581,7 @@ export default function ClaimDigitization() {
   };
 
   return (
-    <AppLayout title="Claim Process" subtitle="">
+    <AppLayout title="Claim Digitization" subtitle="">
       <div className="space-y-4 animate-fade-in">
         <div className="rounded-xl border p-4">
           <div className="grid gap-4 lg:grid-cols-12 lg:items-stretch">
@@ -1056,8 +1001,7 @@ export default function ClaimDigitization() {
                               partsDetails: [],
                               removePartIds: [],
                             })
-                              .then((res) => {
-                                console.log("Saved invoice core details:", res);
+                              .then(() => {
                                 setMessage("Core details updated.");
                                 setCoreEditMode(false);
                                 setCoreSnapshot(null);
@@ -1111,7 +1055,7 @@ export default function ClaimDigitization() {
 
                       <div className="rounded-md border">
                         <div className="border-b bg-primary/10 px-3 py-2 text-sm font-semibold">
-                          Claim IDIT Details
+                          Claim Details
                         </div>
                         <Table>
                           <TableHeader>
@@ -1157,8 +1101,7 @@ export default function ClaimDigitization() {
                               partsDetails: [],
                               removePartIds: [],
                             })
-                              .then((res) => {
-                                console.log("Saved invoice core details:", res);
+                              .then(() => {
                                 setMessage("Core details updated.");
                                 setCoreEditMode(false);
                                 setCoreSnapshot(null);
@@ -1199,40 +1142,6 @@ export default function ClaimDigitization() {
                               <TableCell><Input disabled={!rowEditByLocalId[row.id]} value={row.amount} onChange={(e) => setPartsDetails((prev) => prev.map((p) => p.id === row.id ? { ...p, amount: e.target.value } : p))} /></TableCell>
                               <TableCell className="text-center">
                                 <div className="flex items-center justify-center">
-                                  {/* <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    disabled={!row.dbId || !!partVerifyByDbId[row.dbId]?.verified || !!partVerifyByDbId[row.dbId]?.loading}
-                                    onClick={() => {
-                                      const dbId = row.dbId;
-                                      if (!dbId) return;
-                                      setPartVerifyByDbId((prev) => ({
-                                        ...prev,
-                                        [dbId]: { verified: false, masterId: null, loading: true },
-                                      }));
-                                      addPartToMaster(dbId)
-                                        .then((res) => {
-                                          setPartVerifyByDbId((prev) => ({
-                                            ...prev,
-                                            [dbId]: { verified: true, masterId: res.master_id, loading: false },
-                                          }));
-                                        })
-                                        .catch(() => {
-                                          setPartVerifyByDbId((prev) => ({
-                                            ...prev,
-                                            [dbId]: { verified: false, masterId: null, loading: false },
-                                          }));
-                                        });
-                                    }}
-                                    title={row.dbId && partVerifyByDbId[row.dbId]?.verified ? "Already in Parts Master" : "Add to Parts Master"}
-                                  >
-                                    {row.dbId && partVerifyByDbId[row.dbId]?.verified ? (
-                                      <CircleCheck className="h-5 w-5 text-emerald-600" />
-                                    ) : (
-                                      <PlusCircle className="h-3 w-3 text-blue-600" />
-                                    )}
-                                  </Button> */}
-
                                   <Button
                                     variant="ghost"
                                     size="icon"
@@ -1240,7 +1149,6 @@ export default function ClaimDigitization() {
                                     onClick={() => {
                                       const isEditing = !!rowEditByLocalId[row.id];
                                       if (!isEditing) {
-                                        setRowSnapshotByLocalId((prev) => ({ ...prev, [row.id]: row }));
                                         setRowEditByLocalId((prev) => ({ ...prev, [row.id]: true }));
                                         return;
                                       }
@@ -1268,10 +1176,6 @@ export default function ClaimDigitization() {
                                       })
                                         .then(() => {
                                           setRowEditByLocalId((prev) => ({ ...prev, [row.id]: false }));
-                                          setRowSnapshotByLocalId((prev) => {
-                                            const { [row.id]: _omit, ...rest } = prev;
-                                            return rest;
-                                          });
                                           setMessage("Part details updated.");
                                         })
                                         .catch((e) => {
@@ -1350,16 +1254,6 @@ export default function ClaimDigitization() {
                               }))
                             );
                             setRemovedPartDbIds([]);
-                            const claimNumber = (coreDetails.claimNumber || "").trim();
-                            if (claimNumber) {
-                              verifyInvoiceParts(claimNumber).then((verified) => {
-                                const map: Record<number, { verified: boolean; masterId: number | null }> = {};
-                                (verified.parts || []).forEach((x) => {
-                                  map[x.part_detail_id] = { verified: x.verified, masterId: x.master_id };
-                                });
-                                setPartVerifyByDbId(map);
-                              });
-                            }
                             setMessage(`Saved to DB for Claim Number ${res.claim_number} (parts: ${res.parts_saved}). Redirecting...`);
                             navigate("/invoice-history");
                           })

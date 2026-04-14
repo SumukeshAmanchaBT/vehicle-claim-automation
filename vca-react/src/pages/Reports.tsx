@@ -21,21 +21,26 @@ import {
   Line,
   Legend,
 } from "recharts";
-import { Download, Calendar, TrendingUp, DollarSign, Clock, Target, Loader2 } from "lucide-react";
+import { Download, Calendar, TrendingUp, DollarSign, Clock, Target } from "lucide-react";
+import { TablePageSkeleton, StatusWrapper } from "@/components/ui/status-wrapper";
 import { getFnolList, type FnolResponse } from "@/lib/api";
+import {
+  isClaimAutoApprovedStatus,
+  isClaimRejectedStatus,
+  normalizeClaimStatus,
+} from "@/lib/claimStatus";
+import { getApiErrorSummary } from "@/lib/httpClient";
+import {
+  buildProcessingTimeSeries,
+  formatReportAmount,
+  getAverageResolutionHours,
+  getResolvedClaimCount,
+  getSettlementCurrencyCodes,
+} from "@/lib/reporting";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 type DateRangeKey = "7d" | "30d" | "3m" | "6m" | "1y";
-
-function normalizeStatus(raw?: string | null): string {
-  const value = (raw || "").trim().toLowerCase();
-  if (value === "recommendation shared" || value === "closed damage detection") return "auto_approved";
-  if (value === "business rule validation-fail" || value === "fraudulent") return "fraudulent";
-  if (value === "business rule validation-pass" || value === "pending damage detection" || value === "pending_damage_detection") return "pending_damage_detection";
-  if (value === "fnol" || value === "open" || value === "open to fnol" || value === "pending") return "open";
-  return "open";
-}
 
 function getRangeStart(range: DateRangeKey): Date {
   const now = new Date();
@@ -48,28 +53,11 @@ function getRangeStart(range: DateRangeKey): Date {
   return d;
 }
 
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("th-TH", {
-    style: "currency",
-    currency: "THB",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount);
-};
-
-const processingTimePlaceholder = [
-  { week: "W1", manual: 72, automated: 4 },
-  { week: "W2", manual: 68, automated: 3.8 },
-  { week: "W3", manual: 65, automated: 4.2 },
-  { week: "W4", manual: 62, automated: 3.5 },
-  { week: "W5", manual: 58, automated: 3.2 },
-  { week: "W6", manual: 55, automated: 3.0 },
-];
-
 export default function Reports() {
   const [claims, setClaims] = useState<FnolResponse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [reloadToken, setReloadToken] = useState(0);
   const [dateRange, setDateRange] = useState<DateRangeKey>("6m");
 
   useEffect(() => {
@@ -81,13 +69,15 @@ export default function Reports() {
         if (!cancelled) setClaims(data || []);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load reports");
+        if (!cancelled) setError(err);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadToken]);
+
+  const errorSummary = error ? getApiErrorSummary(error) : null;
 
   const rangeStart = useMemo(() => getRangeStart(dateRange), [dateRange]);
 
@@ -102,8 +92,12 @@ export default function Reports() {
 
   const stats = useMemo(() => {
     const total = filteredClaims.length;
-    const autoApproved = filteredClaims.filter((c) => normalizeStatus(c.status) === "auto_approved").length;
-    const rejected = filteredClaims.filter((c) => normalizeStatus(c.status) === "fraudulent").length;
+    const autoApproved = filteredClaims.filter((c) =>
+      isClaimAutoApprovedStatus(normalizeClaimStatus(c.status))
+    ).length;
+    const rejected = filteredClaims.filter((c) =>
+      isClaimRejectedStatus(normalizeClaimStatus(c.status))
+    ).length;
     const settlementValue = filteredClaims.reduce(
       (sum, c) => sum + (typeof c.claim_amount === "number" ? c.claim_amount : c.estimated_amount ?? 0),
       0
@@ -118,18 +112,37 @@ export default function Reports() {
     };
   }, [filteredClaims]);
 
+  const processingTimeSeries = useMemo(
+    () => buildProcessingTimeSeries(filteredClaims),
+    [filteredClaims]
+  );
+
+  const averageResolutionHours = useMemo(
+    () => getAverageResolutionHours(filteredClaims),
+    [filteredClaims]
+  );
+
+  const resolvedClaimCount = useMemo(
+    () => getResolvedClaimCount(filteredClaims),
+    [filteredClaims]
+  );
+
+  const settlementCurrencyCodes = useMemo(
+    () => getSettlementCurrencyCodes(filteredClaims),
+    [filteredClaims]
+  );
+
   const monthlyData = useMemo(() => {
     const byMonth: Record<string, { claims: number; approved: number; rejected: number; settlements: number }> = {};
     filteredClaims.forEach((c) => {
       const raw = c.created_date || c.incident_date_time;
       const date = raw ? new Date(raw) : new Date();
       const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-      const monthLabel = MONTH_NAMES[date.getMonth()];
       if (!byMonth[key]) byMonth[key] = { claims: 0, approved: 0, rejected: 0, settlements: 0 };
       byMonth[key].claims += 1;
-      const status = normalizeStatus(c.status);
-      if (status === "auto_approved") byMonth[key].approved += 1;
-      else if (status === "fraudulent") byMonth[key].rejected += 1;
+      const status = normalizeClaimStatus(c.status);
+      if (isClaimAutoApprovedStatus(status)) byMonth[key].approved += 1;
+      else if (isClaimRejectedStatus(status)) byMonth[key].rejected += 1;
       const amt = typeof c.claim_amount === "number" ? c.claim_amount : c.estimated_amount ?? 0;
       byMonth[key].settlements += amt;
     });
@@ -158,7 +171,10 @@ export default function Reports() {
       ["Period", dateRange, rangeLabel].join(","),
       ["Total Claims", stats.totalClaims].join(","),
       ["Automation Rate (%)", stats.automationRate].join(","),
-      ["Total Settlements (THB)", stats.totalSettlements].join(","),
+      ["Resolved Claims", resolvedClaimCount].join(","),
+      ["Average Resolution Hours", averageResolutionHours ?? ""].join(","),
+      ["Settlement Currency", settlementCurrencyCodes.join(" / ") || "N/A"].join(","),
+      ["Total Settlements", stats.totalSettlements].join(","),
       "",
       "Month,Claims,Approved,Rejected,Settlements",
       ...monthlyData.map((r) => [r.month, r.claims, r.approved, r.rejected, r.settlements].join(",")),
@@ -172,30 +188,20 @@ export default function Reports() {
     URL.revokeObjectURL(url);
   };
 
-  if (loading) {
-    return (
-      <AppLayout title="Reports & Analytics" subtitle="Claims performance metrics and insights">
-        <div className="flex flex-col items-center justify-center py-16">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading reports...</p>
-        </div>
-      </AppLayout>
-    );
-  }
-
-  if (error) {
-    return (
-      <AppLayout title="Reports & Analytics" subtitle="Claims performance metrics and insights">
-        <div className="rounded-lg bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
-      </AppLayout>
-    );
-  }
-
   return (
     <AppLayout
       title="Reports & Analytics"
       subtitle="Claims performance metrics and insights"
     >
+      <StatusWrapper
+        status={loading ? "loading" : errorSummary ? "error" : "success"}
+        loading={<TablePageSkeleton rows={6} />}
+        loadingTitle="Loading reports"
+        loadingDescription="Fetching claims data for analytics and performance metrics."
+        errorTitle="Could not load reports"
+        error={errorSummary}
+        onRetry={() => setReloadToken((t) => t + 1)}
+      >
       <div className="space-y-6 animate-fade-in">
         {/* Filters */}
         <Card className="card-elevated">
@@ -262,8 +268,18 @@ export default function Reports() {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Avg. Process Time</p>
-                  <p className="text-2xl font-bold">4.2 hrs</p>
-                  <p className="text-xs text-muted-foreground">Target: 24–48 hr settlement</p>
+                  <p className="text-2xl font-bold">
+                    {averageResolutionHours != null
+                      ? `${averageResolutionHours.toFixed(1)} hrs`
+                      : "—"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {resolvedClaimCount > 0
+                      ? `Based on ${resolvedClaimCount} resolved claim${
+                          resolvedClaimCount === 1 ? "" : "s"
+                        }`
+                      : "No resolved claims in the selected period"}
+                  </p>
                 </div>
               </div>
             </CardContent>
@@ -276,7 +292,9 @@ export default function Reports() {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Total Settlements</p>
-                  <p className="text-2xl font-bold">{formatCurrency(stats.totalSettlements)}</p>
+                  <p className="text-2xl font-bold">
+                    {formatReportAmount(stats.totalSettlements, settlementCurrencyCodes)}
+                  </p>
                   <p className="text-xs text-muted-foreground">{rangeLabel}</p>
                 </div>
               </div>
@@ -343,7 +361,7 @@ export default function Reports() {
             <CardContent>
               <div className="h-[300px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={processingTimePlaceholder}>
+                  <LineChart data={processingTimeSeries}>
                     <CartesianGrid
                       strokeDasharray="3 3"
                       stroke="rgb(var(--border))"
@@ -355,11 +373,12 @@ export default function Reports() {
                       axisLine={false}
                       tickLine={false}
                     />
-                    <YAxis
-                      tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
+                  <YAxis
+                    tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(value) => `${value}h`}
+                  />
                     <Tooltip
                       contentStyle={{
                         backgroundColor: "rgb(var(--card))",
@@ -415,7 +434,9 @@ export default function Reports() {
                     tick={{ fill: "rgb(var(--muted-foreground))", fontSize: 12 }}
                     axisLine={false}
                     tickLine={false}
-                    tickFormatter={(value) => `฿${(value / 1000).toFixed(0)}k`}
+                    tickFormatter={(value) =>
+                      `${formatReportAmount(Math.round(value / 1000), settlementCurrencyCodes)}k`
+                    }
                   />
                   <Tooltip
                     contentStyle={{
@@ -423,7 +444,10 @@ export default function Reports() {
                       border: `1px solid rgb(var(--border))`,
                       borderRadius: "8px",
                     }}
-                    formatter={(value: number) => [formatCurrency(value), "Settlements"]}
+                    formatter={(value: number) => [
+                      formatReportAmount(value, settlementCurrencyCodes),
+                      "Settlements",
+                    ]}
                   />
                     <Bar
                       dataKey="settlements"
@@ -437,6 +461,7 @@ export default function Reports() {
           </CardContent>
         </Card>
       </div>
+      </StatusWrapper>
     </AppLayout>
   );
 }

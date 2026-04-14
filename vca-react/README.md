@@ -71,3 +71,14 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+## Testing
+
+- **Unit / component (Vitest):** from `vca-react/`, run `npm test` (or `npm run test:watch`).
+- **Browser E2E (Playwright):** install browsers once with `npm run test:e2e:install`, then `npm run test:e2e` (Vite on port 5173; `e2e/api-mock.ts` mocks `VITE_API_BASE_URL`). Use `npm run test:e2e:ui` for the Playwright UI.
+
+Django tests for damage-assessment card APIs (from `vca-python/` with venv active):
+
+```sh
+python manage.py test claims.tests.test_damage_assessment_card_insights claims.tests.test_card_explanations
+```

@@ -1,47 +1,34 @@
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { MetricCard } from "@/components/ui/metric-card";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { DashboardSkeleton, StatusWrapper } from "@/components/ui/status-wrapper";
 import { ClaimsTrendChart } from "@/components/dashboard/ClaimsTrendChart";
-import { ClaimsByTypeChart } from "@/components/dashboard/ClaimsByTypeChart";
 import { RecentClaimsTable } from "@/components/dashboard/RecentClaimsTable";
 import { FraudAlerts } from "@/components/dashboard/FraudAlerts";
-import { AutomationStats } from "@/components/dashboard/AutomationStats";
 import { getFnolList, getFraudClaims, type FnolResponse, type FraudClaimItem } from "@/lib/api";
 import {
+  isClaimAutoApprovedStatus,
+  isClaimPendingReviewStatus,
+  isClaimRejectedStatus,
+  normalizeClaimStatus,
+} from "@/lib/claimStatus";
+import { getApiErrorSummary } from "@/lib/httpClient";
+import { formatCurrency } from "@/lib/market";
+import {
+  AlertCircle,
   FileText,
   Clock,
   CheckCircle2,
   AlertTriangle,
   DollarSign,
-  Loader2,
 } from "lucide-react";
-
-const formatCurrency = (amount: number) => {
-  return new Intl.NumberFormat("th-TH", {
-    style: "currency",
-    currency: "THB",
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(amount);
-};
-
-type StatusKey =
-  | "auto_approved"
-  | "fraudulent"
-  | "manual_review"
-  | "open"
-  | "pending"
-  | "pending_damage_detection";
-
-function normalizeStatus(raw?: string | null): StatusKey {
-  const value = (raw || "").trim().toLowerCase();
-  if (value === "recommendation shared" || value === "closed damage detection") return "auto_approved";
-  if (value === "business rule validation-fail" || value === "fraudulent") return "fraudulent";
-  if (value === "manual review" || value === "manual_review") return "manual_review";
-  if (value === "fnol" || value === "open" || value === "open-fnol" || value === "open to fnol") return "open";
-  if (value === "business rule validation-pass" || value === "pending damage detection" || value === "pending_damage_detection") return "pending_damage_detection";
-  return "pending";
-}
 
 function fnolToDisplayRow(fnol: FnolResponse) {
   const r = fnol.raw_response;
@@ -50,7 +37,7 @@ function fnolToDisplayRow(fnol: FnolResponse) {
     : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
       ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
       : "—";
-  const statusKey = normalizeStatus((fnol as { status?: string }).status);
+  const statusKey = normalizeClaimStatus((fnol as { status?: string }).status);
   const amount = fnol.claim_amount ?? fnol.estimated_amount ?? 0;
   return {
     id: fnol.complaint_id,
@@ -68,51 +55,71 @@ const Index = () => {
   const [claims, setClaims] = useState<FnolResponse[]>([]);
   const [fraudClaims, setFraudClaims] = useState<FraudClaimItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [claimsError, setClaimsError] = useState<unknown>(null);
+  const [fraudClaimsError, setFraudClaimsError] = useState<unknown>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    setError(null);
-    Promise.all([getFnolList(), getFraudClaims()])
-      .then(([fnolData, fraudData]) => {
-        if (!cancelled) {
-          setClaims(fnolData || []);
-          setFraudClaims(fraudData || []);
+    setClaimsError(null);
+    setFraudClaimsError(null);
+    Promise.allSettled([getFnolList(), getFraudClaims()])
+      .then(([fnolResult, fraudResult]) => {
+        if (cancelled) {
+          return;
         }
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load dashboard");
+
+        if (fnolResult.status === "fulfilled") {
+          setClaims(fnolResult.value || []);
+        } else {
+          setClaims([]);
+          setClaimsError(fnolResult.reason);
+        }
+
+        if (fraudResult.status === "fulfilled") {
+          setFraudClaims(fraudResult.value || []);
+        } else {
+          setFraudClaims([]);
+          setFraudClaimsError(fraudResult.reason);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  const claimsErrorSummary = claimsError ? getApiErrorSummary(claimsError) : null;
+  const fraudClaimsErrorSummary = fraudClaimsError
+    ? getApiErrorSummary(fraudClaimsError)
+    : null;
 
   const displayClaims = useMemo(() => claims.map(fnolToDisplayRow), [claims]);
 
   const stats = useMemo(() => {
     const total = claims.length;
-    const pendingReview = displayClaims.filter(
-      (c) => c.statusKey === "open" || c.statusKey === "pending_damage_detection" || c.statusKey === "pending"
+    const pendingReview = displayClaims.filter((c) =>
+      isClaimPendingReviewStatus(c.statusKey)
     ).length;
-    const autoApproved = displayClaims.filter((c) => c.statusKey === "auto_approved").length;
-    const businessValidationFailed = displayClaims.filter((c) => c.statusKey === "fraudulent").length;
+    const autoApproved = displayClaims.filter((c) =>
+      isClaimAutoApprovedStatus(c.statusKey)
+    ).length;
+    const businessValidationFailed = displayClaims.filter((c) =>
+      isClaimRejectedStatus(c.statusKey)
+    ).length;
     const settlementValue = claims.reduce(
       (sum, c) => sum + (typeof c.claim_amount === "number" ? c.claim_amount : c.estimated_amount ?? 0),
       0
     );
-    const stpRate = total > 0 ? Math.round((autoApproved / total) * 100) : 0;
-    const automationRate = total > 0 ? Math.round(((autoApproved + pendingReview) / total) * 100) : 0;
     return {
       totalClaims: total,
       pendingReview,
       approvedToday: autoApproved,
       businessValidationFailed,
       settlementValue,
-      stpRate,
-      automationRate,
     };
   }, [claims, displayClaims]);
 
@@ -123,27 +130,19 @@ const Index = () => {
       const dateStr = raw ? new Date(raw).toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" }) : "Unknown";
       if (!byDate[dateStr]) byDate[dateStr] = { total: 0, approved: 0 };
       byDate[dateStr].total += 1;
-      if (normalizeStatus((c as { status?: string }).status) === "auto_approved") byDate[dateStr].approved += 1;
+      if (
+        isClaimAutoApprovedStatus(
+          normalizeClaimStatus((c as { status?: string }).status)
+        )
+      ) {
+        byDate[dateStr].approved += 1;
+      }
     });
     return Object.entries(byDate)
       .sort(([a], [b]) => new Date(a).getTime() - new Date(b).getTime())
       .slice(-10)
       .map(([date, v]) => ({ date, claims: v.total, approved: v.approved }));
   }, [claims]);
-
-  const byTypeData = useMemo(() => {
-    const map: Record<string, number> = {};
-    displayClaims.forEach((c) => {
-      const t = c.claimType || "Other";
-      map[t] = (map[t] || 0) + 1;
-    });
-    const total = displayClaims.length;
-    return Object.entries(map).map(([type, count]) => ({
-      type,
-      count,
-      percentage: total > 0 ? Math.round((count / total) * 100) : 0,
-    }));
-  }, [displayClaims]);
 
   const recentClaims = useMemo(() => displayClaims.slice(0, 5), [displayClaims]);
 
@@ -152,31 +151,47 @@ const Index = () => {
     [fraudClaims]
   );
 
-  if (loading) {
-    return (
-      <AppLayout title="Dashboard" subtitle="Claims processing overview and analytics">
-        <div className="flex flex-col items-center justify-center py-16">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-          <p className="mt-4 text-sm text-muted-foreground">Loading dashboard...</p>
-        </div>
-      </AppLayout>
-    );
-  }
-
-  if (error) {
-    return (
-      <AppLayout title="Dashboard" subtitle="Claims processing overview and analytics">
-        <div className="rounded-lg bg-destructive/10 p-4 text-sm text-destructive">{error}</div>
-      </AppLayout>
-    );
-  }
-
   return (
     <AppLayout
       title="Dashboard"
       subtitle="Claims processing overview and analytics"
     >
+      <StatusWrapper
+        status={
+          loading ? "loading" : claimsErrorSummary ? "error" : "success"
+        }
+        loading={<DashboardSkeleton />}
+        loadingTitle="Loading dashboard"
+        loadingDescription="Pulling live claim totals, recent claims, and validation alerts from the backend."
+        errorTitle="Could not load dashboard"
+        error={claimsErrorSummary}
+        onRetry={() => setReloadToken((value) => value + 1)}
+      >
       <div className="space-y-6 animate-fade-in">
+        {fraudClaimsErrorSummary ? (
+          <Alert className="border-warning/30 bg-warning/5">
+            <AlertCircle className="h-4 w-4 text-warning" />
+            <AlertTitle>Validation alerts are temporarily unavailable</AlertTitle>
+            <AlertDescription>
+              The core dashboard loaded, but the validation-alert feed could not be refreshed.
+            </AlertDescription>
+            <Accordion type="single" collapsible className="mt-2 rounded-md border bg-background/80 px-3">
+              <AccordionItem value="fraud-feed" className="border-0">
+                <AccordionTrigger className="py-2 text-sm font-medium hover:no-underline">
+                  Show developer details
+                </AccordionTrigger>
+                <AccordionContent className="pb-2 text-xs text-muted-foreground">
+                  <p className="font-medium text-foreground">Developer details</p>
+                  <p className="mt-2 break-words">
+                    {fraudClaimsErrorSummary.developerMessage ||
+                      "No additional diagnostics were provided."}
+                  </p>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
+          </Alert>
+        ) : null}
+
         {/* Metrics Grid */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
           <MetricCard
@@ -221,7 +236,6 @@ const Index = () => {
           <div className="lg:col-span-2">
             <ClaimsTrendChart data={trendData} />
           </div>
-          {/* <ClaimsByTypeChart data={byTypeData} /> */}
         </div>
 
         {/* Bottom Section */}
@@ -230,11 +244,11 @@ const Index = () => {
             <RecentClaimsTable claims={recentClaims} />
           </div>
           <div className="space-y-6">
-            {/* <AutomationStats stpRate={stats.stpRate} automationRate={stats.automationRate} /> */}
             <FraudAlerts alerts={validationAlerts} />
           </div>
         </div>
       </div>
+      </StatusWrapper>
     </AppLayout>
   );
 };

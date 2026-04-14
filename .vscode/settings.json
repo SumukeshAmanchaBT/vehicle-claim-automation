@@ -1,0 +1,26 @@
+{
+  "css.customData": [".vscode/tailwind.json"],
+  "css.validate": false,
+  "scss.validate": false,
+  "less.validate": false,
+  "editor.quickSuggestions": {
+    "strings": true
+  },
+  "tailwindCSS.experimental.classRegex": [
+    ["cva\\(([^)]*)\\)", "[\"'`]([^\"'`]*).*?[\"'`]"],
+    ["cx\\(([^)]*)\\)", "(?:'|\"|`)([^']*)(?:'|\"|`)"],
+    ["cn\\(([^)]*)\\)", "(?:'|\"|`)([^']*)(?:'|\"|`)"]
+  ],
+  "tailwindCSS.includeLanguages": {
+    "typescript": "javascript",
+    "typescriptreact": "javascript"
+  },
+  "[python]": {
+    "editor.formatOnSave": false
+  },
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.ignore": ["**/venv/**", "**/.venv/**"],
+  "files.associations": {
+    "*.css": "tailwindcss"
+  }
+}

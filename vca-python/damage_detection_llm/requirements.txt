@@ -6,3 +6,7 @@
 # For vision LLM analysis (flooded, fire, etc. from image):
 #   pip install openai
 # Set OPENAI_API_KEY in env. Optional: OPENAI_VISION_MODEL=gpt-4o (default: gpt-4o-mini)
+#
+# Image fraud + duplicate detection (perceptual hashes):
+#   pip install ImageHash
+ImageHash==4.3.1

@@ -21,7 +21,7 @@ export function AppLayout({ children, title, subtitle }: AppLayoutProps) {
           sidebarOpen={sidebarOpen}
           onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
         />
-        <main className="p-6">{children}</main>
+        <main className="relative z-0 isolate p-6">{children}</main>
       </div>
     </div>
   );

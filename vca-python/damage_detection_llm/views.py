@@ -1,16 +1,27 @@
 """
 Django REST Framework views for Vehicle Damage Assessment API.
 """
+import ipaddress
 import json
+import logging
 import os
-import traceback
+import socket
+import uuid
+from decimal import Decimal
 from urllib.parse import urlparse
-from urllib.request import urlopen, Request
 
+import requests
+
+from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+
+from claim_automation.vca_config import cfg as _vca_cfg
+from claims.decisioning import sync_claim_evaluation_decision_state
+
+logger = logging.getLogger(__name__)
 
 from .services import (
     allowed_file,
@@ -20,9 +31,13 @@ from .services import (
     TRAINED_SEVERITY,
     WORK_DIR,
 )
+from .valuation_service import calculate_excess, get_excess_settings
 
 # Max size for fetched images (10 MB)
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
+
+# Small upper bound to avoid long redirect chains / SSRF tricks.
+MAX_REDIRECTS = 0
 
 
 def _get_image_url_from_request(request):
@@ -40,31 +55,202 @@ def _get_image_url_from_request(request):
     return image_url
 
 
-def _fetch_image_from_url(image_url):
+def _image_fetch_hostname_allowed(image_url: str) -> bool:
+    allow = getattr(settings, "DAMAGE_ASSESSMENT_IMAGE_FETCH_ALLOWED_HOSTS", None) or []
+    if not allow:
+        return True
+    parsed = urlparse(image_url)
+    host = (parsed.hostname or "").lower()
+    for allowed_host in allow:
+        allowed_host = (allowed_host or "").strip().lower()
+        if not allowed_host:
+            continue
+        if host == allowed_host or host.endswith(f".{allowed_host}"):
+            return True
+    return False
+
+
+def _allow_private_image_fetch_hosts() -> bool:
+    return bool(
+        getattr(settings, "DAMAGE_ASSESSMENT_IMAGE_FETCH_ALLOW_PRIVATE_HOSTS", False)
+    )
+
+
+def _resolve_hostname_ips(hostname: str) -> list[str]:
+    """Resolve a hostname to unique IP strings for SSRF validation."""
+    ips: list[str] = []
+    seen: set[str] = set()
+    for family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(
+        hostname, None, type=socket.SOCK_STREAM
+    ):
+        if family == socket.AF_INET:
+            ip = sockaddr[0]
+        elif family == socket.AF_INET6:
+            ip = sockaddr[0]
+        else:
+            continue
+        if ip not in seen:
+            seen.add(ip)
+            ips.append(ip)
+    return ips
+
+
+def _ip_is_private_or_restricted(ip_str: str) -> bool:
+    ip = ipaddress.ip_address(ip_str)
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+        or not ip.is_global
+    )
+
+
+def _validate_remote_image_url(image_url: str) -> tuple[str, str]:
     """
-    Fetch image from URL and return local file path.
-    Raises ValueError on invalid URL or fetch failure.
+    Validate a remote image URL before any outbound fetch.
+
+    Returns `(validated_url, hostname)` if allowed, otherwise raises ValueError.
     """
     parsed = urlparse(image_url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError("Only http and https URLs are allowed.")
+    if parsed.username or parsed.password:
+        raise ValueError("Image URLs with embedded credentials are not allowed.")
 
-    req = Request(image_url, headers={"User-Agent": "VehicleClaimAutomation/1.0"})
-    with urlopen(req, timeout=30) as resp:
-        content_type = resp.headers.get("Content-Type", "").lower()
-        if "image" not in content_type and "octet-stream" not in content_type:
-            raise ValueError(f"URL did not return an image (Content-Type: {content_type})")
-        data = resp.read(MAX_IMAGE_SIZE + 1)
-        if len(data) > MAX_IMAGE_SIZE:
-            raise ValueError("Image too large.")
-        if len(data) == 0:
-            raise ValueError("Empty response from URL.")
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname:
+        raise ValueError("Image URL must include a hostname.")
 
+    if not _image_fetch_hostname_allowed(image_url):
+        raise ValueError(
+            "Image URL host is not allowed. Set DAMAGE_ASSESSMENT_IMAGE_FETCH_ALLOWED_HOSTS "
+            "to a comma-separated list of permitted hostnames."
+        )
+
+    try:
+        resolved_ips = _resolve_hostname_ips(hostname)
+    except socket.gaierror as exc:
+        raise ValueError("Image URL hostname could not be resolved.") from exc
+
+    if not resolved_ips:
+        raise ValueError("Image URL hostname did not resolve to an address.")
+
+    if not _allow_private_image_fetch_hosts():
+        blocked_ips = [ip for ip in resolved_ips if _ip_is_private_or_restricted(ip)]
+        if blocked_ips:
+            raise ValueError(
+                "Image URL resolved to a private or restricted network address. "
+                "Set DAMAGE_ASSESSMENT_IMAGE_FETCH_ALLOW_PRIVATE_HOSTS=True only for trusted local media hosts."
+            )
+
+    return image_url, hostname
+
+
+def _new_damage_input_path(suffix: str = ".jpg") -> str:
+    """Generate a unique work-file path for fetched or uploaded images."""
     os.makedirs(WORK_DIR, exist_ok=True)
-    input_path = os.path.join(WORK_DIR, "damage_input.jpg")
-    with open(input_path, "wb") as f:
-        f.write(data)
+    return os.path.join(WORK_DIR, f"damage_input_{uuid.uuid4().hex}{suffix}")
+
+
+def _fetch_image_from_url(image_url, dest_path=None):
+    """
+    Fetch image from URL and write to dest_path or a secure temp file in WORK_DIR.
+    Raises ValueError on invalid URL or fetch failure.
+    """
+    image_url, _hostname = _validate_remote_image_url(image_url)
+
+    response = requests.get(
+        image_url,
+        headers={"User-Agent": "VehicleClaimAutomation/1.0"},
+        timeout=_vca_cfg.image_fetch_timeout_s,
+        stream=True,
+        allow_redirects=MAX_REDIRECTS > 0,
+    )
+    try:
+        if response.is_redirect or response.is_permanent_redirect:
+            raise ValueError("Redirecting image URLs are not allowed.")
+        response.raise_for_status()
+
+        content_type = (response.headers.get("Content-Type") or "").lower()
+        if "image" not in content_type and "octet-stream" not in content_type:
+            raise ValueError(
+                f"URL did not return an image (Content-Type: {content_type or 'unknown'})"
+            )
+
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_IMAGE_SIZE:
+                    raise ValueError("Image too large.")
+            except ValueError:
+                if content_length.isdigit():
+                    raise
+
+        input_path = dest_path or _new_damage_input_path()
+        out_dir = os.path.dirname(input_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        total = 0
+        with open(input_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > MAX_IMAGE_SIZE:
+                    raise ValueError("Image too large.")
+                f.write(chunk)
+
+        if total == 0:
+            raise ValueError("Empty response from URL.")
+    finally:
+        response.close()
     return input_path
+
+
+def _resolve_image_url_from_item(item):
+    """Extract a URL string from an images[] entry (str or { url } / { image: { url } })."""
+    if isinstance(item, str):
+        s = item.strip()
+        return s if s else None
+    if isinstance(item, dict):
+        u = item.get("url") or item.get("image", {}).get("url")
+        if isinstance(u, str) and u.strip():
+            return u.strip()
+    return None
+
+
+_SEVERITY_RANK = {"unknown": 0, "minor": 1, "moderate": 2, "severe": 3}
+
+
+def _merge_severities(severities):
+    """Pick the worst severity across images (severe > moderate > minor > unknown)."""
+    best_key = "unknown"
+    best_r = 0
+    for s in severities:
+        key = (s or "unknown").strip().lower()
+        if key not in _SEVERITY_RANK:
+            key = "unknown"
+        r = _SEVERITY_RANK[key]
+        if r > best_r:
+            best_r = r
+            best_key = key
+    return best_key
+
+
+def _merge_damage_lists(damage_lists):
+    """Union of damage labels, preserving first-seen order (by image order)."""
+    out = []
+    seen = set()
+    for lst in damage_lists:
+        for d in lst or []:
+            if d not in seen:
+                seen.add(d)
+                out.append(d)
+    return out
 
 
 def _get_claim_id_and_images(request):
@@ -83,62 +269,62 @@ def _get_claim_id_and_images(request):
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])  # Adjust to IsAuthenticated if needed
+@permission_classes([IsAuthenticated])
 def damage_assessment(request):
     """
     Accept POST with claim_id and images, or image_url, or multipart form with 'image' file.
     - JSON: {"claim_id": "CLM-001", "images": ["http://...", "http://..."]}
+      All images are assessed; damages are merged (unique, order preserved), severity is worst-of.
     - JSON: {"image_url": "http://example.com/image.jpg"}
     - Form: image_url=http://example.com/image.jpg
-    Returns damages (list) and severity (str).
+    Returns damages (list), severity (str), claim_amount, images_assessed.
     """
-    input_path = None
-    image_url_for_hint = None
+    assessment_jobs = []  # list of (local_path, url_hint)
 
-    # 1. Try claim_id and images array (for Damage Detection from Claim Detail)
     claim_id, images = _get_claim_id_and_images(request)
     if images:
-        # Use first image for damage assessment (or process all and aggregate)
-        first = images[0]
-        image_url = (
-            first
-            if isinstance(first, str)
-            else (
-                first.get("url") or first.get("image", {}).get("url")
-                if isinstance(first, dict)
-                else None
+        urls = []
+        for item in images:
+            u = _resolve_image_url_from_item(item)
+            if u:
+                urls.append(u)
+        if not urls:
+            return Response(
+                {"error": "No valid image URLs in images array."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        )
-        image_url_for_hint = image_url
-        print(f'Fetching Image URL: {image_url}')
-        if image_url:
+        os.makedirs(WORK_DIR, exist_ok=True)
+        fetch_errors = []
+        for idx, image_url in enumerate(urls):
             try:
-                input_path = _fetch_image_from_url(image_url.strip())
-                print(f'Fetching Input Image URL: {input_path}')
+                dest = _new_damage_input_path()
+                _fetch_image_from_url(image_url, dest_path=dest)
+                assessment_jobs.append((dest, image_url))
             except ValueError as e:
-                return Response(
-                    {"error": str(e)},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                fetch_errors.append(str(e))
             except Exception as e:
-                return Response(
-                    {"error": f"Failed to fetch image from URL: {str(e)}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                fetch_errors.append(f"Failed to fetch image from URL: {str(e)}")
+        if not assessment_jobs:
+            return Response(
+                {
+                    "error": "Could not fetch any images from the provided URLs.",
+                    "details": fetch_errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    # 2. Fallback: Try image_url from metadata (JSON or form)
-    if not input_path:
+    image_url = None
+    if not assessment_jobs:
         image_url = _get_image_url_from_request(request)
-        if image_url:
-            image_url_for_hint = image_url
-    if not input_path and image_url:
+    if not assessment_jobs and image_url:
         if not isinstance(image_url, str) or not image_url.strip():
             return Response(
                 {"error": "image_url must be a non-empty string."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            input_path = _fetch_image_from_url(image_url.strip())
+            path = _fetch_image_from_url(image_url.strip())
+            assessment_jobs = [(path, image_url.strip())]
         except ValueError as e:
             return Response(
                 {"error": str(e)},
@@ -150,27 +336,26 @@ def damage_assessment(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-    # 2. Fallback: image file upload
-    if not input_path and "image" in request.FILES:
+    if not assessment_jobs and "image" in request.FILES:
         image_file = request.FILES["image"]
         if not allowed_file(image_file.name):
             return Response(
                 {"error": "Invalid file type. Only png, jpg, jpeg, webp allowed."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        os.makedirs(WORK_DIR, exist_ok=True)
-        input_path = os.path.join(WORK_DIR, "damage_input.jpg")
+        input_path = _new_damage_input_path()
         try:
             with open(input_path, "wb") as f:
                 for chunk in image_file.chunks():
                     f.write(chunk)
+            assessment_jobs = [(input_path, None)]
         except Exception as e:
             return Response(
-                {"error": f"Failed to save image: {str(e)}"},
+                {"error": "Failed to save image."},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-    if not input_path:
+    if not assessment_jobs:
         return Response(
             {
                 "error": "Provide claim_id and images, image_url in metadata (JSON or form), or upload an image file."
@@ -195,12 +380,22 @@ def damage_assessment(request):
                 flood_coverage = bool(getattr(fnol, "flood_coverage", False))
         if not incident_description and isinstance(request.data, dict):
             incident_description = request.data.get("incident_description") or request.data.get("incidentDescription")
-        damages, severity = run_damage_assessment(
-            input_path,
-            incident_description=incident_description,
-            flood_coverage=flood_coverage,
-            image_url=image_url_for_hint,
-        )
+        damage_lists = []
+        severities = []
+        for input_path, image_url_for_hint in assessment_jobs:
+            d, s = run_damage_assessment(
+                input_path,
+                incident_description=incident_description,
+                flood_coverage=flood_coverage,
+                image_url=image_url_for_hint,
+            )
+            damage_lists.append(d if d is not None else [])
+            severities.append(s if s is not None else "unknown")
+
+        damages = _merge_damage_lists(damage_lists)
+        severity = _merge_severities(severities)
+        images_assessed = len(assessment_jobs)
+
         severity_str = (severity or "").strip()[:20] if severity else ""
 
         # Always include claim_amount: compute from PricingConfig (base + damages * rate) * severity multiplier
@@ -226,6 +421,7 @@ def damage_assessment(request):
             "damages": damages if damages is not None else [],
             "severity": severity or "unknown",
             "claim_amount": float(claim_amount),
+            "images_assessed": images_assessed,
         }
 
         # Persist LLM response and update claim status when claim_id provided
@@ -277,22 +473,6 @@ def damage_assessment(request):
                         except Exception:
                             pass
 
-                    # Determine decision and claim_status from LLM; both map to Recommendation shared (id 4)
-                    severity_lower = (severity_str or "").strip().lower()
-                    def _has_valid_damage(ds):
-                        if not ds:
-                            return False
-                        d0 = ds[0]
-                        if isinstance(d0, dict):
-                            return (d0.get("damage_type") or "").strip().lower() not in ("", "none")
-                        return str(d0).strip().lower() not in ("", "none")
-
-                    if severity_lower in ("minor", "moderate") and _has_valid_damage(damages):
-                        decision = "Auto Approve"
-                    else:
-                        decision = "Manual Review"
-
-                    latest.decision = decision[:20]
                     latest.claim_status = "Recommendation shared"
                     latest.save(
                         update_fields=[
@@ -301,13 +481,16 @@ def damage_assessment(request):
                             "claim_amount",
                             "threshold_value",
                             "claim_type",
-                            "decision",
                             "claim_status",
                             "updated_date",
                         ]
                     )
+                    sync_claim_evaluation_decision_state(
+                        complaint_id=complaint_id,
+                        latest_eval=latest,
+                    )
 
-                    # Update fnol_claims.claim_status to Recommendation shared and set excess_amount (10% of claim_amount)
+                    # Update fnol_claims.claim_status and align excess_amount with Phase 1 valuation rules.
                     fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
                     if fnol_claim:
                         from claims.models import ClaimStatus
@@ -317,29 +500,31 @@ def damage_assessment(request):
                         ).first()
                         if new_status:
                             fnol_claim.claim_status = new_status
-                        # Set/refresh excess_amount as 10% of claim_amount so Claim Evaluation shows correct value
                         try:
                             if claim_amount and float(claim_amount) > 0:
-                                fnol_claim.excess_amount = float(claim_amount) * 0.10
+                                fnol_claim.excess_amount = calculate_excess(
+                                    Decimal(str(claim_amount)),
+                                    get_excess_settings(),
+                                )
                         except Exception:
-                            # If anything goes wrong, don't block the main flow; excess_amount can remain unchanged
-                            pass
+                            logger.exception(
+                                "Failed to calculate configured excess for %s",
+                                complaint_id,
+                            )
                         update_fields = ["claim_status"]
                         if getattr(fnol_claim, "excess_amount", None) is not None:
                             update_fields.append("excess_amount")
                         fnol_claim.save(update_fields=update_fields)
-            except Exception as persist_err:
-                # Log but don't fail the request; LLM result still returned
-                traceback.print_exc()
+            except Exception:
+                logger.exception("damage_assessment persist failed")
 
         return Response(response_data)
-    except Exception as e:
+    except Exception:
+        logger.exception("damage_assessment failed")
+        # Never expose traceback or internal details to client
         return Response(
-            {
-                "error": f"Damage detection failed: {str(e)}",
-                "traceback": traceback.format_exc(),
-            },
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"error": "Damage detection failed."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 

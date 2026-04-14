@@ -1,12 +1,30 @@
 import type { AxiosRequestConfig } from "axios";
-import { httpClient } from "./httpClient";
+import { httpClient, LONG_REQUEST_TIMEOUT_MS } from "./httpClient";
 import type {
   FnolPayload,
   FnolResponse,
+  FraudRuleResult,
   ProcessClaimResponse,
 } from "../models/fnol";
+import type {
+  DamageAssessmentCardDetails,
+  DamageAssessmentCardsResponse,
+} from "../models/damageAssessmentCards";
+import {
+  assertDamageAssessmentCardDetailsShape,
+  assertDamageAssessmentCardsResponse,
+  normalizeDamageAssessmentCardDetails,
+} from "./damageAssessmentContract";
 
-export type { FnolPayload, FnolResponse, ProcessClaimResponse };
+export type { FnolPayload, FnolResponse, FraudRuleResult, ProcessClaimResponse };
+export type {
+  DamageAssessmentCardDetails,
+  DamageAssessmentCardSummary,
+  DamageAssessmentCardsResponse,
+  DamageAssessmentDisplayStatus,
+  DamageAssessmentMetric,
+  DamageAssessmentNarrative,
+} from "../models/damageAssessmentCards";
 
 async function fetchApi<T>(
   path: string,
@@ -28,9 +46,42 @@ export async function getFnolList(): Promise<FnolResponse[]> {
   return fetchApi<FnolResponse[]>("/fnol");
 }
 
-/** GET /api/fnol/:id/ - Get single FNOL by complaint_id */
+/** GET /api/fnol/:id/ - Get single FNOL by complaint_id (trailing slash required by Django route) */
 export async function getFnolById(id: string): Promise<FnolResponse> {
-  return fetchApi<FnolResponse>(`/fnol/${encodeURIComponent(id)}`);
+  return fetchApi<FnolResponse>(`/fnol/${encodeURIComponent(id)}/`);
+}
+
+export interface DeleteFnolResponse {
+  message: string;
+  complaint_id: string;
+  deleted_counts: Record<string, number>;
+}
+
+export interface BulkDeleteFnolResponse {
+  message: string;
+  requested_count: number;
+  deleted_count: number;
+  deleted_ids: string[];
+  not_found_ids: string[];
+  deleted_rows: number;
+  deleted_counts_by_claim: Record<string, Record<string, number>>;
+}
+
+/** DELETE /api/fnol/:id/ - Delete a single FNOL claim plus its persisted analysis rows */
+export async function deleteFnol(id: string): Promise<DeleteFnolResponse> {
+  return fetchApi<DeleteFnolResponse>(`/fnol/${encodeURIComponent(id)}/`, {
+    method: "DELETE",
+  });
+}
+
+/** POST /api/fnol/bulk-delete - Delete multiple FNOL claims in one request */
+export async function bulkDeleteFnol(
+  complaintIds: string[]
+): Promise<BulkDeleteFnolResponse> {
+  return fetchApi<BulkDeleteFnolResponse>("/fnol/bulk-delete", {
+    method: "POST",
+    data: { complaint_ids: complaintIds },
+  });
 }
 
 /** POST /api/save-fnol/ - Save FNOL payload to fnol_claims + fnol_damage_photos */
@@ -94,40 +145,150 @@ export async function runFraudDetection(
   );
 }
 
-export interface DamageAssessmentResponse {
-  damages: string[];
-  severity: string;
-}
-
-/** POST /api/llm/damage_assessment - Run damage assessment with claim ID and images */
-export async function runDamageAssessment(
-  claimId: string,
-  images: string[]
-): Promise<DamageAssessmentResponse> {
-  return fetchApi<DamageAssessmentResponse>("/llm/damage_assessment", {
-    method: "POST",
-    data: { claim_id: claimId, images },
-  });
-}
+/** Persisted lifecycle from GET /fnol (backend `claims.workflow_state.compute_claim_workflow_state`). */
+export type ClaimWorkflowState =
+  | "NOT_STARTED"
+  | "BUSINESS_RULE_VALIDATION_IN_PROGRESS"
+  | "BUSINESS_RULE_VALIDATION_COMPLETED"
+  | "DAMAGE_ASSESSMENT_IN_PROGRESS"
+  | "DAMAGE_ASSESSMENT_COMPLETED";
 
 export interface ClaimEvaluationResponse {
   complaint_id: string;
-  damage_confidence: number;
-  estimated_amount: number;
-  claim_amount: number;
-  excess_amount: number;
-  estimated_repair: number;
-  threshold_value: number;
-  claim_type: string;
+  /** True when no claim_evaluation_response row exists yet (GET returns 200, not 404). */
+  not_started?: boolean;
+  workflow_state?: ClaimWorkflowState;
+  damage_confidence: number | null;
+  estimated_amount: number | null;
+  claim_amount: number | null;
+  excess_amount: number | null;
+  estimated_repair: number | null;
+  threshold_value: number | null;
+  claim_type: string | null;
+  /**
+   * Binary claim complexity classification driven by MAJOR_CLAIM_THRESHOLD PricingConfig.
+   * "Simple Claim" when gross_estimate < threshold; "Major Claim" when >= threshold.
+   */
+  claim_complexity: "Simple Claim" | "Major Claim" | null;
+  /** The active threshold value (from MAJOR_CLAIM_THRESHOLD PricingConfig) used for classification. */
+  claim_complexity_threshold: number | null;
+  /** The gross repair estimate used for the classification (DA value or BRV fallback). */
+  claim_complexity_amount: number | null;
   /** Severity from claim type: SIMPLE=minor, MEDIUM=moderate, COMPLEX=severe */
   severity: string | null;
-  decision: string;
-  claim_status: string;
+  decision: string | null;
+  claim_status: string | null;
   reason: string | null;
+  fraud_score?: string | null;
+  fraud_rule_results?: FraudRuleResult[];
+  decision_summary?: ClaimDecisionSummary | null;
   llm_damages: string[] | null;
   llm_severity: string | null;
   created_date: string | null;
   updated_date: string | null;
+}
+
+export interface ClaimDecisionInsight {
+  code: string;
+  severity: "critical" | "warning" | "info" | "success";
+  title: string;
+  detail: string;
+  blocking: boolean;
+  source: string;
+}
+
+export interface ClaimDecisionSummarySignals {
+  fraud_band?: string | null;
+  failed_business_rule_count: number;
+  max_image_fraud_score?: number | null;
+  high_risk_image_count: number;
+  duplicate_candidate_count: number;
+  top_duplicate_candidate?: {
+    other_complaint_id: string;
+    similarity_percent: number;
+    match_reason: string;
+  } | null;
+  severity?: string | null;
+  part_count: number;
+  has_structured_damage: boolean;
+  assessment_ready: boolean;
+  allowed_severities: string[];
+  stp_max_image_fraud_score: number;
+  /** Canonical image-risk category codes (backend decisioning.py). */
+  image_risk_codes?: string[];
+  blocking_image_risk_codes?: string[];
+  image_risk_category_count?: number;
+  image_risk_photo_count?: number;
+}
+
+/** One normalized image-risk category from persisted ImageFraudResult + duplicate screening (backend). */
+export interface ImageRiskCategorySummary {
+  code: string;
+  label: string;
+  title: string;
+  tone: string;
+  severity: string;
+  blocking: boolean;
+  source: string;
+  count?: number;
+  count_label?: string;
+}
+
+export interface ImageRiskSummaryCard {
+  title: string;
+  headline: string;
+  detail: string;
+  tone: "critical" | "warning" | "info" | "success";
+}
+
+/**
+ * Aggregated image-risk block for top-of-page summary (claims/decisioning.py).
+ * Categories are de-duplicated per photo; cross-claim reuse is included when duplicates exist.
+ */
+export interface ImageRiskSummaryBlock {
+  status_tone: string;
+  title: string;
+  detail: string;
+  analyzed_photo_count?: number;
+  material_photo_count?: number;
+  blocking_category_count?: number;
+  critical_category_count?: number;
+  categories: ImageRiskCategorySummary[];
+  additional_category_count: number;
+  summary_card?: ImageRiskSummaryCard | null;
+  highlights?: ClaimDecisionInsight[];
+}
+
+export interface BusinessRuleSummaryBlock {
+  status_tone: "critical" | "warning" | "info" | "success";
+  title: string;
+  headline: string;
+  detail: string;
+  fraud_band?: string | null;
+  failed_rule_count: number;
+  validation_passed: boolean | null;
+}
+
+export interface ClaimDecisionSummary {
+  approval_state:
+    | "rejected"
+    | "manual_review_required"
+    | "pending_damage_assessment"
+    | "straight_through_eligible";
+  decision: string | null;
+  stp_eligible: boolean;
+  status_tone: "critical" | "warning" | "info" | "success";
+  status_title: string;
+  status_detail: string;
+  risk_level: "high" | "warning" | "low" | "info";
+  risk_label: string;
+  business_rule_validation_passed: boolean | null;
+  business_rule_summary?: BusinessRuleSummaryBlock | null;
+  blocking_insights: ClaimDecisionInsight[];
+  top_insights: ClaimDecisionInsight[];
+  /** Canonical image-risk highlights (labels, duplicate reuse) for compact top UI. */
+  image_risk_summary?: ImageRiskSummaryBlock | null;
+  signals: ClaimDecisionSummarySignals;
 }
 
 /** GET /api/fnol/:complaintId/evaluation - Get claim evaluation response */
@@ -139,9 +300,247 @@ export async function getClaimEvaluation(
   );
 }
 
+export interface ImageFraudResultItem {
+  id?: number;
+  photo_path: string;
+  fraud_score: number;
+  ela_score: number | null;
+  p_hash?: string;
+  d_hash?: string;
+  a_hash?: string;
+  exif_json?: {
+    warnings?: string[];
+    exif_present?: boolean;
+    software?: string | null;
+  } | null;
+  exif_present?: boolean;
+  signals_json?: Record<string, unknown> | null;
+  llm_notes?: string;
+  created_at?: string | null;
+  status?: string;
+  error?: string;
+  authenticity_labels?: ImageAuthenticityLabel[];
+}
+
+export interface ImageFraudResultsResponse {
+  complaint_id: string;
+  results_count: number;
+  results: ImageFraudResultItem[];
+}
+
+export interface ImageAuthenticityLabel {
+  code: string;
+  label: string;
+  tone:
+    | "green"
+    | "amber"
+    | "violet"
+    | "sky"
+    | "slate"
+    | "rose"
+    | "yellow";
+}
+
+export interface DuplicateCandidateItem {
+  other_complaint_id: string;
+  /** Raw 0-1 similarity used in DB (legacy field). Prefer similarity_percent for display. */
+  similarity_score: number;
+  /** 0-100 percentage for display, returned by the duplicate-candidates API. */
+  similarity_percent?: number;
+  match_reason: string;
+  evidence?: Record<string, unknown> | null;
+  created_at?: string | null;
+}
+
+export interface DuplicateDetectionSettings {
+  phash_threshold?: number;
+  dhash_threshold?: number;
+  require_both_non_exact?: boolean;
+  phash_threshold_percent?: number;
+  dhash_threshold_percent?: number;
+  sensitivity_label?: string;
+  match_policy_label?: string;
+  reviewer_summary?: string;
+  exact_match_policy?: string;
+}
+
+export interface DuplicateCandidatesResponse {
+  complaint_id: string;
+  candidate_count: number;
+  duplicate_detection?: DuplicateDetectionSettings;
+  candidates: DuplicateCandidateItem[];
+}
+
+export interface DamagePartAssessmentItem {
+  part_name: string;
+  damage_type: string;
+  severity_percent: number;
+  repair_action: string;
+  estimated_amount: number;
+}
+
+export interface MarketContext {
+  country: string;
+  city: string;
+  currency_code: string;
+  locale: string;
+  market_label: string;
+  accident_location: string;
+}
+
+/** Transparency data from the LangGraph agentic pricing pipeline (optional, additive). */
+export interface PipelineMetadata {
+  pipeline: "langgraph_agentic" | "vision_llm_direct" | string;
+  nodes_executed?: string[];
+  pricing_source: "web_search" | "training_knowledge" | "mixed" | "vision_llm_initial" | string;
+  confidence_level: "high" | "medium" | "low";
+  cost_range: { low: number; high: number } | null;
+  web_search_used: boolean;
+  parts_searched?: string[];
+  reasoning_summary: string;
+  regional_context?: string;
+  currency_code?: string;
+  part_level_ranges?: Array<{
+    part: string;
+    estimated_cost: number;
+    cost_range_low: number;
+    cost_range_high: number;
+    pricing_basis: string;
+  }>;
+}
+
+export interface DetailedDamageAssessmentResponse {
+  complaint_id: string;
+  total_parts: number;
+  total_estimated_cost: number;
+  currency_code?: string;
+  market_context?: MarketContext;
+  part_breakdown: DamagePartAssessmentItem[];
+  /** Present only when the LangGraph agentic pipeline successfully ran. */
+  pipeline_metadata?: PipelineMetadata;
+}
+
+export interface TotalValueResponse {
+  complaint_id: string;
+  gross_estimate: number;
+  excess_amount: number;
+  excess_from_fnol: number | null;
+  net_payable: number;
+  currency_code: string;
+  market_context?: MarketContext;
+  part_count: number;
+  /** Sum of part line estimates; should match gross_estimate when data is consistent */
+  parts_total_cross_check?: number;
+}
+
+export async function runImageFraudAnalysis(
+  complaintId: string
+): Promise<ImageFraudResultsResponse> {
+  return fetchApi<ImageFraudResultsResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/image-fraud-analysis`,
+    { method: "POST", timeout: LONG_REQUEST_TIMEOUT_MS }
+  );
+}
+
+export async function getImageFraudResults(
+  complaintId: string
+): Promise<ImageFraudResultsResponse> {
+  return fetchApi<ImageFraudResultsResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/image-fraud-results`
+  );
+}
+
+export async function getDuplicateCandidates(
+  complaintId: string
+): Promise<DuplicateCandidatesResponse> {
+  return fetchApi<DuplicateCandidatesResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/duplicate-candidates`
+  );
+}
+
+export async function runDetailedDamageAssessment(
+  complaintId: string
+): Promise<DetailedDamageAssessmentResponse> {
+  return fetchApi<DetailedDamageAssessmentResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/damage-assessment-detailed`,
+    { method: "POST", timeout: LONG_REQUEST_TIMEOUT_MS }
+  );
+}
+
+export async function getDetailedDamageAssessment(
+  complaintId: string
+): Promise<DetailedDamageAssessmentResponse> {
+  return fetchApi<DetailedDamageAssessmentResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/damage-assessment-detailed`
+  );
+}
+
+export async function getTotalValue(
+  complaintId: string
+): Promise<TotalValueResponse> {
+  return fetchApi<TotalValueResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/total-value`
+  );
+}
+
+/** GET /api/fnol/:id/damage-assessment/cards — grounded summary row per card (no LLM). */
+export async function getDamageAssessmentCards(
+  complaintId: string
+): Promise<DamageAssessmentCardsResponse> {
+  const data = await fetchApi<DamageAssessmentCardsResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/damage-assessment/cards`
+  );
+  if (import.meta.env.DEV) {
+    try {
+      assertDamageAssessmentCardsResponse(data);
+    } catch (e) {
+      console.warn("[vca] damage-assessment cards contract check failed:", e);
+    }
+  }
+  return data;
+}
+
+/** GET /api/fnol/:id/damage-assessment/cards/:cardKey/details */
+export async function getDamageAssessmentCardDetails(
+  complaintId: string,
+  cardKey: string
+): Promise<DamageAssessmentCardDetails> {
+  const key = encodeURIComponent(cardKey);
+  const data = await fetchApi<DamageAssessmentCardDetails>(
+    `/fnol/${encodeURIComponent(complaintId)}/damage-assessment/cards/${key}/details`
+  );
+  if (import.meta.env.DEV) {
+    try {
+      assertDamageAssessmentCardDetailsShape(data);
+    } catch (e) {
+      console.warn("[vca] damage-assessment detail contract check failed:", e);
+    }
+  }
+  return normalizeDamageAssessmentCardDetails(data);
+}
+
+/** POST /api/fnol/:id/damage-assessment/cards/:cardKey/refresh */
+export async function refreshDamageAssessmentCard(
+  complaintId: string,
+  cardKey: string
+): Promise<DamageAssessmentCardDetails> {
+  const key = encodeURIComponent(cardKey);
+  const data = await fetchApi<DamageAssessmentCardDetails>(
+    `/fnol/${encodeURIComponent(complaintId)}/damage-assessment/cards/${key}/refresh`,
+    { method: "POST", data: {} }
+  );
+  if (import.meta.env.DEV) {
+    try {
+      assertDamageAssessmentCardDetailsShape(data);
+    } catch (e) {
+      console.warn("[vca] damage-assessment refresh contract check failed:", e);
+    }
+  }
+  return normalizeDamageAssessmentCardDetails(data);
+}
+
 /** GET /api/fnol/:complaintId/recommendation-report/ - Download MOTOR CLAIM RECOMMENDATION REPORT PDF (status must be Recommendation shared) */
 export async function getRecommendationReportPdf(complaintId: string): Promise<Blob> {
-  const { httpClient } = await import("./httpClient");
   const response = await httpClient.get(
     `/fnol/${encodeURIComponent(complaintId)}/recommendation-report/`,
     { responseType: "blob" }
@@ -336,6 +735,7 @@ export async function updatePricingConfig(
 export async function deletePricingConfig(id: number): Promise<void> {
   await fetchApi<void>(`/masters/pricing-config/${id}`, { method: "DELETE" });
 }
+
 
 /** ****************************
  * Claim Digitization APIs
@@ -639,4 +1039,3 @@ export async function listInvoiceFilesSummary(params?: {
   const q = params?.limit ? `?limit=${encodeURIComponent(String(params.limit))}` : "";
   return fetchApi<{ items: InvoiceFileSummaryItem[] }>(`/digitization/files-summary${q}`);
 }
-

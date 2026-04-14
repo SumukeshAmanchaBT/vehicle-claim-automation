@@ -16,13 +16,19 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { saveFnol, type FnolPayload } from "@/lib/api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { inferCurrencyCode, inferMarketLabel } from "@/lib/market";
+
+function formatEstimatedAmountLabel(currencyCode: string) {
+  return `Estimated Amount (${currencyCode})`;
+}
 
 const defaultFnol: FnolPayload = {
   claim_id: "",
   policy: {
     policy_number: "",
     policy_status: "Active",
-    coverage_type: "Comprehensive",
+    coverage_type: "",
     policy_start_date: "",
     policy_end_date: "",
   },
@@ -59,6 +65,13 @@ export default function ClaimIntake() {
   const [fnol, setFnol] = useState<FnolPayload>(defaultFnol);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const accidentLocation =
+    fnol.incident.accident_location ?? fnol.accident_location ?? "";
+  const currencyCode = inferCurrencyCode(accidentLocation);
+  const marketLabel = inferMarketLabel(accidentLocation);
+  const estimatedAmountLabel = formatEstimatedAmountLabel(currencyCode);
+  const estimatedAmountPlaceholder =
+    currencyCode === "MYR" ? "e.g. 4400" : "e.g. 30000";
 
   const update = <K extends keyof FnolPayload>(section: K, field: keyof FnolPayload[K], value: unknown) => {
     setFnol((prev) => ({
@@ -160,7 +173,7 @@ export default function ClaimIntake() {
                   id="coverage_type"
                   value={fnol.policy.coverage_type}
                   onChange={(e) => update("policy", "coverage_type", e.target.value)}
-                  placeholder="e.g. Comprehensive"
+                  placeholder="Enter exactly as on the policy (PAS / schedule)"
                 />
               </div>
               <div className="space-y-2">
@@ -260,15 +273,36 @@ export default function ClaimIntake() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="estimated_amount">Estimated Amount (฿)</Label>
+                <Label htmlFor="estimated_amount">{estimatedAmountLabel}</Label>
                 <Input
                   id="estimated_amount"
                   type="number"
                   min={0}
                   value={fnol.incident.estimated_amount || ""}
-                  onChange={(e) => update("incident", "estimated_amount", parseInt(e.target.value, 10) || 0)}
-                  placeholder="e.g. 30000"
+                  onChange={(e) =>
+                    update("incident", "estimated_amount", parseFloat(e.target.value) || 0)
+                  }
+                  placeholder={estimatedAmountPlaceholder}
                   required
+                />
+                <p className="text-xs text-muted-foreground">
+                  Enter the initial claim estimate in {currencyCode}. This can be
+                  refined later by automated damage assessment.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="accident_location">Accident Location</Label>
+                <Input
+                  id="accident_location"
+                  value={accidentLocation}
+                  onChange={(e) => {
+                    update("incident", "accident_location", e.target.value);
+                    setFnol((prev) => ({
+                      ...prev,
+                      accident_location: e.target.value,
+                    }));
+                  }}
+                  placeholder="e.g. Bangkok, Thailand or Kuala Lumpur, Malaysia"
                 />
               </div>
               <div className="sm:col-span-2 space-y-2">
@@ -280,6 +314,18 @@ export default function ClaimIntake() {
                   placeholder="e.g. Front bumper and glass damage in slow collision"
                   rows={3}
                 />
+              </div>
+              <div className="sm:col-span-2">
+                <Alert className="border-primary/40 bg-primary/5">
+                  <AlertTitle>Market context</AlertTitle>
+                  <AlertDescription>
+                    Estimated amount and downstream valuation will use{" "}
+                    <span className="font-medium text-foreground">{currencyCode}</span>{" "}
+                    pricing assumptions for the{" "}
+                    <span className="font-medium text-foreground">{marketLabel}</span>
+                    {accidentLocation ? ` based on "${accidentLocation}".` : "."}
+                  </AlertDescription>
+                </Alert>
               </div>
             </CardContent>
           </Card>

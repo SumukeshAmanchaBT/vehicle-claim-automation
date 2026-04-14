@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
+import axios from "axios";
 import { useAuth } from "@/contexts/AuthContext";
 import { loginApi } from "@/services/authService";
+import { API_BASE_URL } from "@/lib/httpClient";
 import {
   Card,
   CardContent,
@@ -35,14 +37,39 @@ export default function Login() {
         throw new Error("Username and password are required");
       }
 
+      if (!API_BASE_URL) {
+        throw new Error(
+          "API URL is not configured (VITE_API_BASE_URL). Add vca-react/.env and restart the dev server."
+        );
+      }
+
       const result = await loginApi({ username, password });
       login(result.user, result.token);
       navigate(from, { replace: true });
-    } catch (err: any) {
-      const message =
-        err?.response?.data?.message ||
-        err?.message ||
-        "Login failed. Please check your credentials.";
+    } catch (err: unknown) {
+      let message = "Login failed. Please check your credentials.";
+      if (axios.isAxiosError(err)) {
+        const data = err.response?.data as
+          | { detail?: string; error?: string; message?: string }
+          | undefined;
+        const fromBody =
+          (typeof data?.detail === "string" && data.detail) ||
+          (typeof data?.error === "string" && data.error) ||
+          (typeof data?.message === "string" && data.message) ||
+          "";
+
+        if (err.code === "ECONNABORTED") {
+          message = `Request timed out after ${err.config?.timeout ?? "?"}ms. Is the backend running and reachable at ${API_BASE_URL}?`;
+        } else if (!err.response) {
+          message = `Cannot reach the API (${API_BASE_URL}). Start Django (e.g. manage.py runserver), check the URL matches your backend, and confirm CORS allows this origin.`;
+        } else if (fromBody) {
+          message = fromBody;
+        } else if (err.response.status === 401) {
+          message = "Invalid username or password.";
+        }
+      } else if (err instanceof Error) {
+        message = err.message;
+      }
       setError(message);
     } finally {
       setLoading(false);

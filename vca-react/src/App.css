@@ -40,27 +40,4 @@
 .read-the-docs {
   color: #888;
 }
-table tr td {
-  padding: 0.2rem !important;
-}
-table tr th {
-  padding: 0.5rem;
-}
-table tr th:first-child {
-  padding-left: 1rem;
-}
-table tr th:last-child {
-  padding-right: 1rem;
-}
-table tr td:first-child {
-  padding-left: 1rem;
-}
-table tr td:last-child {
-  padding-right: 1rem;
-}
-table tr td:nth-child(2) {
-  padding-left: 1rem;
-}
-table tr td:nth-child(3) {
-  padding-left: 1rem;
-}
+
