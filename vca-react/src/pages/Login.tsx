@@ -61,7 +61,7 @@ export default function Login() {
         if (err.code === "ECONNABORTED") {
           message = `Request timed out after ${err.config?.timeout ?? "?"}ms. Is the backend running and reachable at ${API_BASE_URL}?`;
         } else if (!err.response) {
-          message = `Cannot reach the API (${API_BASE_URL}). Start Django (e.g. manage.py runserver), check the URL matches your backend, and confirm CORS allows this origin.`;
+          message = `Cannot reach the API (${API_BASE_URL}). Start Django from the vca-python folder (python manage.py runserver), confirm this URL matches your backend, and check the browser console—if you see a CORS error about a request header, the API must allow that header in CORS_ALLOW_HEADERS.`;
         } else if (fromBody) {
           message = fromBody;
         } else if (err.response.status === 401) {

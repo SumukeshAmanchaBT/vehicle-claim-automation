@@ -410,7 +410,7 @@ export default function Claims() {
               <Button asChild>
                 <Link to="/claims/new">
                   <Plus className="mr-2 h-4 w-4" />
-                  Submit FNOL
+                  Fetch FNOL Data
                 </Link>
               </Button>
             </>
