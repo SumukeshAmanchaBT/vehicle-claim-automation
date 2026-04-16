@@ -19,6 +19,7 @@ from claims.models import (
     FnolDamagePhoto,
     ImageFraudResult,
 )
+from claims.reviewer_safe import sanitize_reviewer_llm_notes
 
 
 def _exif_warnings_from_row(exif_json: dict | None) -> list[str]:
@@ -142,7 +143,11 @@ def _image_authenticity_facts(claim: FnolClaim, latest_eval: ClaimEvaluationResp
                 "exif_warnings_preview": preview,
             }
         )
-        note = (r.llm_authenticity_notes or "").strip()
+        note = sanitize_reviewer_llm_notes(
+            r.llm_authenticity_notes,
+            complaint_id=claim.complaint_id,
+            photo_path=r.photo_path,
+        )
         if note and note not in llm_notes_samples:
             llm_notes_samples.append(note[:400])
 

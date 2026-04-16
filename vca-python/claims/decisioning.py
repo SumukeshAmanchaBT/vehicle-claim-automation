@@ -18,6 +18,7 @@ from claims.phase1_runtime import (
     get_pricing_config_float,
     get_pricing_config_string,
 )
+from claims.workflow_state import current_damage_assessment_persistence_state
 
 _CLAIM_TYPE_TO_SEVERITY = {
     "SIMPLE": "minor",
@@ -180,7 +181,55 @@ def _parse_llm_damages(raw: str | None) -> list[str]:
     return []
 
 
-def _infer_business_rules_passed(latest_eval: ClaimEvaluationResponse | None) -> tuple[bool | None, list[dict[str, Any]]]:
+def _fnol_list_stage_lower(claim: FnolClaim | None) -> str:
+    """Claim list / detail stage from fnol_claims → claim_status FK (authoritative for UI)."""
+    if not claim:
+        return ""
+    try:
+        cs = getattr(claim, "claim_status", None)
+        if cs is not None:
+            name = getattr(cs, "status_name", None)
+            if name:
+                return str(name).strip().lower()
+    except Exception:
+        return ""
+    return ""
+
+
+def _stage_implies_business_rules_passed(stage_lower: str) -> bool | None:
+    """
+    Stages that only occur after successful BRV (or that explicitly mean failure).
+
+    When ``fraud_rule_results`` is empty, we still infer pass/fail from list/eval
+    stages that *unambiguously* reflect BRV outcome. We do **not** infer pass from
+    terminal workflow labels such as "Recommendation shared" — those can be set by
+    other API paths without a persisted rule snapshot (see LLM damage assessment).
+    """
+    if not (stage_lower or "").strip():
+        return None
+    s = stage_lower.strip().lower()
+    if any(
+        marker in s
+        for marker in ("validation-fail", "fraudulent", "rejected")
+    ):
+        return False
+    if any(
+        marker in s
+        for marker in (
+            "business rule validation-pass",
+            "pending damage detection",
+            "pending_damage_detection",
+        )
+    ):
+        return True
+    return None
+
+
+def _infer_business_rules_passed(
+    latest_eval: ClaimEvaluationResponse | None,
+    *,
+    claim: FnolClaim | None = None,
+) -> tuple[bool | None, list[dict[str, Any]]]:
     if not latest_eval:
         return None, []
 
@@ -206,6 +255,19 @@ def _infer_business_rules_passed(latest_eval: ClaimEvaluationResponse | None) ->
         return False, normalized_rules
     if "validation-pass" in claim_status:
         return True, normalized_rules
+
+    hint = _stage_implies_business_rules_passed(claim_status)
+    if hint is True:
+        return True, normalized_rules
+    if hint is False:
+        return False, normalized_rules
+
+    fnol_stage = _fnol_list_stage_lower(claim)
+    hint_fnol = _stage_implies_business_rules_passed(fnol_stage)
+    if hint_fnol is True:
+        return True, normalized_rules
+    if hint_fnol is False:
+        return False, normalized_rules
 
     return None, normalized_rules
 
@@ -447,6 +509,43 @@ def _aggregate_image_risk_summary(
     )
 
 
+def _current_lifecycle_started_at(
+    latest_eval: ClaimEvaluationResponse | None,
+):
+    return getattr(latest_eval, "created_date", None) if latest_eval else None
+
+
+def _current_image_analysis_rows(
+    *,
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+) -> tuple[list[ClaimDuplicateCandidate], list[ImageFraudResult]]:
+    """
+    Only treat image-analysis artifacts as current if they were produced after
+    the latest BRV run started.
+
+    This keeps stale image-fraud / duplicate rows from earlier runs from
+    leaking back into a fresh BRV-only claim summary.
+    """
+    started_at = _current_lifecycle_started_at(latest_eval)
+    if started_at is None:
+        return [], []
+
+    duplicate_rows = list(
+        ClaimDuplicateCandidate.objects.filter(
+            complaint=claim,
+            created_at__gte=started_at,
+        ).order_by("-similarity_score", "-created_at")
+    )
+    fraud_rows = list(
+        ImageFraudResult.objects.filter(
+            complaint=claim,
+            created_at__gte=started_at,
+        ).order_by("-fraud_score", "-created_at")
+    )
+    return duplicate_rows, fraud_rows
+
+
 def _build_primary_image_risk_insight(
     categories: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -575,7 +674,9 @@ def build_claim_decision_summary(
         ).first()
 
     policy = get_straight_through_policy()
-    business_rules_passed, rules_snapshot = _infer_business_rules_passed(latest_eval)
+    business_rules_passed, rules_snapshot = _infer_business_rules_passed(
+        latest_eval, claim=claim
+    )
     failed_rules = [rule for rule in rules_snapshot if not bool(rule.get("passed"))]
 
     fraud_band = (latest_eval.fraud_band or "").strip() if latest_eval else ""
@@ -585,24 +686,22 @@ def build_claim_decision_summary(
         fraud_band=fraud_band,
     )
     claim_type = (latest_eval.claim_type or "").strip().upper() if latest_eval else ""
-    severity = (
+    raw_llm_severity = (
         (latest_eval.llm_severity or "").strip().lower() if latest_eval else ""
-    ) or _CLAIM_TYPE_TO_SEVERITY.get(claim_type, "")
+    )
     llm_damages = _parse_llm_damages(latest_eval.llm_damages if latest_eval else None)
+    damage_state = current_damage_assessment_persistence_state(claim, latest_eval)
+    current_part_count = int(damage_state["current_part_count"])
+    has_current_valuation = bool(damage_state["current_valuation_ready"])
+    has_current_damage_evidence = bool(damage_state["has_current_evidence"])
 
-    duplicate_rows = list(
-        ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by(
-            "-similarity_score", "-created_at"
-        )
+    duplicate_rows, fraud_rows = _current_image_analysis_rows(
+        claim=claim,
+        latest_eval=latest_eval,
     )
     duplicate_count = len(duplicate_rows)
     top_duplicate = duplicate_rows[0] if duplicate_rows else None
 
-    fraud_rows = list(
-        ImageFraudResult.objects.filter(complaint=claim).order_by(
-            "-fraud_score", "-created_at"
-        )
-    )
     fraud_scores = [
         float(row.fraud_score)
         for row in fraud_rows
@@ -615,13 +714,20 @@ def build_claim_decision_summary(
         if score >= policy.max_image_fraud_score
     )
 
-    part_count = DamagePartAssessment.objects.filter(complaint=claim).count()
-    has_valuation = ClaimPhase1Valuation.objects.filter(complaint=claim).exists()
-    has_valid_damage = part_count > 0 or any(
-        damage.lower() not in {"", "none", "unknown"} for damage in llm_damages
+    severity = raw_llm_severity or (
+        _CLAIM_TYPE_TO_SEVERITY.get(claim_type, "")
+        if has_current_damage_evidence
+        else ""
     )
+    has_valid_damage = (
+        current_part_count > 0
+        or any(damage.lower() not in {"", "none", "unknown"} for damage in llm_damages)
+    ) if has_current_damage_evidence else False
     assessment_ready = bool(
-        has_valuation or part_count > 0 or severity or has_valid_damage
+        has_current_valuation
+        or current_part_count > 0
+        or raw_llm_severity
+        or has_valid_damage
     )
     image_risk_summary, image_risk_categories, analyzed_photo_count = (
         _aggregate_image_risk_summary(
@@ -909,7 +1015,7 @@ def build_claim_decision_summary(
             if top_duplicate
             else None,
             "severity": severity or None,
-            "part_count": part_count,
+            "part_count": current_part_count,
             "has_structured_damage": has_valid_damage,
             "assessment_ready": assessment_ready,
             "image_risk_category_count": len(image_risk_categories),

@@ -11,6 +11,7 @@ from typing import Any
 
 from claims.evidence_builders import build_card_evidence_bundle
 from claims.models import ClaimEvaluationResponse, FnolClaim
+from claims.reviewer_safe import sanitize_reviewer_llm_notes
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +178,16 @@ class ImageAuthenticityAnalyzer:
 
         notes = data.get("llm_notes_samples") or []
         for note in notes[:3]:
-            if note:
+            reviewer_safe_note = sanitize_reviewer_llm_notes(
+                note,
+                complaint_id=claim.complaint_id,
+            )
+            if reviewer_safe_note:
                 evidence.append(
                     {
                         "type": "llm_authenticity_notes",
                         "label": "Stored LLM authenticity notes",
-                        "detail": str(note)[:500],
+                        "detail": str(reviewer_safe_note)[:500],
                         "source": "image_fraud_results.llm_authenticity_notes",
                         "confidence": "grounded",
                     }

@@ -98,6 +98,24 @@ _SLOW_REQUEST_MIN_MS: int = 250
 _SLOW_REQUEST_MAX_MS: int = 30_000
 _EVAL_RECORDS_MIN: int = 10
 _EVAL_RECORDS_MAX: int = 500
+_VIDEO_JOB_LOCK_MIN_S: int = 15
+_VIDEO_JOB_LOCK_MAX_S: int = 3_600
+_VIDEO_JOB_BACKOFF_MIN_S: int = 5
+_VIDEO_JOB_BACKOFF_MAX_S: int = 900
+_VIDEO_JOB_ATTEMPTS_MIN: int = 1
+_VIDEO_JOB_ATTEMPTS_MAX: int = 20
+_VIDEO_WORKER_POLL_MIN_S: int = 1
+_VIDEO_WORKER_POLL_MAX_S: int = 300
+_VIDEO_FETCH_TIMEOUT_MIN_S: int = 10
+_VIDEO_FETCH_TIMEOUT_MAX_S: int = 900
+_VIDEO_FETCH_MAX_BYTES_MIN: int = 5 * 1024 * 1024
+_VIDEO_FETCH_MAX_BYTES_MAX: int = 2 * 1024 * 1024 * 1024
+_VIDEO_ADVANCED_TIMEOUT_MIN_S: int = 30
+_VIDEO_ADVANCED_TIMEOUT_MAX_S: int = 3_600
+_LLM_TIMEOUT_MIN_S: int = 10
+_LLM_TIMEOUT_MAX_S: int = 900
+_LLM_RETRIES_MIN: int = 0
+_LLM_RETRIES_MAX: int = 10
 
 
 # ─── Private helpers ─────────────────────────────────────────────────────────
@@ -213,6 +231,94 @@ def _derive_eval_records_cap(db_read_s: int) -> int:
     )
 
 
+def _derive_video_job_lock_timeout(db_read_s: int) -> int:
+    adaptive_default = max(30, round(db_read_s * 6))
+    return _clamp(
+        _env_int("VIDEO_JOB_LOCK_TIMEOUT", adaptive_default),
+        lo=_VIDEO_JOB_LOCK_MIN_S,
+        hi=_VIDEO_JOB_LOCK_MAX_S,
+    )
+
+
+def _derive_video_job_retry_backoff(db_read_s: int) -> int:
+    adaptive_default = max(5, round(db_read_s * 0.5))
+    return _clamp(
+        _env_int("VIDEO_JOB_RETRY_BACKOFF", adaptive_default),
+        lo=_VIDEO_JOB_BACKOFF_MIN_S,
+        hi=_VIDEO_JOB_BACKOFF_MAX_S,
+    )
+
+
+def _derive_video_job_max_attempts() -> int:
+    return _clamp(
+        _env_int("VIDEO_JOB_MAX_ATTEMPTS", 3),
+        lo=_VIDEO_JOB_ATTEMPTS_MIN,
+        hi=_VIDEO_JOB_ATTEMPTS_MAX,
+    )
+
+
+def _derive_video_worker_poll_interval() -> int:
+    return _clamp(
+        _env_int("VIDEO_WORKER_POLL_INTERVAL", 5),
+        lo=_VIDEO_WORKER_POLL_MIN_S,
+        hi=_VIDEO_WORKER_POLL_MAX_S,
+    )
+
+
+def _derive_video_fetch_timeout(db_read_s: int) -> int:
+    adaptive_default = max(20, round(db_read_s * 2))
+    return _clamp(
+        _env_int("VIDEO_FETCH_TIMEOUT", adaptive_default),
+        lo=_VIDEO_FETCH_TIMEOUT_MIN_S,
+        hi=_VIDEO_FETCH_TIMEOUT_MAX_S,
+    )
+
+
+def _derive_video_fetch_max_bytes(db_read_s: int) -> int:
+    adaptive_default_mb = max(32, round(db_read_s * 4))
+    adaptive_default = adaptive_default_mb * 1024 * 1024
+    return _clamp(
+        _env_int("VIDEO_FETCH_MAX_BYTES", adaptive_default),
+        lo=_VIDEO_FETCH_MAX_BYTES_MIN,
+        hi=_VIDEO_FETCH_MAX_BYTES_MAX,
+    )
+
+
+def _derive_video_advanced_timeout(lock_timeout_s: int) -> int:
+    adaptive_default = max(60, round(lock_timeout_s * 0.85))
+    return _clamp(
+        _env_int("VIDEO_ADVANCED_TIMEOUT", adaptive_default),
+        lo=_VIDEO_ADVANCED_TIMEOUT_MIN_S,
+        hi=min(_VIDEO_ADVANCED_TIMEOUT_MAX_S, max(adaptive_default, lock_timeout_s)),
+    )
+
+
+def _derive_llm_timeout(
+    env_name: str,
+    *,
+    db_read_s: int,
+    multiplier: float,
+    floor_s: int,
+    lock_timeout_s: int,
+) -> int:
+    adaptive_default = max(floor_s, round(db_read_s * multiplier))
+    max_safe = max(_LLM_TIMEOUT_MIN_S, int(lock_timeout_s) - 5)
+    adaptive_default = min(adaptive_default, max_safe)
+    return _clamp(
+        _env_int(env_name, adaptive_default),
+        lo=_LLM_TIMEOUT_MIN_S,
+        hi=min(_LLM_TIMEOUT_MAX_S, max_safe),
+    )
+
+
+def _derive_llm_retry_count() -> int:
+    return _clamp(
+        _env_int("LLM_REQUEST_MAX_RETRIES", 2),
+        lo=_LLM_RETRIES_MIN,
+        hi=_LLM_RETRIES_MAX,
+    )
+
+
 # ─── Public config class and singleton ───────────────────────────────────────
 
 class _VcaConfig:
@@ -250,6 +356,17 @@ class _VcaConfig:
         "image_fetch_timeout_s",
         "slow_request_threshold_ms",
         "eval_records_per_claim_cap",
+        "video_job_lock_timeout_s",
+        "video_job_retry_backoff_s",
+        "video_job_max_attempts",
+        "video_worker_poll_interval_s",
+        "video_fetch_timeout_s",
+        "video_fetch_max_bytes",
+        "video_advanced_timeout_s",
+        "llm_request_timeout_s",
+        "llm_light_request_timeout_s",
+        "llm_rich_request_timeout_s",
+        "llm_request_max_retries",
     )
 
     def __init__(self) -> None:
@@ -260,6 +377,43 @@ class _VcaConfig:
         self.image_fetch_timeout_s: int = _derive_image_fetch_timeout(_MYSQL_READ_TIMEOUT_S)
         self.slow_request_threshold_ms: int = _derive_slow_request_ms(_MYSQL_READ_TIMEOUT_S)
         self.eval_records_per_claim_cap: int = _derive_eval_records_cap(_MYSQL_READ_TIMEOUT_S)
+        self.video_job_lock_timeout_s: int = _derive_video_job_lock_timeout(
+            _MYSQL_READ_TIMEOUT_S
+        )
+        self.video_job_retry_backoff_s: int = _derive_video_job_retry_backoff(
+            _MYSQL_READ_TIMEOUT_S
+        )
+        self.video_job_max_attempts: int = _derive_video_job_max_attempts()
+        self.video_worker_poll_interval_s: int = _derive_video_worker_poll_interval()
+        self.video_fetch_timeout_s: int = _derive_video_fetch_timeout(_MYSQL_READ_TIMEOUT_S)
+        self.video_fetch_max_bytes: int = _derive_video_fetch_max_bytes(
+            _MYSQL_READ_TIMEOUT_S
+        )
+        self.video_advanced_timeout_s: int = _derive_video_advanced_timeout(
+            self.video_job_lock_timeout_s
+        )
+        self.llm_request_timeout_s: int = _derive_llm_timeout(
+            "LLM_REQUEST_TIMEOUT",
+            db_read_s=_MYSQL_READ_TIMEOUT_S,
+            multiplier=3.0,
+            floor_s=30,
+            lock_timeout_s=self.video_job_lock_timeout_s,
+        )
+        self.llm_light_request_timeout_s: int = _derive_llm_timeout(
+            "LLM_LIGHT_REQUEST_TIMEOUT",
+            db_read_s=_MYSQL_READ_TIMEOUT_S,
+            multiplier=2.0,
+            floor_s=20,
+            lock_timeout_s=self.video_job_lock_timeout_s,
+        )
+        self.llm_rich_request_timeout_s: int = _derive_llm_timeout(
+            "LLM_RICH_REQUEST_TIMEOUT",
+            db_read_s=_MYSQL_READ_TIMEOUT_S,
+            multiplier=4.0,
+            floor_s=45,
+            lock_timeout_s=self.video_job_lock_timeout_s,
+        )
+        self.llm_request_max_retries: int = _derive_llm_retry_count()
 
     def __repr__(self) -> str:
         pairs = ", ".join(f"{s}={getattr(self, s)!r}" for s in self.__slots__)

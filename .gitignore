@@ -1,5 +1,173 @@
+# =============================================================================
+# Root .gitignore — vehicle-claim-automation (Django vca-python + Vite vca-react)
+# Subfolder .gitignore files add extra rules; this catches cloud-push noise repo-wide.
+# =============================================================================
+
+# --- Environment & secrets (never commit real values) ---
 .env
 .env.*
 !.env.example
 !**/.env.example
+.env.local
+.env.*.local
+.env.development.local
+.env.production.local
+.env.test.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
+id_rsa
+id_rsa.pub
+id_ecdsa*
+credentials.json
+*-credentials.json
+*-service-account*.json
+google-services.json
+google-application-credentials.json
+.secrets/
+
+# --- Local runtime / agent caches (this repo) ---
 .runtime/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+venv/
+env/
+ENV/
+.venv/
+env.bak/
+venv.bak/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+.pytype/
+cython_debug/
+*.manifest
+*.spec
+celerybeat-schedule
+celerybeat.pid
+.ipynb_checkpoints
+
+# Django: local DB & user uploads (see claim_automation.settings MEDIA_ROOT)
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+db.sqlite3
+vca-python/media/
+staticfiles/
+
+# --- Node / frontend (vca-react) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-store/
+dist/
+dist-ssr/
+*.local
+.cache/
+.parcel-cache/
+.vite/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.eslintcache
+*.tsbuildinfo
+storybook-static/
+
+# --- Logs ---
+logs/
+*.log
+
+# --- IDE & editors ---
+.idea/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Misc generated / temp ---
+*.orig
+*.bak
+.tmp/
+temp/
+tmp/
+demo_outputs/
+
+# --- Infrastructure-as-code / cloud (if added later) ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# --- Direnv / local shell env ---
+.envrc
+
+# --- AWS CLI profile (never commit) ---
+.aws/credentials
+
+# --- ML experiment artifacts (local training; optional clutter) ---
+wandb/
+mlruns/
+lightning_logs/
+
+# --- Windows crash dumps (Node / native) ---
+*.stackdump

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Loader2, FileDown, Plus, Trash2, ZoomIn } from "lucide-react";
+import { Loader2, FileDown, RefreshCw, Trash2, ZoomIn } from "lucide-react";
 
 import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -147,11 +147,13 @@ export default function Claims() {
   const [claims, setClaims] = useState<FnolResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
-  const [reloadToken, setReloadToken] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedClaimIds, setSelectedClaimIds] = useState<string[]>([]);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
+  const hasLoadedOnceRef = useRef(false);
+  const claimsRef = useRef<FnolResponse[]>([]);
 
   type ClaimSortKey = "claimNumber" | "policy" | "customer" | "type" | "date" | "status";
   const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
@@ -160,30 +162,90 @@ export default function Claims() {
   const [pageSize, setPageSize] = useState(20);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    getFnolList()
-      .then((data) => {
-        if (!cancelled) {
-          setClaims(data);
+    claimsRef.current = claims;
+  }, [claims]);
+
+  const loadClaims = useCallback(
+    async ({
+      manual = false,
+      announceNewRecords = false,
+    }: {
+      manual?: boolean;
+      announceNewRecords?: boolean;
+    } = {}) => {
+      const isInitialLoad = !hasLoadedOnceRef.current;
+      if (isInitialLoad) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+      setError(null);
+
+      try {
+        const previousIds = new Set(
+          claimsRef.current.map((claim) => claim.complaint_id)
+        );
+        const data = await getFnolList();
+        hasLoadedOnceRef.current = true;
+        setClaims(data);
+
+        if (announceNewRecords) {
+          const newClaims = data.filter(
+            (claim) => !previousIds.has(claim.complaint_id)
+          );
+          if (newClaims.length > 0) {
+            toast({
+              title:
+                newClaims.length === 1
+                  ? "New FNOL fetched"
+                  : "New FNOL claims fetched",
+              description:
+                newClaims.length === 1
+                  ? `${newClaims[0].complaint_id} was added from the live FNOL records.`
+                  : `${newClaims.length} fresh FNOL claims were added from the live FNOL records.`,
+            });
+          } else if (manual) {
+            toast({
+              title: "Claims refreshed",
+              description:
+                "No new FNOL records were found in the MySQL-backed claim list.",
+            });
+          }
         }
-      })
-      .catch((err) => {
-        if (!cancelled) {
+      } catch (err) {
+        if (!hasLoadedOnceRef.current) {
           setClaims([]);
-          setError(err);
         }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      });
-    return () => {
-      cancelled = true;
+        setError(err);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [toast]
+  );
+
+  useEffect(() => {
+    void loadClaims();
+  }, [loadClaims]);
+
+  useEffect(() => {
+    const handleWindowFocus = () => {
+      void loadClaims({ announceNewRecords: true });
     };
-  }, [reloadToken]);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void loadClaims({ announceNewRecords: true });
+      }
+    };
+
+    window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", handleWindowFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [loadClaims]);
 
   const errorSummary = error ? getApiErrorSummary(error) : null;
 
@@ -407,11 +469,25 @@ export default function Claims() {
                   Delete selected ({selectedClaimIds.length})
                 </Button>
               ) : null}
+              {/* Preserved for future manual-claim intake re-enable.
               <Button asChild>
                 <Link to="/claims/new">
-                  <Plus className="mr-2 h-4 w-4" />
                   Submit FNOL
                 </Link>
+              </Button>
+              */}
+              <Button
+                onClick={() =>
+                  void loadClaims({ manual: true, announceNewRecords: true })
+                }
+                disabled={loading || refreshing || deletePending}
+              >
+                {refreshing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                Fetch FNOL
               </Button>
             </>
           }
@@ -425,7 +501,9 @@ export default function Claims() {
             loadingDescription="Fetching the claims table, latest evaluation state, and stored vehicle photos."
             errorTitle="Could not load claims"
             error={errorSummary}
-            onRetry={() => setReloadToken((value) => value + 1)}
+            onRetry={() =>
+              void loadClaims({ manual: true, announceNewRecords: true })
+            }
           >
             <>
               <Table>
@@ -495,9 +573,23 @@ export default function Claims() {
                     <TableRow>
                       <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
                         No claims found.{" "}
+                        {/* Preserved for future manual-claim intake re-enable.
                         <Link to="/claims/new" className="text-primary hover:underline">
                           Submit a new claim
                         </Link>
+                        */}
+                        <button
+                          type="button"
+                          className="text-primary hover:underline"
+                          onClick={() =>
+                            void loadClaims({
+                              manual: true,
+                              announceNewRecords: true,
+                            })
+                          }
+                        >
+                          Fetch latest FNOL records
+                        </button>
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -525,7 +617,7 @@ export default function Claims() {
                               {claim.claimNumber}
                             </Link>
                           </TableCell>
-                          <TableCell className="font-mono text-sm">
+                          <TableCell className="text-sm tabular-nums text-foreground">
                             {claim.policyNumber}
                           </TableCell>
                           <TableCell>

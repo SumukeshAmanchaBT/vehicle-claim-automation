@@ -1,6 +1,7 @@
 import type { AxiosRequestConfig } from "axios";
 import { httpClient, LONG_REQUEST_TIMEOUT_MS } from "./httpClient";
 import type {
+  ClaimWorkflowSnapshot,
   FnolPayload,
   FnolResponse,
   FraudRuleResult,
@@ -16,7 +17,13 @@ import {
   normalizeDamageAssessmentCardDetails,
 } from "./damageAssessmentContract";
 
-export type { FnolPayload, FnolResponse, FraudRuleResult, ProcessClaimResponse };
+export type {
+  ClaimWorkflowSnapshot,
+  FnolPayload,
+  FnolResponse,
+  FraudRuleResult,
+  ProcessClaimResponse,
+};
 export type {
   DamageAssessmentCardDetails,
   DamageAssessmentCardSummary,
@@ -158,6 +165,7 @@ export interface ClaimEvaluationResponse {
   /** True when no claim_evaluation_response row exists yet (GET returns 200, not 404). */
   not_started?: boolean;
   workflow_state?: ClaimWorkflowState;
+  workflow_snapshot?: ClaimWorkflowSnapshot;
   damage_confidence: number | null;
   estimated_amount: number | null;
   claim_amount: number | null;
@@ -481,6 +489,189 @@ export async function getTotalValue(
   return fetchApi<TotalValueResponse>(
     `/fnol/${encodeURIComponent(complaintId)}/total-value`
   );
+}
+
+export interface ClaimPricingExplanationPart {
+  part_name: string;
+  estimated_amount: number;
+  damage_type?: string;
+  repair_action?: string;
+  severity_percent?: number;
+  pricing_basis?: string;
+  source_image_url?: string;
+}
+
+export interface ClaimPricingExplanationResponse {
+  complaint_id: string;
+  pricing_source: string;
+  confidence_level: string;
+  reasoning_summary: string;
+  currency_code: string;
+  gross_estimate: number;
+  net_payable: number;
+  market_context?: MarketContext;
+  explanation: {
+    highlights: string[];
+    parts: ClaimPricingExplanationPart[];
+    pricing_rule_snapshot?: Record<string, unknown>;
+    cost_range?: {
+      low?: number | null;
+      high?: number | null;
+    } | null;
+  };
+}
+
+export interface InvoiceAnalysisResponse {
+  analysis_id: number;
+  complaint_id: string;
+  status: string;
+  invoice_total: number | null;
+  valuation_total: number | null;
+  discrepancy_amount: number | null;
+  requires_manual_review: boolean;
+  summary_text: string;
+  extracted_payload_json: Record<string, unknown>;
+  discrepancy: {
+    amount_delta: number | null;
+    amount_delta_percent: number | null;
+    parts_delta_count: number;
+    valuation_part_count: number;
+    invoice_part_count: number;
+    flags: string[];
+  };
+}
+
+export interface ClaimReasoningSummaryResponse {
+  complaint_id: string;
+  summary: string;
+  evaluation: {
+    decision: string | null;
+    claim_status: string | null;
+    claim_type: string | null;
+    severity: string | null;
+    estimated_amount: number | null;
+    claim_amount: number | null;
+  };
+  evidence: {
+    pricing_source?: string | null;
+    confidence_level?: string | null;
+    duplicate_candidate_count: number;
+    image_fraud_result_count: number;
+    damage_part_count: number;
+    invoice_analysis_status?: string | null;
+    video_analysis_status?: string | null;
+  };
+}
+
+export interface ClaimVideoKeyframe {
+  frame_index: number;
+  timestamp_seconds: number;
+  label: string;
+}
+
+export interface ClaimVideoTimelineEvent {
+  timestamp_seconds: number;
+  title: string;
+  detail: string;
+  severity?: string;
+}
+
+export interface ClaimVideoAnalysisResponse {
+  analysis_id?: number;
+  complaint_id: string;
+  status: string;
+  summary_text: string;
+  keyframes: ClaimVideoKeyframe[];
+  timeline: ClaimVideoTimelineEvent[];
+  metrics: Record<string, unknown>;
+}
+
+export interface BatchValidateClaimsResponse {
+  requested_count: number;
+  processed_count: number;
+  results: Array<{
+    complaint_id: string;
+    status: "completed" | "skipped" | "error";
+    detail: string;
+    video_analysis_status?: string | null;
+    damage_part_count?: number;
+    has_valuation?: boolean;
+  }>;
+}
+
+export async function getPricingExplanation(
+  complaintId: string
+): Promise<ClaimPricingExplanationResponse> {
+  return fetchApi<ClaimPricingExplanationResponse>(
+    `/claims/${encodeURIComponent(complaintId)}/pricing/explain`
+  );
+}
+
+export async function analyzeInvoiceForClaim(params: {
+  complaintId: string;
+  documentId?: number;
+}): Promise<InvoiceAnalysisResponse> {
+  return fetchApi<InvoiceAnalysisResponse>(
+    `/claims/${encodeURIComponent(params.complaintId)}/invoice/analyze`,
+    {
+      method: "POST",
+      data: {
+        document_id: params.documentId ?? null,
+      },
+      timeout: LONG_REQUEST_TIMEOUT_MS,
+    }
+  );
+}
+
+export async function getReasoningSummary(
+  complaintId: string
+): Promise<ClaimReasoningSummaryResponse> {
+  return fetchApi<ClaimReasoningSummaryResponse>(
+    `/claims/${encodeURIComponent(complaintId)}/reasoning/summary`,
+    {
+      method: "POST",
+      data: {},
+      timeout: LONG_REQUEST_TIMEOUT_MS,
+    }
+  );
+}
+
+export async function analyzeClaimVideo(params: {
+  complaintId: string;
+  sourcePath?: string;
+  sourceType?: "dashcam" | "cctv" | "upload";
+  originalFilename?: string;
+}): Promise<ClaimVideoAnalysisResponse> {
+  return fetchApi<ClaimVideoAnalysisResponse>(
+    `/claims/${encodeURIComponent(params.complaintId)}/video/analyze`,
+    {
+      method: "POST",
+      data: {
+        source_path: params.sourcePath ?? null,
+        source_type: params.sourceType ?? null,
+        original_filename: params.originalFilename ?? null,
+      },
+      timeout: LONG_REQUEST_TIMEOUT_MS,
+    }
+  );
+}
+
+export async function getClaimVideoTimeline(
+  complaintId: string
+): Promise<ClaimVideoAnalysisResponse> {
+  return fetchApi<ClaimVideoAnalysisResponse>(
+    `/claims/${encodeURIComponent(complaintId)}/timeline`
+  );
+}
+
+export async function batchValidateClaims(
+  complaintIds: string[]
+): Promise<BatchValidateClaimsResponse> {
+  return fetchApi<BatchValidateClaimsResponse>("/batch/validate", {
+    method: "POST",
+    data: { complaint_ids: complaintIds },
+    timeout: LONG_REQUEST_TIMEOUT_MS,
+  });
 }
 
 /** GET /api/fnol/:id/damage-assessment/cards — grounded summary row per card (no LLM). */

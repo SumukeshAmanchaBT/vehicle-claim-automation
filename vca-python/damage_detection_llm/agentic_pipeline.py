@@ -18,6 +18,7 @@ Usage:
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
 from typing import Any, TypedDict
 
@@ -38,6 +39,7 @@ class DamageState(TypedDict, total=False):
     enable_web_search: bool
     vehicle_profile: dict | None
     market_context: dict | None
+    agentic_runtime: dict[str, Any]
 
     # After Part Segmentation node
     initial_parts: list[dict]
@@ -51,6 +53,66 @@ class DamageState(TypedDict, total=False):
     final_parts: list[dict]
     pipeline_metadata: dict
     total_estimated_cost: float
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def get_agentic_pipeline_runtime_status(
+    *,
+    enable_web_search: bool = True,
+    prefer_agentic_pipeline: bool = True,
+) -> dict[str, Any]:
+    from claim_automation.llm_client import llm_configured
+
+    langgraph_available = _module_available("langgraph")
+    web_search_available = _module_available("duckduckgo_search")
+    llm_available = llm_configured()
+
+    blocking_reasons: list[str] = []
+    advisory_notes: list[str] = []
+    if prefer_agentic_pipeline and not langgraph_available:
+        blocking_reasons.append("langgraph is not installed.")
+    if prefer_agentic_pipeline and not llm_available:
+        blocking_reasons.append("LLM client is not configured.")
+    if enable_web_search and not web_search_available:
+        advisory_notes.append(
+            "duckduckgo-search is not installed; pricing agent will use model knowledge only."
+        )
+
+    if not prefer_agentic_pipeline:
+        selected_mode = "vision_llm_direct"
+        selection_reason = "agentic pipeline preference is disabled."
+        available = False
+    elif blocking_reasons:
+        selected_mode = "vision_llm_direct"
+        selection_reason = "; ".join(blocking_reasons)
+        available = False
+    elif enable_web_search and web_search_available:
+        selected_mode = "langgraph_full"
+        selection_reason = ""
+        available = True
+    else:
+        selected_mode = "langgraph_no_web_search"
+        selection_reason = "; ".join(advisory_notes)
+        available = True
+
+    return {
+        "requested": "langgraph_agentic" if prefer_agentic_pipeline else "vision_llm_direct",
+        "selected_mode": selected_mode,
+        "available": available,
+        "langgraph_available": langgraph_available,
+        "llm_available": llm_available,
+        "web_search_requested": bool(enable_web_search),
+        "web_search_available": web_search_available,
+        "blocking_reasons": blocking_reasons,
+        "advisory_notes": advisory_notes,
+        "selection_reason": selection_reason,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +186,7 @@ def _node_estimation_agent(state: DamageState) -> DamageState:
     """
     pricing_result = state.get("pricing_result")
     initial_parts = state.get("initial_parts") or []
+    agentic_runtime = dict(state.get("agentic_runtime") or {})
 
     if pricing_result and pricing_result.get("refined_parts"):
         # Use pricing-enriched parts
@@ -163,6 +226,7 @@ def _node_estimation_agent(state: DamageState) -> DamageState:
                 }
                 for rp in pricing_result["refined_parts"]
             ],
+            "orchestration_runtime": agentic_runtime,
         }
     else:
         # Pricing failed/unavailable — use initial vision LLM parts as-is
@@ -179,6 +243,7 @@ def _node_estimation_agent(state: DamageState) -> DamageState:
             "regional_context": state.get("region", "Thailand vehicle repair market"),
             "currency_code": state.get("currency_code", "THB"),
             "part_level_ranges": [],
+            "orchestration_runtime": agentic_runtime,
         }
 
     return {
@@ -246,14 +311,19 @@ def run_agentic_pipeline(
 
     Never raises — all exceptions are caught and result in None return.
     """
-    try:
-        graph = _build_graph()
-    except ImportError:
+    runtime_status = get_agentic_pipeline_runtime_status(
+        enable_web_search=enable_web_search,
+        prefer_agentic_pipeline=True,
+    )
+    if not runtime_status.get("available"):
         logger.info(
-            "langgraph not installed — skipping agentic pipeline. "
-            "Install with: pip install langgraph"
+            "LangGraph agentic pipeline unavailable (%s); caller should use fallback.",
+            runtime_status.get("selection_reason") or "runtime prerequisites not met",
         )
         return None
+
+    try:
+        graph = _build_graph()
     except Exception as exc:
         logger.warning("Failed to build LangGraph pipeline: %s", exc)
         return None
@@ -267,6 +337,7 @@ def run_agentic_pipeline(
         "enable_web_search": enable_web_search,
         "vehicle_profile": vehicle_profile,
         "market_context": market_context,
+        "agentic_runtime": runtime_status,
     }
 
     try:

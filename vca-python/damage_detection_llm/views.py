@@ -473,7 +473,9 @@ def damage_assessment(request):
                         except Exception:
                             pass
 
-                    latest.claim_status = "Recommendation shared"
+                    # Persist LLM/valuation fields only — do not advance FNOL or evaluation
+                    # workflow to "Recommendation shared" from this endpoint; that must follow
+                    # Business Rule Validation and the Phase 1 pipeline.
                     latest.save(
                         update_fields=[
                             "llm_damages",
@@ -481,7 +483,6 @@ def damage_assessment(request):
                             "claim_amount",
                             "threshold_value",
                             "claim_type",
-                            "claim_status",
                             "updated_date",
                         ]
                     )
@@ -490,16 +491,10 @@ def damage_assessment(request):
                         latest_eval=latest,
                     )
 
-                    # Update fnol_claims.claim_status and align excess_amount with Phase 1 valuation rules.
+                    # Align excess on FNOL with configured rules when claim_amount updated;
+                    # leave claim_status unchanged here.
                     fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
                     if fnol_claim:
-                        from claims.models import ClaimStatus
-
-                        new_status = ClaimStatus.objects.filter(
-                            status_name__iexact="Recommendation shared"
-                        ).first()
-                        if new_status:
-                            fnol_claim.claim_status = new_status
                         try:
                             if claim_amount and float(claim_amount) > 0:
                                 fnol_claim.excess_amount = calculate_excess(
@@ -511,10 +506,8 @@ def damage_assessment(request):
                                 "Failed to calculate configured excess for %s",
                                 complaint_id,
                             )
-                        update_fields = ["claim_status"]
                         if getattr(fnol_claim, "excess_amount", None) is not None:
-                            update_fields.append("excess_amount")
-                        fnol_claim.save(update_fields=update_fields)
+                            fnol_claim.save(update_fields=["excess_amount"])
             except Exception:
                 logger.exception("damage_assessment persist failed")
 
