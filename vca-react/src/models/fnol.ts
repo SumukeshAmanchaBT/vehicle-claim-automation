@@ -49,6 +49,24 @@ export interface FnolPayload {
   };
 }
 
+export interface ClaimWorkflowStepState {
+  completed: boolean;
+  visible: boolean;
+  run_allowed?: boolean;
+  passed?: boolean | null;
+  available?: boolean;
+  valuation_ready?: boolean;
+  part_count?: number;
+  financials_ready?: boolean;
+}
+
+export interface ClaimWorkflowSnapshot {
+  workflow_state: string;
+  business_rule_validation: ClaimWorkflowStepState;
+  damage_assessment: ClaimWorkflowStepState;
+  claim_evaluation: ClaimWorkflowStepState;
+}
+
 /** FNOL claim from fnol_claims + fnol_damage_photos */
 export interface FnolResponse {
   id: string;
@@ -89,6 +107,7 @@ export interface FnolResponse {
   re_open?: number;
   /** Backend-derived lifecycle; same values as `ClaimWorkflowState` in api.ts. */
   workflow_state?: string;
+  workflow_snapshot?: ClaimWorkflowSnapshot;
 }
 
 export interface FraudRuleResult {

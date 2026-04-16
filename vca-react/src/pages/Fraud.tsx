@@ -1092,8 +1092,8 @@ export default function Fraud() {
                                                 Photo screening results
                                               </p>
                                               <p className="text-xs text-muted-foreground">
-                                                Fraud score, ELA, warnings, and
-                                                authenticity notes per image
+                                                Fraud score (composite), Error Level Analysis
+                                                (ELA), warnings, and authenticity notes per image
                                               </p>
                                             </div>
                                             <span className="text-xs text-muted-foreground">
@@ -1153,7 +1153,7 @@ export default function Fraud() {
                                                             className="pt-1"
                                                           />
                                                           <p className="text-xs text-muted-foreground">
-                                                            ELA score:{" "}
+                                                            Error Level Analysis (ELA):{" "}
                                                             {formatElaScore(result.ela_score)}
                                                           </p>
                                                         </div>

@@ -640,9 +640,13 @@ def _resolve_part_breakdown_for_image(
     market_context: dict,
     vehicle_profile: dict,
     enable_web_search: bool,
+    prefer_agentic_pipeline: bool = True,
 ) -> tuple[list[str], str, list[dict], dict]:
     from claims.models import CanonicalImageDamageAssessment
-    from damage_detection_llm.agentic_pipeline import run_agentic_pipeline
+    from damage_detection_llm.agentic_pipeline import (
+        get_agentic_pipeline_runtime_status,
+        run_agentic_pipeline,
+    )
 
     damages, severity = run_damage_assessment(
         image_path,
@@ -720,31 +724,49 @@ def _resolve_part_breakdown_for_image(
     part_breakdown: list[dict] = []
     pipeline_metadata: dict = {}
     agentic_result = None
-    try:
-        agentic_result = run_agentic_pipeline(
-            image_path=image_path,
-            complaint_id=complaint_id,
-            incident_description=incident_description,
-            region=market_context["market_label"],
-            currency_code=currency_code,
-            vehicle_profile=vehicle_profile,
-            market_context=market_context,
-            enable_web_search=enable_web_search,
-        )
-    except Exception as agentic_err:
-        logger.debug(
-            "Agentic pipeline import/exec error (will fall back): %s", agentic_err
-        )
+    agentic_runtime = get_agentic_pipeline_runtime_status(
+        enable_web_search=enable_web_search,
+        prefer_agentic_pipeline=prefer_agentic_pipeline,
+    )
+    if prefer_agentic_pipeline and agentic_runtime.get("available"):
+        try:
+            agentic_result = run_agentic_pipeline(
+                image_path=image_path,
+                complaint_id=complaint_id,
+                incident_description=incident_description,
+                region=market_context["market_label"],
+                currency_code=currency_code,
+                vehicle_profile=vehicle_profile,
+                market_context=market_context,
+                enable_web_search=enable_web_search,
+            )
+        except Exception as agentic_err:
+            logger.debug(
+                "Agentic pipeline import/exec error (will fall back): %s", agentic_err
+            )
 
     if agentic_result and agentic_result.get("final_parts"):
         part_breakdown = _normalize_part_breakdown(agentic_result["final_parts"])
-        pipeline_metadata = agentic_result.get("pipeline_metadata", {})
+        pipeline_metadata = dict(agentic_result.get("pipeline_metadata", {}) or {})
+        pipeline_metadata.setdefault("orchestration_runtime", agentic_runtime)
         logger.info(
             "run_damage_assessment_detailed: agentic pipeline produced %d parts for %s",
             len(part_breakdown),
             complaint_id,
         )
     else:
+        fallback_runtime = dict(agentic_runtime)
+        if prefer_agentic_pipeline and fallback_runtime.get("available"):
+            fallback_runtime["selected_mode"] = "vision_llm_direct"
+            fallback_runtime["selection_reason"] = (
+                "agentic pipeline produced no reusable output; using Vision LLM direct analysis."
+            )
+            advisory_notes = list(fallback_runtime.get("advisory_notes") or [])
+            advisory_notes.append(
+                "agentic pipeline produced no reusable output; using Vision LLM direct analysis."
+            )
+            fallback_runtime["advisory_notes"] = advisory_notes
+
         part_breakdown = _analyze_damage_part_level(
             image_path,
             market_context=market_context,
@@ -757,12 +779,14 @@ def _resolve_part_breakdown_for_image(
             "confidence_level": "medium",
             "cost_range": None,
             "web_search_used": False,
-            "reasoning_summary": (
-                "LangGraph pipeline unavailable; using Vision LLM direct analysis."
+            "reasoning_summary": str(
+                fallback_runtime.get("selection_reason")
+                or "LangGraph pipeline unavailable; using Vision LLM direct analysis."
             ),
             "regional_context": market_context["market_label"],
             "currency_code": currency_code,
             "vehicle_profile": vehicle_profile,
+            "orchestration_runtime": fallback_runtime,
         }
         if part_breakdown:
             logger.info(
@@ -1039,6 +1063,7 @@ def run_damage_assessment_detailed(
     image_url: str = "",
     enable_web_search: bool = True,
     persist_claim_rows: bool = True,
+    prefer_agentic_pipeline: bool = True,
 ) -> dict:
     """
     Run detailed damage assessment with part-level breakdown.
@@ -1057,6 +1082,8 @@ def run_damage_assessment_detailed(
         flood_coverage: Whether flood coverage applies.
         image_url: Source image URL / storage key (used for DB scoping).
         enable_web_search: Pass False to disable live pricing searches (test envs).
+        prefer_agentic_pipeline: When False, skip the LangGraph agentic path and use
+            Vision LLM / downstream fallbacks only (additive; default preserves behaviour).
 
     Returns:
         Dict with:
@@ -1079,6 +1106,7 @@ def run_damage_assessment_detailed(
         market_context=market_context,
         vehicle_profile=vehicle_profile,
         enable_web_search=enable_web_search,
+        prefer_agentic_pipeline=prefer_agentic_pipeline,
     )
 
     # Persist part assessments (per-image scope — multi-photo claims accumulate rows)

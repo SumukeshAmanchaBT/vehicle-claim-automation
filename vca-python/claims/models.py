@@ -1,3 +1,6 @@
+from uuid import uuid4
+
+from django.conf import settings
 from django.db import models
 from pathlib import Path
 
@@ -404,6 +407,417 @@ class ClaimCardInsight(models.Model):
         return f"ClaimCardInsight({self.claim_id}, {self.card_key})"
 
 
+class ClaimValuationExplanation(models.Model):
+    """
+    Persisted phase-2 pricing explanation snapshot for a claim.
+
+    Keeps the explanation layer additive to the existing phase-1 valuation row.
+    """
+
+    complaint = models.OneToOneField(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="valuation_explanation",
+        primary_key=True,
+    )
+    pricing_source = models.CharField(max_length=64, blank=True, default="")
+    confidence_level = models.CharField(max_length=32, blank=True, default="")
+    reasoning_summary = models.TextField(blank=True, default="")
+    explanation_json = models.JSONField(default=dict)
+    pricing_rule_snapshot_json = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_valuation_explanations"
+
+    def __str__(self) -> str:
+        return f"ClaimValuationExplanation(complaint_id={self.complaint_id})"
+
+
+def claim_video_asset_upload_to(instance, filename):
+    safe_name = Path(filename or "").name
+    suffix = Path(safe_name).suffix or ".bin"
+    return f"claim_videos/{instance.complaint_id}/{uuid4().hex}{suffix}"
+
+
+def claim_video_frame_upload_to(instance, filename):
+    safe_name = Path(filename or "").name
+    suffix = Path(safe_name).suffix or ".jpg"
+    asset_id = getattr(instance, "asset_id", None) or "unknown"
+    job_id = getattr(instance, "job_id", None) or "unknown"
+    frame_index = getattr(instance, "frame_index", 0)
+    timestamp_ms = getattr(instance, "timestamp_ms", 0)
+    return (
+        f"claim_videos/frames/{instance.complaint_id}/{job_id}/{asset_id}/"
+        f"{frame_index}-{timestamp_ms}{suffix}"
+    )
+
+
+class ClaimVideoAsset(models.Model):
+    """
+    Claim-linked video media for phase-3 analysis.
+    """
+
+    class SourceType(models.TextChoices):
+        DASHCAM = "dashcam", "Dashcam"
+        CCTV = "cctv", "CCTV"
+        UPLOAD = "upload", "Upload"
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="video_assets",
+    )
+    source_path = models.CharField(max_length=512)
+    original_filename = models.CharField(max_length=255, blank=True, default="")
+    file = models.FileField(
+        upload_to=claim_video_asset_upload_to,
+        null=True,
+        blank=True,
+        max_length=512,
+    )
+    source_type = models.CharField(
+        max_length=20,
+        choices=SourceType.choices,
+        default=SourceType.UPLOAD,
+        db_index=True,
+    )
+    sha256_hex = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    mime_type = models.CharField(max_length=128, blank=True, default="")
+    file_size_bytes = models.BigIntegerField(null=True, blank=True)
+    duration_ms = models.BigIntegerField(null=True, blank=True)
+    frame_rate = models.DecimalField(
+        max_digits=12, decimal_places=4, null=True, blank=True
+    )
+    frame_count = models.BigIntegerField(null=True, blank=True)
+    width = models.IntegerField(null=True, blank=True)
+    height = models.IntegerField(null=True, blank=True)
+    metadata_json = models.JSONField(default=dict)
+    probe_error = models.TextField(blank=True, default="")
+    last_probed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_video_assets"
+        indexes = [
+            models.Index(fields=["complaint", "source_type"], name="cva_claim_source"),
+            models.Index(fields=["complaint", "sha256_hex"], name="cva_claim_sha"),
+        ]
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        return f"ClaimVideoAsset(id={self.id}, complaint_id={self.complaint_id})"
+
+
+class ClaimVideoProcessingJob(models.Model):
+    """
+    Durable async-safe processing job for claim video analysis.
+    """
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        RETRYING = "retrying", "Retrying"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="video_processing_jobs",
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claim_video_processing_jobs",
+    )
+    assets = models.ManyToManyField(
+        "ClaimVideoAsset",
+        related_name="processing_jobs",
+        blank=True,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+    )
+    idempotency_key = models.CharField(max_length=128, blank=True, default="")
+    request_payload_json = models.JSONField(default=dict)
+    metrics_json = models.JSONField(default=dict)
+    error_json = models.JSONField(default=dict)
+    progress_stage = models.CharField(max_length=64, blank=True, default="")
+    progress_message = models.CharField(max_length=255, blank=True, default="")
+    progress_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=0
+    )
+    attempt_count = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=0)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    locked_at = models.DateTimeField(null=True, blank=True)
+    worker_token = models.CharField(max_length=64, blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    last_heartbeat_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_video_processing_jobs"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["complaint", "idempotency_key"],
+                name="uniq_claim_video_processing_job_idem",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["complaint", "status", "created_at"],
+                name="cvpj_claim_status",
+            ),
+            models.Index(
+                fields=["status", "next_retry_at"],
+                name="cvpj_retry_schedule",
+            ),
+        ]
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"ClaimVideoProcessingJob(id={self.id}, complaint_id={self.complaint_id})"
+
+
+class ClaimVideoAnalysisResult(models.Model):
+    """
+    Phase-3 POC timeline + frame analysis snapshot for a claim video.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="video_analysis_results",
+    )
+    video_asset = models.ForeignKey(
+        "ClaimVideoAsset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="analysis_results",
+    )
+    job = models.ForeignKey(
+        "ClaimVideoProcessingJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="analysis_results",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    summary_text = models.TextField(blank=True, default="")
+    analysis_context_json = models.JSONField(default=dict)
+    keyframes_json = models.JSONField(default=list)
+    timeline_json = models.JSONField(default=list)
+    metrics_json = models.JSONField(default=dict)
+    motion_summary_json = models.JSONField(default=dict)
+    scenario_summary_json = models.JSONField(default=dict)
+    fraud_signals_json = models.JSONField(default=dict)
+    decision_support_json = models.JSONField(default=dict)
+    progress_json = models.JSONField(default=dict)
+    error_json = models.JSONField(default=dict)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processing_completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_video_analysis_results"
+        indexes = [
+            models.Index(fields=["complaint", "-created_at"], name="cvar_claim_created"),
+            models.Index(fields=["status"], name="cvar_status"),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"ClaimVideoAnalysisResult(id={self.id}, complaint_id={self.complaint_id})"
+
+
+class ClaimVideoDamageAssessment(models.Model):
+    """
+    Claim-level persisted video damage findings, mirroring image part rows
+    while preserving video-specific temporal context.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        related_name="video_damage_assessments",
+    )
+    video_asset = models.ForeignKey(
+        "ClaimVideoAsset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="damage_assessments",
+    )
+    job = models.ForeignKey(
+        "ClaimVideoProcessingJob",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="damage_assessments",
+    )
+    analysis_result = models.ForeignKey(
+        "ClaimVideoAnalysisResult",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="damage_assessments",
+    )
+    part_name = models.CharField(max_length=255)
+    damage_type = models.CharField(max_length=128, blank=True, default="")
+    severity_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    repair_action = models.CharField(max_length=255, blank=True, default="")
+    estimated_amount_min = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    estimated_amount_max = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    currency_code = models.CharField(max_length=8, blank=True, default="")
+    observed_frame_count = models.PositiveIntegerField(default=0)
+    observed_timestamps_json = models.JSONField(default=list)
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_video_damage_assessments"
+        indexes = [
+            models.Index(
+                fields=["complaint", "sort_order"],
+                name="cvda_claim_sort",
+            ),
+            models.Index(
+                fields=["analysis_result", "video_asset"],
+                name="cvda_result_asset",
+            ),
+        ]
+        ordering = ["sort_order", "id"]
+
+    def __str__(self) -> str:
+        return (
+            "ClaimVideoDamageAssessment("
+            f"id={self.id}, complaint_id={self.complaint_id}, part={self.part_name})"
+        )
+
+
+class ClaimVideoFrame(models.Model):
+    """
+    Persisted extracted frame metadata and optional image artifact for one job.
+    """
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="video_frames",
+    )
+    asset = models.ForeignKey(
+        "ClaimVideoAsset",
+        on_delete=models.CASCADE,
+        related_name="frames",
+    )
+    job = models.ForeignKey(
+        "ClaimVideoProcessingJob",
+        on_delete=models.CASCADE,
+        related_name="frames",
+    )
+    frame_index = models.BigIntegerField()
+    timestamp_ms = models.BigIntegerField(db_index=True)
+    image = models.ImageField(
+        upload_to=claim_video_frame_upload_to,
+        null=True,
+        blank=True,
+        max_length=512,
+    )
+    image_sha256 = models.CharField(max_length=64, blank=True, default="")
+    perceptual_hash = models.CharField(max_length=64, blank=True, default="")
+    motion_score = models.DecimalField(
+        max_digits=12, decimal_places=6, null=True, blank=True
+    )
+    scene_score = models.DecimalField(
+        max_digits=12, decimal_places=6, null=True, blank=True
+    )
+    clarity_score = models.DecimalField(
+        max_digits=12, decimal_places=6, null=True, blank=True
+    )
+    brightness_score = models.DecimalField(
+        max_digits=12, decimal_places=6, null=True, blank=True
+    )
+    is_representative = models.BooleanField(default=False)
+    analysis_json = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_video_frames"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["job", "asset", "timestamp_ms"],
+                name="uniq_claim_video_frame_job_asset_ts",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["complaint", "job"], name="cvf_claim_job"),
+            models.Index(fields=["asset", "is_representative"], name="cvf_asset_repr"),
+        ]
+        ordering = ["timestamp_ms", "id"]
+
+    def __str__(self) -> str:
+        return (
+            "ClaimVideoFrame("
+            f"id={self.id}, complaint_id={self.complaint_id}, timestamp_ms={self.timestamp_ms})"
+        )
+
+
 class ClaimRuleMaster(models.Model):
     """
     Master table for all rules (policy / fraud / damage / document).
@@ -747,6 +1161,68 @@ class DigitizationExtraction(models.Model):
 
     def __str__(self) -> str:
         return f"DigitizationExtraction(document_id={self.document_id}, status={self.status})"
+
+
+class ClaimInvoiceAnalysis(models.Model):
+    """
+    Phase-2 invoice extraction + discrepancy analysis snapshot.
+
+    Reuses digitization document/extraction rows as the upstream source of truth.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        COMPLETED = "completed", "Completed"
+        FAILED = "failed", "Failed"
+
+    id = models.BigAutoField(primary_key=True)
+    complaint = models.ForeignKey(
+        FnolClaim,
+        on_delete=models.CASCADE,
+        db_column="complaint_id",
+        to_field="complaint_id",
+        related_name="invoice_analyses",
+    )
+    document = models.ForeignKey(
+        DigitizationDocument,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claim_invoice_analyses",
+    )
+    extraction = models.ForeignKey(
+        DigitizationExtraction,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="claim_invoice_analyses",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    invoice_total = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    valuation_total = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    discrepancy_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    requires_manual_review = models.BooleanField(default=False)
+    summary_text = models.TextField(blank=True, default="")
+    extracted_payload_json = models.JSONField(default=dict)
+    discrepancy_json = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "claim_invoice_analyses"
+        indexes = [
+            models.Index(fields=["complaint", "-created_at"], name="cia_complaint_created"),
+            models.Index(fields=["status"], name="cia_status"),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"ClaimInvoiceAnalysis(id={self.id}, complaint_id={self.complaint_id})"
 
 
 class DigitizationPartLine(models.Model):

@@ -177,7 +177,7 @@ def _extract_text_from_pdf(pdf_path: str) -> tuple[str, str | None]:
     if not os.path.isfile(pdf_path):
         return "", "PDF file not found"
     try:
-        from PyPDF2 import PdfReader
+        from PyPDF2 import PdfReader  # type: ignore[import-untyped]
     except Exception:
         return "", "PyPDF2 is not installed. Install with: pip install PyPDF2"
 
@@ -1323,8 +1323,9 @@ def invoice_history_detail(request, claim_number: str):
         # We can do this via DigitizationExtraction.claim_number -> DigitizationDocument.file.
         document_info: dict[str, Any] = {
             "file_url": "",
-            "original_filename": ""
+            "original_filename": "",
         }
+
         def _heal_stale_s3_key(doc: DigitizationDocument) -> DigitizationDocument:
             """
             If DB still contains an old DIGI-... key but the file was moved to MC...,
@@ -1339,11 +1340,11 @@ def invoice_history_detail(request, claim_number: str):
                 # Only attempt if key contains DIGI- and we have an MC claim_number
                 if "DIGI-" not in current_key or not claim_number:
                     return doc
-    
+
                 parts = current_key.split("/")
                 if len(parts) < 3 or parts[0] != "digitization":
                     return doc
-    
+
                 candidate = current_key
                 if parts[1] == "classified" and len(parts) >= 4:
                     parts[2] = claim_number
@@ -1351,7 +1352,6 @@ def invoice_history_detail(request, claim_number: str):
                 else:
                     parts[1] = claim_number
                     candidate = "/".join(parts)
-    
                 if candidate != current_key and s3_object_exists(candidate):
                     doc.file.name = candidate
                     if doc.complaint_id != claim_number:
@@ -1360,7 +1360,7 @@ def invoice_history_detail(request, claim_number: str):
             except Exception:
                 return doc
             return doc
-    
+
         def _set_document_info_from_doc(doc: DigitizationDocument) -> None:
             """
             Populate document_info with a working URL (prefer presigned S3 when enabled).
@@ -1371,13 +1371,11 @@ def invoice_history_detail(request, claim_number: str):
                 ).split("/")[-1]
             except Exception:
                 document_info["original_filename"] = ""
-    
             # Try the existing helper first
             try:
                 document_info["file_url"] = build_digitization_file_url(request, doc) or ""
             except Exception:
                 document_info["file_url"] = ""
-    
             # If S3 is enabled but storage URL isn't directly usable, fall back to presign from key
             if not document_info.get("file_url") and s3_enabled():
                 try:
@@ -1385,7 +1383,7 @@ def invoice_history_detail(request, claim_number: str):
                     document_info["file_url"] = presigned_get_url(key) or ""
                 except Exception:
                     pass
-    
+
         try:
             extraction = (
                 DigitizationExtraction.objects.filter(claim_number__iexact=claim_number)
@@ -1407,7 +1405,7 @@ def invoice_history_detail(request, claim_number: str):
         except Exception:
             # If linkage fails, we still return core + parts.
             pass
-    
+
         # Fallback: for records where extraction linkage is missing, we still store DigitizationDocument
         # complaint_id as the extracted claim_number (see save-invoice-details). Use that to locate the file.
         if not document_info.get("file_url"):
@@ -1422,7 +1420,6 @@ def invoice_history_detail(request, claim_number: str):
                     _set_document_info_from_doc(doc)
             except Exception:
                 pass
-    
         return Response(
             {
                 "core": {

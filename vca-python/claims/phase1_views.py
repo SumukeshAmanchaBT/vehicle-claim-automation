@@ -18,6 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from claims.models import (
+    ClaimEvaluationResponse,
     FnolClaim,
     ImageFraudResult,
     ClaimDuplicateCandidate,
@@ -27,6 +28,7 @@ from claims.models import (
 from claims.decisioning import sync_claim_evaluation_decision_state
 from claims.phase1_runtime import get_claim_market_context
 from claims.authenticity_classification import classify_image_authenticity_labels
+from claims.reviewer_safe import sanitize_reviewer_llm_notes
 from damage_detection_llm.image_fraud_service import (
     analyze_image_fraud,
     check_image_reuse,
@@ -89,6 +91,10 @@ def _image_fraud_result_payload(
     created_at: str | None,
     status_text: str | None = None,
 ) -> dict:
+    reviewer_safe_notes = sanitize_reviewer_llm_notes(
+        llm_notes,
+        photo_path=photo_path,
+    )
     payload = {
         "id": result_id,
         "photo_path": photo_path,
@@ -102,11 +108,11 @@ def _image_fraud_result_payload(
         if isinstance(exif_json, dict) and "exif_present" in exif_json
         else bool(exif_json),
         "signals_json": signals_json,
-        "llm_notes": llm_notes,
+        "llm_notes": reviewer_safe_notes,
         "created_at": created_at,
         "authenticity_labels": classify_image_authenticity_labels(
             exif_json=exif_json,
-            llm_notes=llm_notes,
+            llm_notes=reviewer_safe_notes,
             fraud_score=float(fraud_score) if fraud_score else 0,
             ela_score=ela_score,
             signals_json=signals_json,
@@ -291,6 +297,11 @@ def image_fraud_analysis(request, complaint_id: str):
                     fraud_result = analyze_image_fraud(disk_path)
 
                     # Save to database
+                    reviewer_safe_reasoning = sanitize_reviewer_llm_notes(
+                        fraud_result["llm_authenticity"].get("reasoning", ""),
+                        complaint_id=claim.complaint_id,
+                        photo_path=photo_path,
+                    )
                     saved_result = ImageFraudResult.objects.create(
                         complaint=claim,
                         damage_photo=photo,
@@ -306,7 +317,7 @@ def image_fraud_analysis(request, complaint_id: str):
                             "ela_score": fraud_result["ela_score"],
                             "exif_warnings": fraud_result["exif_data"].get("warnings", []),
                         }),
-                        llm_authenticity_notes=fraud_result["llm_authenticity"].get("reasoning", ""),
+                        llm_authenticity_notes=reviewer_safe_reasoning,
                     )
 
                     # Check for duplicates
@@ -368,9 +379,7 @@ def image_fraud_analysis(request, complaint_id: str):
                                     ),
                                 }
                             ),
-                            llm_notes=fraud_result["llm_authenticity"].get(
-                                "reasoning", ""
-                            ),
+                            llm_notes=reviewer_safe_reasoning,
                             created_at=saved_result.created_at.isoformat()
                             if saved_result.created_at
                             else None,
@@ -504,6 +513,27 @@ def damage_assessment_detailed(request, complaint_id: str):
             )
 
         if request.method == "POST":
+            latest_eval = ClaimEvaluationResponse.objects.filter(
+                complaint_id=complaint_id, is_latest=True
+            ).first()
+            rules = (
+                latest_eval.fraud_rule_results
+                if latest_eval and isinstance(latest_eval.fraud_rule_results, list)
+                else []
+            )
+            if not rules:
+                return Response(
+                    {
+                        "error": (
+                            "Business Rule Validation must be completed before running "
+                            "Damage Assessment. Run Business Rule Validation so rule "
+                            "results are persisted for this claim."
+                        ),
+                        "code": "BRV_REQUIRED",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             existing_assessments = DamagePartAssessment.objects.filter(complaint=claim)
 
             # Get images to analyze

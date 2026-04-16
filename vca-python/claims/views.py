@@ -33,12 +33,14 @@ from rest_framework import status
 
 from .models import (
     ClaimRuleMaster,
+    ClaimCardInsight,
     ClaimTypeMaster,
     ClaimStatus,
     DamageCodeMaster,
     ClaimEvaluationResponse,
     ClaimDuplicateCandidate,
     ClaimPhase1Valuation,
+    ClaimValuationExplanation,
     FnolClaim,
     FnolDamagePhoto,
     Claim,
@@ -48,8 +50,13 @@ from .models import (
     InvoiceCoreDetails,
     PricingConfig,
 )
-from .workflow_state import compute_claim_workflow_state, effective_claim_status
+from .workflow_state import (
+    build_claim_workflow_snapshot,
+    compute_claim_workflow_state,
+    effective_claim_status,
+)
 from .decisioning import sync_claim_evaluation_decision_state
+from .reviewer_safe import sanitize_reviewer_llm_notes
 
 from .phase1_runtime import (
     get_claim_amount_settings,
@@ -57,6 +64,7 @@ from .phase1_runtime import (
     get_claim_type_settings,
     get_major_claim_threshold,
 )
+from .video_claim_flow import build_claim_video_overview
 from .serializers import (
     LoginSerializer,
     UserSerializer,
@@ -170,6 +178,33 @@ def _delete_fnol_claim_record(claim: FnolClaim) -> dict[str, int]:
         cascade_rows, _ = claim.delete()
     deleted_counts["cascade_rows"] = int(cascade_rows)
     return deleted_counts
+
+
+def _invalidate_phase1_damage_assessment_state(claim: FnolClaim) -> dict[str, int]:
+    """
+    Clear persisted downstream DA artifacts when BRV is re-run.
+
+    Business-rule validation must not inherit or surface damage-assessment
+    output from an older run as if the user had just completed DA again.
+    """
+    return {
+        "damage_rows": _safe_counted_delete(
+            DamagePartAssessment.objects.filter(complaint=claim),
+            "damage assessment rows",
+        ),
+        "valuation_rows": _safe_counted_delete(
+            ClaimPhase1Valuation.objects.filter(complaint=claim),
+            "phase1 valuation rows",
+        ),
+        "valuation_explanation_rows": _safe_counted_delete(
+            ClaimValuationExplanation.objects.filter(complaint=claim),
+            "valuation explanation rows",
+        ),
+        "card_insight_rows": _safe_counted_delete(
+            ClaimCardInsight.objects.filter(claim=claim),
+            "damage assessment card insight rows",
+        ),
+    }
 
 
 def _is_admin_user(user) -> bool:
@@ -1266,7 +1301,7 @@ def _fnol_claim_to_response(
         if normalized_photo_paths is None:
             normalized_photo_paths = normalized_photo_map.get(claim.complaint_id, [])
 
-    return {
+    response = {
         "id": claim.complaint_id,
         "complaint_id": claim.complaint_id,
         "coverage_type": claim.coverage_type,
@@ -1308,6 +1343,16 @@ def _fnol_claim_to_response(
         "re_open": 1 if getattr(claim, "re_open", 0) == 1 else 0,
         "workflow_state": compute_claim_workflow_state(claim.complaint_id),
     }
+
+    if not list_mode:
+        response["workflow_snapshot"] = build_claim_workflow_snapshot(
+            claim.complaint_id,
+            fnol=claim,
+            latest_eval=latest_eval,
+        )
+        response.update(build_claim_video_overview(claim))
+
+    return response
 
 
 @api_view(['GET'])
@@ -1566,16 +1611,24 @@ def get_claim_evaluation(request, complaint_id: str):
     estimated_repair (claim_amount - excess_amount), decision, claim_status,
     reason, llm_damages, llm_severity (from damage assessment).
     """
+    fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
     latest = ClaimEvaluationResponse.objects.filter(
         complaint_id=complaint_id, is_latest=True
     ).first()
     if not latest:
         # Fresh claim: no evaluation row yet — expected empty state (not an HTTP error).
+        workflow_snapshot = build_claim_workflow_snapshot(
+            complaint_id,
+            fnol=fnol,
+            latest_eval=None,
+            decision_summary=None,
+        )
         return Response(
             {
                 "complaint_id": complaint_id,
                 "not_started": True,
-                "workflow_state": compute_claim_workflow_state(complaint_id),
+                "workflow_state": workflow_snapshot["workflow_state"],
+                "workflow_snapshot": workflow_snapshot,
                 "version": None,
                 "is_latest": None,
                 "damage_confidence": None,
@@ -1607,6 +1660,12 @@ def get_claim_evaluation(request, complaint_id: str):
         latest_eval=latest,
     )
     latest.refresh_from_db()
+    workflow_snapshot = build_claim_workflow_snapshot(
+        complaint_id,
+        fnol=fnol,
+        latest_eval=latest,
+        decision_summary=decision_summary,
+    )
 
     damages = None
     if latest.llm_damages:
@@ -1615,11 +1674,23 @@ def get_claim_evaluation(request, complaint_id: str):
         except (json.JSONDecodeError, TypeError):
             damages = None
 
-    # excess_amount from fnol_claims (available after Damage Detection / claim intake)
-    fnol = FnolClaim.objects.filter(complaint_id=complaint_id).first()
-    excess_amount = float(fnol.excess_amount or 0) if fnol and getattr(fnol, "excess_amount", None) is not None else 0
-    claim_amount = float(latest.claim_amount or 0)
-    estimated_repair = max(0, claim_amount - excess_amount)
+    # Financials are only reviewer-facing once persisted damage-assessment data exists.
+    financials_ready = bool(
+        workflow_snapshot.get("claim_evaluation", {}).get("financials_ready")
+    )
+    excess_amount = (
+        float(fnol.excess_amount or 0)
+        if financials_ready
+        and fnol
+        and getattr(fnol, "excess_amount", None) is not None
+        else None
+    )
+    claim_amount = float(latest.claim_amount or 0) if financials_ready else None
+    estimated_repair = (
+        max(0, claim_amount - excess_amount)
+        if financials_ready and claim_amount is not None and excess_amount is not None
+        else None
+    )
 
     # Severity from claim type: SIMPLE=minor, MEDIUM=moderate, COMPLEX=severe
     claim_type_upper = (latest.claim_type or "").strip().upper()
@@ -1636,13 +1707,22 @@ def get_claim_evaluation(request, complaint_id: str):
     major_threshold = get_major_claim_threshold()
     valuation = ClaimPhase1Valuation.objects.filter(complaint=fnol).first() if fnol else None
     da_gross = float(valuation.gross_estimate or 0) if valuation else 0
-    complexity_amount = da_gross or claim_amount or float(latest.estimated_amount or 0)
-    claim_complexity = "Major Claim" if complexity_amount >= major_threshold else "Simple Claim"
+    complexity_amount = (
+        da_gross
+        if da_gross > 0
+        else claim_amount
+        if claim_amount is not None
+        else float(latest.estimated_amount or 0)
+    )
+    claim_complexity = (
+        "Major Claim" if complexity_amount >= major_threshold else "Simple Claim"
+    )
 
     return Response({
         "complaint_id": latest.complaint_id,
         "not_started": False,
-        "workflow_state": compute_claim_workflow_state(complaint_id),
+        "workflow_state": workflow_snapshot["workflow_state"],
+        "workflow_snapshot": workflow_snapshot,
         "version": latest.version,
         "is_latest": latest.is_latest,
         "damage_confidence": float(latest.damage_confidence or 0),
@@ -1949,6 +2029,13 @@ def run_fraud_detection(request, complaint_id: str):
     """
     fnol_claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
     raw_response = _fnol_claim_to_raw_response(fnol_claim)
+    invalidated_damage_state = _invalidate_phase1_damage_assessment_state(fnol_claim)
+    if any(invalidated_damage_state.values()):
+        logger.info(
+            "BRV rerun invalidated downstream DA artifacts for %s: %s",
+            complaint_id,
+            invalidated_damage_state,
+        )
 
     # Use existing evaluation's claim_amount for threshold so threshold_value is not always 25
     existing = ClaimEvaluationResponse.objects.filter(
@@ -2274,7 +2361,15 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
             ["Duplicate Similarity", f"{_safe_report_float(top_duplicate.similarity_score):.0f}%"],
         ])
     if top_fraud_result and top_fraud_result.llm_authenticity_notes:
-        media_rows.append(["Authenticity Note", _truncate_report_text(top_fraud_result.llm_authenticity_notes)])
+        reviewer_safe_note = sanitize_reviewer_llm_notes(
+            top_fraud_result.llm_authenticity_notes,
+            complaint_id=claim.complaint_id,
+            photo_path=top_fraud_result.photo_path,
+        )
+        if reviewer_safe_note:
+            media_rows.append(
+                ["Authenticity Note", _truncate_report_text(reviewer_safe_note)]
+            )
     t5 = _table_style_header_blue([["Item", "Value"]] + media_rows)
     story.append(KeepTogether([_section_heading("5. Media Trust & Duplicate Review", use_orange=True), t5, _sp()]))
 

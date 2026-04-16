@@ -87,17 +87,26 @@ class Command(BaseCommand):
         self.stdout.write(self.style.HTTP_INFO("--- Azure OpenAI ---"))
         ep = (getattr(settings, "AZURE_OPENAI_ENDPOINT", "") or "").strip()
         dep = (getattr(settings, "AZURE_OPENAI_DEPLOYMENT", "") or "").strip()
+        mini_dep = (getattr(settings, "AZURE_OPENAI_MINI_DEPLOYMENT", "") or "").strip()
         ver = (getattr(settings, "AZURE_OPENAI_API_VERSION", "") or "").strip()
         key = (getattr(settings, "AZURE_OPENAI_API_KEY", "") or "").strip()
         oai = (getattr(settings, "OPENAI_API_KEY", "") or "").strip()
+        openai_mini = (getattr(settings, "OPENAI_MINI_MODEL", "") or "").strip()
+        openai_rich = (getattr(settings, "OPENAI_RICH_MODEL", "") or "").strip()
 
         log.info("AZURE_OPENAI_ENDPOINT=%s", ep or "(empty)")
         log.info("AZURE_OPENAI_DEPLOYMENT=%s", dep or "(empty)")
+        log.info("AZURE_OPENAI_MINI_DEPLOYMENT=%s", mini_dep or "(empty)")
         log.info("AZURE_OPENAI_API_VERSION=%s", ver or "(empty)")
         log.info("AZURE_OPENAI_API_KEY=%s", _mask(key))
         log.info("OPENAI_API_KEY (fallback)=%s", _mask(oai))
+        log.info("OPENAI_MINI_MODEL=%s", openai_mini or "(empty)")
+        log.info("OPENAI_RICH_MODEL=%s", openai_rich or "(empty)")
 
-        from claim_automation.llm_client import get_chat_completion_client_and_model
+        from claim_automation.llm_client import (
+            get_chat_completion_client_and_model,
+            get_chat_completion_target,
+        )
 
         client, model = get_chat_completion_client_and_model()
         if client is None or not model:
@@ -110,6 +119,15 @@ class Command(BaseCommand):
             return False
 
         log.info("Using client type=%s model/deployment=%s", type(client).__name__, model)
+        light_target = get_chat_completion_target(profile="light")
+        rich_target = get_chat_completion_target(profile="rich")
+        log.info(
+            "Resolved light target=%s/%s rich target=%s/%s",
+            getattr(light_target, "provider", None),
+            getattr(light_target, "model", None),
+            getattr(rich_target, "provider", None),
+            getattr(rich_target, "model", None),
+        )
 
         try:
             log.info("Calling chat.completions.create (minimal test message)...")

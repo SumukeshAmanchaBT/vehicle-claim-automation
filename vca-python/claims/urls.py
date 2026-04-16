@@ -50,15 +50,43 @@ from .phase1_views import (
     damage_assessment_detailed,
     total_value,
 )
+from .phase2_views import (
+    invoice_analyze,
+    pricing_explain,
+    reasoning_summary,
+)
+from .phase3_views import (
+    batch_validate_claims,
+    video_analyze,
+)
 from .card_insight_views import (
     damage_assessment_card_details,
     damage_assessment_card_refresh,
     damage_assessment_cards,
 )
+from .video_views import (
+    video_assets_collection,
+    video_damage_assessment,
+    video_job_detail,
+    video_jobs_collection,
+    video_results,
+    video_timeline,
+)
 
 urlpatterns = [
     path("health", health_check, name="health_check"),
     path("login", login, name="login"),
+    path("batch/validate", batch_validate_claims, name="batch_validate_claims"),
+    path("claims/<str:complaint_id>/pricing/explain", pricing_explain, name="pricing_explain"),
+    path("claims/<str:complaint_id>/invoice/analyze", invoice_analyze, name="invoice_analyze"),
+    path("claims/<str:complaint_id>/reasoning/summary", reasoning_summary, name="reasoning_summary"),
+    path("claims/<str:complaint_id>/video/analyze", video_analyze, name="video_analyze"),
+    path("claims/<str:complaint_id>/video/assets", video_assets_collection, name="video_assets_collection"),
+    path("claims/<str:complaint_id>/video/jobs", video_jobs_collection, name="video_jobs_collection"),
+    path("claims/<str:complaint_id>/video/jobs/<int:job_id>", video_job_detail, name="video_job_detail"),
+    path("claims/<str:complaint_id>/video/results", video_results, name="video_results"),
+    path("claims/<str:complaint_id>/video/timeline", video_timeline, name="video_timeline"),
+    path("claims/<str:complaint_id>/timeline", video_analyze, name="claim_timeline"),
     path("users/", list_users, name="list_users"),
     path("users/create", create_user, name="create_user"),
     path("users/<int:pk>/", edit_user, name="edit_user"),
@@ -124,5 +152,6 @@ urlpatterns = [
         name="damage_assessment_cards",
     ),
     path("fnol/<str:complaint_id>/damage-assessment-detailed", damage_assessment_detailed, name="damage_assessment_detailed"),
+    path("fnol/<str:complaint_id>/video-damage-assessment", video_damage_assessment, name="video_damage_assessment"),
     path("fnol/<str:complaint_id>/total-value", total_value, name="total_value"),
 ]
