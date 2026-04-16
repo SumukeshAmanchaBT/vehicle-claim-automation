@@ -177,7 +177,7 @@ def _extract_text_from_pdf(pdf_path: str) -> tuple[str, str | None]:
     if not os.path.isfile(pdf_path):
         return "", "PDF file not found"
     try:
-        from PyPDF2 import PdfReader
+        from PyPDF2 import PdfReader  # type: ignore[import-untyped]
     except Exception:
         return "", "PyPDF2 is not installed. Install with: pip install PyPDF2"
 
@@ -1352,7 +1352,6 @@ def invoice_history_detail(request, claim_number: str):
                 else:
                     parts[1] = claim_number
                     candidate = "/".join(parts)
-
                 if candidate != current_key and s3_object_exists(candidate):
                     doc.file.name = candidate
                     if doc.complaint_id != claim_number:
@@ -1372,13 +1371,11 @@ def invoice_history_detail(request, claim_number: str):
                 ).split("/")[-1]
             except Exception:
                 document_info["original_filename"] = ""
-
             # Try the existing helper first
             try:
                 document_info["file_url"] = build_digitization_file_url(request, doc) or ""
             except Exception:
                 document_info["file_url"] = ""
-
             # If S3 is enabled but storage URL isn't directly usable, fall back to presign from key
             if not document_info.get("file_url") and s3_enabled():
                 try:
@@ -1423,7 +1420,6 @@ def invoice_history_detail(request, claim_number: str):
                     _set_document_info_from_doc(doc)
             except Exception:
                 pass
-
         return Response(
             {
                 "core": {
