@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "./contexts/AuthContext";
 import { RequireAuth } from "./components/auth/RequireAuth";
+import { GlobalPreloaderProvider } from "@/components/ui/GlobalPreloader";
 
 const Index = lazy(() => import("./pages/Index"));
 const Claims = lazy(() => import("./pages/Claims"));
@@ -57,149 +58,150 @@ const App = () => (
         }}
       >
         <AuthProvider>
-          <Suspense fallback={<RouteFallback />}>
-            <Routes>
-              {/* Public auth routes */}
-              <Route path="/login" element={<Login />} />
-              <Route path="/forgot-password" element={<ForgotPassword />} />
-              <Route path="/change-password" element={<ChangePassword />} />
+          <GlobalPreloaderProvider>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                {/* Public auth routes */}
+                <Route path="/login" element={<Login />} />
+                <Route path="/forgot-password" element={<ForgotPassword />} />
+                <Route path="/change-password" element={<ChangePassword />} />
 
-              {/* Protected application routes */}
-              <Route
-                path="/"
-                element={
-                  <RequireAuth>
-                    <Index />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/claims"
-                element={
-                  <RequireAuth>
-                    <Claims />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/claims/new"
-                element={
-                  <RequireAuth>
-                    <ClaimIntake />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/claims/:id"
-                element={
-                  <RequireAuth>
-                    <ClaimDetail />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/users"
-                element={
-                  <RequireAuth>
-                    <Users />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/roles"
-                element={
-                  <RequireAuth>
-                    <Roles />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/roles/permissions"
-                element={
-                  <RequireAuth>
-                    <RolePermissions />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/master-data"
-                element={
-                  <RequireAuth>
-                    <MasterData />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/reports"
-                element={
-                  <RequireAuth>
-                    <Reports />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/fraud"
-                element={
-                  <RequireAuth>
-                    <Fraud />
-                  </RequireAuth>
-                }
-              />
+                {/* Protected application routes */}
+                <Route
+                  path="/"
+                  element={
+                    <RequireAuth>
+                      <Index />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/claims"
+                  element={
+                    <RequireAuth>
+                      <Claims />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/claims/new"
+                  element={
+                    <RequireAuth>
+                      <ClaimIntake />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/claims/:id"
+                  element={
+                    <RequireAuth>
+                      <ClaimDetail />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/users"
+                  element={
+                    <RequireAuth>
+                      <Users />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/roles"
+                  element={
+                    <RequireAuth>
+                      <Roles />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/roles/permissions"
+                  element={
+                    <RequireAuth>
+                      <RolePermissions />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/master-data"
+                  element={
+                    <RequireAuth>
+                      <MasterData />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/reports"
+                  element={
+                    <RequireAuth>
+                      <Reports />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/fraud"
+                  element={
+                    <RequireAuth>
+                      <Fraud />
+                    </RequireAuth>
+                  }
+                />
 
+                <Route
+                  path="/claim-digitization"
+                  element={
+                    <RequireAuth>
+                      <ClaimDigitization />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/invoice-history"
+                  element={
+                    <RequireAuth>
+                      <InvoiceHistory />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/invoice-history/:claimNumber/edit"
+                  element={
+                    <RequireAuth>
+                      <InvoiceEdit />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/invoice-history/:claimNumber/view"
+                  element={
+                    <RequireAuth>
+                      <InvoiceView />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/invoice-files-summary"
+                  element={
+                    <RequireAuth>
+                      <InvoiceFilesSummary />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/settings"
+                  element={
+                    <RequireAuth>
+                      <Settings />
+                    </RequireAuth>
+                  }
+                />
 
-              <Route
-                path="/claim-digitization"
-                element={
-                  <RequireAuth>
-                    <ClaimDigitization />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/invoice-history"
-                element={
-                  <RequireAuth>
-                    <InvoiceHistory />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/invoice-history/:claimNumber/edit"
-                element={
-                  <RequireAuth>
-                    <InvoiceEdit />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/invoice-history/:claimNumber/view"
-                element={
-                  <RequireAuth>
-                    <InvoiceView />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/invoice-files-summary"
-                element={
-                  <RequireAuth>
-                    <InvoiceFilesSummary />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/settings"
-                element={
-                  <RequireAuth>
-                    <Settings />
-                  </RequireAuth>
-                }
-              />
-
-              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
+                {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
+          </GlobalPreloaderProvider>
         </AuthProvider>
       </BrowserRouter>
     </TooltipProvider>

@@ -67,7 +67,7 @@ export function ClaimTopInsightsStrip({
     <div
       data-testid="claim-top-insights-strip"
       className={cn(
-        "flex flex-col gap-1.5 rounded-lg border border-border/50 bg-card/80",
+        "flex flex-col gap-1.5 border border-border/50 bg-card/80",
         className
       )}
       role="alert"
@@ -76,7 +76,7 @@ export function ClaimTopInsightsStrip({
         <div
           key={`${insight.code}-${insight.source}`}
           className={cn(
-            "flex gap-2.5 border-l-4 px-3 py-2 first:rounded-t-lg last:rounded-b-lg",
+            "flex gap-2.5 border-l-4 px-3 py-2",
             compactInsightRowClass(insight.severity)
           )}
         >

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Loader2, FileDown, RefreshCw, Trash2, ZoomIn } from "lucide-react";
+import { Loader2, FileDown, Plus, RefreshCw, Trash2, ZoomIn } from "lucide-react";
 
 import { TableToolbar, DataTablePagination, SortableTableHead, type SortDirection } from "@/components/data-table";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -33,6 +33,7 @@ import {
   deleteFnol,
   getFnolList,
   getRecommendationReportPdf,
+  saveFnol,
   type FnolResponse,
 } from "@/lib/api";
 import {
@@ -42,6 +43,7 @@ import {
 } from "@/lib/claimStatus";
 import { getApiErrorSummary } from "@/lib/httpClient";
 import { formatDate } from "@/lib/utils";
+import { useGlobalPreloader } from "@/components/ui/GlobalPreloader";
 
 type DisplayClaim = {
   id: string;
@@ -111,9 +113,11 @@ function fnolToDisplay(fnol: FnolResponse): DisplayClaim {
     : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
       ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
       : "—";
-  const normalizedStatus = normalizeClaimStatus(
-    (fnol as { status?: string }).status
-  );
+  let normalizedStatus = normalizeClaimStatus((fnol as { status?: string }).status);
+  const workflowState = (fnol.workflow_state ?? "").toString().toUpperCase();
+  if (workflowState === "DAMAGE_ASSESSMENT_COMPLETED") {
+    normalizedStatus = "auto_approved";
+  }
 
   return {
     id: fnol.complaint_id,
@@ -141,6 +145,7 @@ function toggleSelection(current: string[], claimId: string, checked: boolean): 
 
 export default function Claims() {
   const { toast } = useToast();
+  const globalLoader = useGlobalPreloader();
   const [searchParams] = useSearchParams();
   const statusFilter = searchParams.get("status") || "all";
   const [search, setSearch] = useState("");
@@ -224,6 +229,116 @@ export default function Claims() {
     },
     [toast]
   );
+
+  const handleFetchFnolData = useCallback(async () => {
+    const now = new Date();
+    const defaultIncidentDescription =
+      "Cracked windshield and damage to front bumper due to road impact.";
+    const defaultPolicyStart = "2026-01-01";
+    const defaultPolicyEnd = "2026-12-31";
+    const defaultPhotos = ["glass_damage1.jpg", "glass_damage2.jpg"];
+
+    const baseCandidates = claimsRef.current.filter((item) => Boolean(item?.complaint_id));
+    const source =
+      baseCandidates.length > 0
+        ? baseCandidates[Math.floor(Math.random() * baseCandidates.length)]
+        : null;
+
+    const extractClmNumber = (value: string | null | undefined): number | null => {
+      if (!value) return null;
+      const match = value.trim().toUpperCase().match(/^CLM-(\d{1,})$/);
+      if (!match) return null;
+      const parsed = Number(match[1]);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const maxClm =
+      baseCandidates.reduce<number>((acc, item) => {
+        const raw = item.raw_response?.claim_id ?? null;
+        const parsed = extractClmNumber(raw);
+        if (parsed == null) return acc;
+        return Math.max(acc, parsed);
+      }, 0) || 0;
+    const nextClaimNumber = `CLM-${String(maxClm + 1).padStart(3, "0")}`;
+
+    const sourcePolicyNumber =
+      source?.raw_response?.policy?.policy_number ??
+      source?.policy_number ??
+      `POL-${Math.floor(Math.random() * 900000 + 100000)}`;
+    const sourceCoverageType =
+      source?.raw_response?.policy?.coverage_type ?? source?.coverage_type ?? "Type 1";
+    const sourcePolicyStatus =
+      source?.raw_response?.policy?.policy_status ?? source?.policy_status ?? "ACTIVE";
+    const sourceCustomerName =
+      source?.raw_response?.claimant?.driver_name ?? source?.policy_holder_name ?? "Dummy Customer";
+    const sourceIncidentType =
+      source?.raw_response?.incident?.claim_type ?? source?.incident_type ?? "Own Damage";
+    const sourceVehicle = source?.raw_response?.vehicle ?? null;
+
+    const stop = globalLoader.start("Fetching FNOL data...");
+    setError(null);
+    try {
+      await saveFnol({
+        claim_id: nextClaimNumber,
+        policy: {
+          policy_number: sourcePolicyNumber,
+          policy_status: sourcePolicyStatus,
+          coverage_type: sourceCoverageType,
+          policy_start_date: defaultPolicyStart,
+          policy_end_date: defaultPolicyEnd,
+        },
+        vehicle: {
+          registration_number:
+            sourceVehicle?.registration_number ??
+            source?.vehicle_registration_number ??
+            "KA01AB1234",
+          make: sourceVehicle?.make ?? source?.vehicle_make ?? "Hyundai",
+          model: sourceVehicle?.model ?? source?.vehicle_model ?? "Creta",
+          year: sourceVehicle?.year ?? source?.vehicle_year ?? 2023,
+        },
+        incident: {
+          date_time_of_loss: now.toISOString(),
+          loss_description: defaultIncidentDescription,
+          claim_type: sourceIncidentType,
+          estimated_amount: 0,
+          accident_location: "—",
+          liability_admission: false,
+          dashcam_cctv_evidence: false,
+          injury_indicator: false,
+          commercial_vehicle: false,
+          flood_coverage: false,
+        },
+        claimant: {
+          driver_name: sourceCustomerName,
+          driving_license_number: "DL-DUMMY-0001",
+          license_valid_till: now.toISOString(),
+        },
+        documents: {
+          rc_copy_uploaded: false,
+          dl_copy_uploaded: false,
+          photos_uploaded: true,
+          fir_uploaded: false,
+          photos: defaultPhotos,
+        },
+        history: {
+          previous_claims_last_12_months: 0,
+        },
+      });
+
+      await loadClaims({ manual: true, announceNewRecords: true });
+      toast({
+        title: `Claim No : ${nextClaimNumber} new fnol record added successfully`,
+      });
+    } catch (err) {
+      toast({
+        title: "Fetch FNOL Data failed",
+        description: err instanceof Error ? err.message : "Could not save FNOL.",
+        variant: "destructive",
+      });
+    } finally {
+      stop();
+    }
+  }, [globalLoader, loadClaims, toast]);
 
   useEffect(() => {
     void loadClaims();
@@ -476,6 +591,15 @@ export default function Claims() {
                 </Link>
               </Button>
               */}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void handleFetchFnolData()}
+                disabled={loading || refreshing || deletePending}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Fetch FNOL Data
+              </Button>
               <Button
                 onClick={() =>
                   void loadClaims({ manual: true, announceNewRecords: true })

@@ -151,9 +151,36 @@ def _delete_fnol_claim_record(claim: FnolClaim) -> dict[str, int]:
     """
     complaint_id = claim.complaint_id
     deleted_counts = {
-        "legacy_claim_rows": _safe_counted_delete(
-            Claim.objects.filter(fnol=claim),
-            "legacy Claim rows",
+        # Defensive deletes for optional/legacy tables (safe when missing).
+        "legacy_claim_rows": _safe_counted_delete(Claim.objects.filter(fnol=claim), "legacy Claim rows"),
+        # Explicit deletes for common persisted tables that should not survive FNOL deletion.
+        "damage_photo_rows": _safe_counted_delete(
+            FnolDamagePhoto.objects.filter(complaint_id=complaint_id),
+            "fnol damage photo rows",
+        ),
+        "image_fraud_rows": _safe_counted_delete(
+            ImageFraudResult.objects.filter(complaint=claim),
+            "image fraud result rows",
+        ),
+        "duplicate_candidate_rows": _safe_counted_delete(
+            ClaimDuplicateCandidate.objects.filter(complaint=claim),
+            "duplicate candidate rows",
+        ),
+        "damage_part_rows": _safe_counted_delete(
+            DamagePartAssessment.objects.filter(complaint=claim),
+            "damage part assessment rows",
+        ),
+        "phase1_valuation_rows": _safe_counted_delete(
+            ClaimPhase1Valuation.objects.filter(complaint=claim),
+            "phase1 valuation rows",
+        ),
+        "valuation_explanation_rows": _safe_counted_delete(
+            ClaimValuationExplanation.objects.filter(complaint=claim),
+            "valuation explanation rows",
+        ),
+        "card_insight_rows": _safe_counted_delete(
+            ClaimCardInsight.objects.filter(claim=claim),
+            "claim card insight rows",
         ),
         "evaluation_rows": _safe_counted_delete(
             ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id),
@@ -174,9 +201,21 @@ def _delete_fnol_claim_record(claim: FnolClaim) -> dict[str, int]:
             "invoice rows",
         ),
     }
+
+    # Delete the primary fnol_claims row using SQL to avoid Django ORM cascade collection.
+    # Some deployments do not have the legacy `claim` table, but the Django model still exists;
+    # `FnolClaim.delete()` would attempt to query it during cascade and crash (e.g., MySQL 1146).
     with transaction.atomic():
-        cascade_rows, _ = claim.delete()
-    deleted_counts["cascade_rows"] = int(cascade_rows)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM fnol_claims WHERE complaint_id = %s",
+                [complaint_id],
+            )
+            deleted_counts["cascade_rows"] = int(getattr(cursor, "rowcount", 0) or 0)
+
+    # Verify the primary row is gone; if not, surface an error (better than a silent "success").
+    if FnolClaim.objects.filter(complaint_id=complaint_id).exists():
+        raise DatabaseError(f"fnol_claims row {complaint_id} still exists after delete()")
     return deleted_counts
 
 

@@ -17,6 +17,7 @@ import {
   type DigitizationDocumentCategory,
 } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
+import { useGlobalPreloader } from "@/components/ui/GlobalPreloader";
 import type { AxiosError } from "axios";
 
 const isImageFile = (filename: string) => /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(filename || "");
@@ -53,6 +54,7 @@ export default function ClaimDigitization() {
   const navigate = useNavigate();
   const location = useLocation();
   const { toast } = useToast();
+  const globalLoader = useGlobalPreloader();
   const [complaintId] = useState(() => `DIGI-${Date.now()}`);
   const [files, setFiles] = useState<File[]>([]);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
@@ -84,6 +86,12 @@ export default function ClaimDigitization() {
   const [serverDocIdByLocalId, setServerDocIdByLocalId] = useState<Record<number, number>>({});
   const [validationDataByLocalId, setValidationDataByLocalId] = useState<Record<number, ValidationData>>({});
   const [viewerZoom, setViewerZoom] = useState(1);
+
+  useEffect(() => {
+    if (!loading) return;
+    const stop = globalLoader.start("Please wait...");
+    return () => stop();
+  }, [loading, globalLoader]);
 
   const notifySuccess = (description: string) => {
     setMessage(description);

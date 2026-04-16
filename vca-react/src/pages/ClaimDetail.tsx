@@ -260,6 +260,23 @@ const buildClaimPhotoAssets = (
     })
     .filter((photo): photo is ClaimPhotoAsset => Boolean(photo));
 
+/**
+ * Returns true only when the backend has ACTUAL persisted assessment data
+ * (non-zero counts/parts). Some insight endpoints may return 200 with empty
+ * objects before a full Damage Assessment is run, so object-truthiness checks
+ * are insufficient — we must inspect numeric fields.
+ */
+const hasPersistedAssessmentInsights = ({
+  detailedDamageAssessment,
+  totalValueSummary,
+}: {
+  detailedDamageAssessment: DetailedDamageAssessmentResponse | null;
+  totalValueSummary: TotalValueResponse | null;
+}) =>
+  (detailedDamageAssessment?.total_parts ?? 0) > 0 ||
+  (totalValueSummary?.part_count ?? 0) > 0 ||
+  (totalValueSummary?.gross_estimate ?? 0) > 0;
+
 function fraudBandToNumeric(band: string | number): number {
   if (typeof band === "number") {
     return band;
@@ -1071,7 +1088,8 @@ export default function ClaimDetail() {
 
   const showDamageAssessmentExperience = Boolean(
     damageAssessmentState?.completed ||
-      workflowState === "DAMAGE_ASSESSMENT_COMPLETED"
+      workflowState === "DAMAGE_ASSESSMENT_COMPLETED" ||
+      hasPersistedAssessmentInsights({ detailedDamageAssessment, totalValueSummary })
   );
   const hasBackendDamageAssessment = showDamageAssessmentExperience;
 
