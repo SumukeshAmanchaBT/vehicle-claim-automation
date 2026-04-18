@@ -8,6 +8,7 @@ import { ApiErrorState } from "@/components/ui/request-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { getDamageAssessmentCards } from "@/lib/api";
+import { claimScopedQueryDefaults } from "@/lib/claimScopedCache";
 import { getApiErrorSummary } from "@/lib/httpClient";
 import type { DamageAssessmentCardSummary } from "@/models/damageAssessmentCards";
 import { cn } from "@/lib/utils";
@@ -121,8 +122,7 @@ export function DamageAssessmentCardsPanel({
     queryKey: damageAssessmentCardsKey(complaintId),
     queryFn: () => getDamageAssessmentCards(complaintId),
     enabled: Boolean(complaintId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
+    ...claimScopedQueryDefaults,
   });
 
   const ordered = useMemo(

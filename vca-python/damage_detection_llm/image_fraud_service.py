@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 from decimal import Decimal
 from typing import Optional
 
@@ -148,36 +149,47 @@ def compute_ela_score(image_path: str, quality: int = 90) -> Optional[float]:
     Re-encodes image at specified quality and computes difference from original.
     Higher score indicates potential manipulation.
 
+    Downscales first to cap RAM (two float32 full-res copies OOM on large images under load).
     Returns ELA score 0-100 (higher = more suspicious) or None if failed.
     """
     try:
-        original = Image.open(image_path).convert("RGB")
+        try:
+            resample = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample = Image.LANCZOS
+        max_edge = int(os.environ.get("ELA_MAX_IMAGE_EDGE", "1024"))
 
-        # Re-encode at specified quality
+        with Image.open(image_path) as img_in:
+            original = img_in.convert("RGB")
+            original.thumbnail((max_edge, max_edge), resample)
+
         buffer = io.BytesIO()
         original.save(buffer, format="JPEG", quality=quality)
         buffer.seek(0)
         recompressed = Image.open(buffer).convert("RGB")
 
-        # Compute difference
-        original_array = np.array(original, dtype=np.float32)
-        recompressed_array = np.array(recompressed, dtype=np.float32)
+        # uint8 + int16 diff avoids two float32 full-image buffers (~8x less than float32 pair)
+        orig_u8 = np.asarray(original, dtype=np.uint8)
+        rec_u8 = np.asarray(recompressed, dtype=np.uint8)
+        del original, recompressed, buffer
+        diff = np.abs(orig_u8.astype(np.int16) - rec_u8.astype(np.int16))
 
-        diff = np.abs(original_array - recompressed_array)
-
-        # Normalize to 0-100 scale
-        max_diff = np.max(diff)
+        max_diff = int(np.max(diff))
         if max_diff == 0:
             return 0.0
 
-        # Scale based on average difference across all pixels
-        mean_diff = np.mean(diff)
-        # Normalize: typical values range 0-50, scale to 0-100
+        mean_diff = float(np.mean(diff))
         ela_score = min(100.0, (mean_diff / 255.0) * 100 * 2)
 
         return round(ela_score, 2)
 
-    except Exception:
+    except MemoryError:
+        logger.warning("ELA skipped (out of memory) for %s", image_path)
+        return None
+    except Exception as e:
+        if type(e).__name__ == "_ArrayMemoryError":
+            logger.warning("ELA skipped (numpy allocation failed) for %s", image_path)
+            return None
         logger.exception("ELA computation failed")
         return None
 

@@ -62,6 +62,12 @@ export interface ClaimWorkflowStepState {
 
 export interface ClaimWorkflowSnapshot {
   workflow_state: string;
+  /** From API `workflow_snapshot` — single source for list/detail badge copy (backend-driven). */
+  workflow_display_label?: string;
+  /** StatusBadge variant key; must match `StatusBadge` `status` prop union. */
+  workflow_badge_tone?: string;
+  /** Monotonic sort rank for claim stage column (backend-driven). */
+  workflow_sort_order?: number;
   business_rule_validation: ClaimWorkflowStepState;
   damage_assessment: ClaimWorkflowStepState;
   claim_evaluation: ClaimWorkflowStepState;

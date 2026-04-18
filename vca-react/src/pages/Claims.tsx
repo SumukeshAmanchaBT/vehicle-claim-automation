@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { Loader2, FileDown, Plus, RefreshCw, Trash2, ZoomIn } from "lucide-react";
 
@@ -17,7 +18,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { ClaimsListSkeleton, StatusWrapper } from "@/components/ui/status-wrapper";
 import {
   Table,
@@ -37,13 +37,20 @@ import {
   type FnolResponse,
 } from "@/lib/api";
 import {
-  CLAIM_STATUS_META,
-  type ClaimStatusKey,
-  normalizeClaimStatus,
-} from "@/lib/claimStatus";
+  claimListShowReportPdf,
+  claimListStageSortRank,
+  claimMatchesListStageFilter,
+  normalizeClaimListStageFilter,
+} from "@/lib/claimListWorkflowBadge";
+import { ClaimListWorkflowBadges } from "@/components/claim/ClaimListWorkflowBadges";
+import type { ClaimWorkflowSnapshot } from "@/models/fnol";
 import { getApiErrorSummary } from "@/lib/httpClient";
 import { formatDate } from "@/lib/utils";
 import { useGlobalPreloader } from "@/components/ui/GlobalPreloader";
+import {
+  claimScopedQueryDefaults,
+  fnolListQueryKey,
+} from "@/lib/claimScopedCache";
 
 type DisplayClaim = {
   id: string;
@@ -53,8 +60,10 @@ type DisplayClaim = {
   vehicleInfo: string;
   claimRequestedDate?: string | null;
   claimType: string;
-  estimatedAmount: number;
-  statusKey: ClaimStatusKey;
+  statusLabel?: string | null;
+  workflowSnapshot: ClaimWorkflowSnapshot | null;
+  stageSortRank: number;
+  showReportPdf: boolean;
 };
 
 function ClaimReportPdfButton({ complaintId }: { complaintId: string }) {
@@ -113,11 +122,11 @@ function fnolToDisplay(fnol: FnolResponse): DisplayClaim {
     : fnol.vehicle_make && fnol.vehicle_model && fnol.vehicle_year
       ? `${fnol.vehicle_year} ${fnol.vehicle_make} ${fnol.vehicle_model}`
       : "—";
-  let normalizedStatus = normalizeClaimStatus((fnol as { status?: string }).status);
-  const workflowState = (fnol.workflow_state ?? "").toString().toUpperCase();
-  if (workflowState === "DAMAGE_ASSESSMENT_COMPLETED") {
-    normalizedStatus = "auto_approved";
-  }
+  const workflowSnapshot =
+    fnol.workflow_snapshot ??
+    (fnol.workflow_state
+      ? ({ workflow_state: fnol.workflow_state } as ClaimWorkflowSnapshot)
+      : null);
 
   return {
     id: fnol.complaint_id,
@@ -131,8 +140,10 @@ function fnolToDisplay(fnol: FnolResponse): DisplayClaim {
       fnol.incident_date_time ||
       response?.incident?.date_time_of_loss,
     claimType: response?.incident?.claim_type || fnol.incident_type || "—",
-    estimatedAmount: response?.incident?.estimated_amount ?? 0,
-    statusKey: normalizedStatus,
+    statusLabel: fnol.status ?? null,
+    workflowSnapshot,
+    stageSortRank: claimListStageSortRank(workflowSnapshot, fnol.status),
+    showReportPdf: claimListShowReportPdf(workflowSnapshot, fnol.status),
   };
 }
 
@@ -146,29 +157,33 @@ function toggleSelection(current: string[], claimId: string, checked: boolean): 
 export default function Claims() {
   const { toast } = useToast();
   const globalLoader = useGlobalPreloader();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
-  const statusFilter = searchParams.get("status") || "all";
+  const stageFilter = normalizeClaimListStageFilter(
+    searchParams.get("stage") ?? searchParams.get("status")
+  );
   const [search, setSearch] = useState("");
-  const [claims, setClaims] = useState<FnolResponse[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<unknown>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [selectedClaimIds, setSelectedClaimIds] = useState<string[]>([]);
   const [deleteTargetIds, setDeleteTargetIds] = useState<string[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
-  const hasLoadedOnceRef = useRef(false);
-  const claimsRef = useRef<FnolResponse[]>([]);
+
+  const claimsQuery = useQuery({
+    queryKey: fnolListQueryKey,
+    queryFn: getFnolList,
+    ...claimScopedQueryDefaults,
+  });
+
+  const claims = claimsQuery.data ?? [];
+  const loading = claimsQuery.isPending;
+  const refreshing = claimsQuery.isFetching && !claimsQuery.isPending;
+  const error = claimsQuery.error;
 
   type ClaimSortKey = "claimNumber" | "policy" | "customer" | "type" | "date" | "status";
   const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-
-  useEffect(() => {
-    claimsRef.current = claims;
-  }, [claims]);
 
   const loadClaims = useCallback(
     async ({
@@ -178,22 +193,16 @@ export default function Claims() {
       manual?: boolean;
       announceNewRecords?: boolean;
     } = {}) => {
-      const isInitialLoad = !hasLoadedOnceRef.current;
-      if (isInitialLoad) {
-        setLoading(true);
-      } else {
-        setRefreshing(true);
-      }
-      setError(null);
-
+      const previousData =
+        queryClient.getQueryData<FnolResponse[]>(fnolListQueryKey) ?? claims;
+      const previousIds = new Set(previousData.map((claim) => claim.complaint_id));
       try {
-        const previousIds = new Set(
-          claimsRef.current.map((claim) => claim.complaint_id)
-        );
-        const data = await getFnolList();
-        hasLoadedOnceRef.current = true;
-        setClaims(data);
-
+        await queryClient.invalidateQueries({ queryKey: fnolListQueryKey });
+        const data = await queryClient.fetchQuery({
+          queryKey: fnolListQueryKey,
+          queryFn: getFnolList,
+          ...claimScopedQueryDefaults,
+        });
         if (announceNewRecords) {
           const newClaims = data.filter(
             (claim) => !previousIds.has(claim.complaint_id)
@@ -217,17 +226,11 @@ export default function Claims() {
             });
           }
         }
-      } catch (err) {
-        if (!hasLoadedOnceRef.current) {
-          setClaims([]);
-        }
-        setError(err);
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
+      } catch {
+        // React Query records the error on the query; avoid throwing here.
       }
     },
-    [toast]
+    [claims, queryClient, toast]
   );
 
   const handleFetchFnolData = useCallback(async () => {
@@ -238,7 +241,9 @@ export default function Claims() {
     const defaultPolicyEnd = "2026-12-31";
     const defaultPhotos = ["glass_damage1.jpg", "glass_damage2.jpg"];
 
-    const baseCandidates = claimsRef.current.filter((item) => Boolean(item?.complaint_id));
+    const baseCandidates = (
+      queryClient.getQueryData<FnolResponse[]>(fnolListQueryKey) ?? claims
+    ).filter((item) => Boolean(item?.complaint_id));
     const source =
       baseCandidates.length > 0
         ? baseCandidates[Math.floor(Math.random() * baseCandidates.length)]
@@ -276,7 +281,6 @@ export default function Claims() {
     const sourceVehicle = source?.raw_response?.vehicle ?? null;
 
     const stop = globalLoader.start("Fetching FNOL data...");
-    setError(null);
     try {
       await saveFnol({
         claim_id: nextClaimNumber,
@@ -325,6 +329,7 @@ export default function Claims() {
         },
       });
 
+      await queryClient.invalidateQueries({ queryKey: fnolListQueryKey });
       await loadClaims({ manual: true, announceNewRecords: true });
       toast({
         title: `Claim No : ${nextClaimNumber} new fnol record added successfully`,
@@ -338,29 +343,7 @@ export default function Claims() {
     } finally {
       stop();
     }
-  }, [globalLoader, loadClaims, toast]);
-
-  useEffect(() => {
-    void loadClaims();
-  }, [loadClaims]);
-
-  useEffect(() => {
-    const handleWindowFocus = () => {
-      void loadClaims({ announceNewRecords: true });
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void loadClaims({ announceNewRecords: true });
-      }
-    };
-
-    window.addEventListener("focus", handleWindowFocus);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      window.removeEventListener("focus", handleWindowFocus);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [loadClaims]);
+  }, [globalLoader, loadClaims, queryClient, toast]);
 
   const errorSummary = error ? getApiErrorSummary(error) : null;
 
@@ -377,10 +360,12 @@ export default function Claims() {
         claim.claimNumber.toLowerCase().includes(term) ||
         claim.customerName.toLowerCase().includes(term) ||
         claim.policyNumber.toLowerCase().includes(term);
-      const matchesStatus =
-        statusFilter === "all" ||
-        claim.statusKey === (statusFilter as ClaimStatusKey);
-      return matchesSearch && matchesStatus;
+      const matchesStage = claimMatchesListStageFilter(
+        claim.workflowSnapshot,
+        stageFilter,
+        claim.statusLabel
+      );
+      return matchesSearch && matchesStage;
     });
 
     if (sortKey) {
@@ -405,7 +390,7 @@ export default function Claims() {
               new Date(b.claimRequestedDate || "").getTime();
             break;
           case "status":
-            cmp = a.statusKey.localeCompare(b.statusKey);
+            cmp = a.stageSortRank - b.stageSortRank;
             break;
           default:
             break;
@@ -414,7 +399,7 @@ export default function Claims() {
       });
     }
     return list;
-  }, [displayClaims, search, statusFilter, sortKey, sortDir]);
+  }, [displayClaims, search, stageFilter, sortKey, sortDir]);
 
   const paginatedClaims = useMemo(() => {
     const start = (page - 1) * pageSize;
@@ -519,7 +504,7 @@ export default function Claims() {
           variant: "destructive",
         });
       } else {
-        setClaims((current) =>
+        queryClient.setQueryData<FnolResponse[]>(fnolListQueryKey, (current = []) =>
           current.filter((claim) => !deletedIds.includes(claim.complaint_id))
         );
         setSelectedClaimIds((current) =>
@@ -757,13 +742,14 @@ export default function Claims() {
                             {formatDate(claim.claimRequestedDate) || "—"}
                           </TableCell>
                           <TableCell>
-                            <StatusBadge status={CLAIM_STATUS_META[claim.statusKey].badge}>
-                              {CLAIM_STATUS_META[claim.statusKey].label}
-                            </StatusBadge>
+                            <ClaimListWorkflowBadges
+                              workflowSnapshot={claim.workflowSnapshot}
+                              statusLabel={claim.statusLabel}
+                            />
                           </TableCell>
                           <TableCell className="pr-6 text-right">
                             <div className="flex items-center justify-end gap-1">
-                              {claim.statusKey === "auto_approved" ? (
+                              {claim.showReportPdf ? (
                                 <ClaimReportPdfButton complaintId={claim.id} />
                               ) : null}
                               <Button

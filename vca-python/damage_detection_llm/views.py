@@ -7,7 +7,6 @@ import logging
 import os
 import socket
 import uuid
-from decimal import Decimal
 from urllib.parse import urlparse
 
 import requests
@@ -31,7 +30,6 @@ from .services import (
     TRAINED_SEVERITY,
     WORK_DIR,
 )
-from .valuation_service import calculate_excess, get_excess_settings
 
 # Max size for fetched images (10 MB)
 MAX_IMAGE_SIZE = 10 * 1024 * 1024
@@ -491,23 +489,8 @@ def damage_assessment(request):
                         latest_eval=latest,
                     )
 
-                    # Align excess on FNOL with configured rules when claim_amount updated;
-                    # leave claim_status unchanged here.
-                    fnol_claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
-                    if fnol_claim:
-                        try:
-                            if claim_amount and float(claim_amount) > 0:
-                                fnol_claim.excess_amount = calculate_excess(
-                                    Decimal(str(claim_amount)),
-                                    get_excess_settings(),
-                                )
-                        except Exception:
-                            logger.exception(
-                                "Failed to calculate configured excess for %s",
-                                complaint_id,
-                            )
-                        if getattr(fnol_claim, "excess_amount", None) is not None:
-                            fnol_claim.save(update_fields=["excess_amount"])
+                    # Policy excess on FnolClaim is source FNOL data, not derived DA output.
+                    # Phase-1 financials are persisted separately on ClaimPhase1Valuation.
             except Exception:
                 logger.exception("damage_assessment persist failed")
 

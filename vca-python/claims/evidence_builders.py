@@ -20,6 +20,10 @@ from claims.models import (
     ImageFraudResult,
 )
 from claims.reviewer_safe import sanitize_reviewer_llm_notes
+from claims.workflow_state import (
+    current_lifecycle_started_at,
+    valuation_row_has_meaningful_output,
+)
 
 
 def _exif_warnings_from_row(exif_json: dict | None) -> list[str]:
@@ -66,7 +70,58 @@ def parse_llm_damages_field(raw: str | None) -> list[str]:
     return []
 
 
-def build_claim_context(claim: FnolClaim) -> dict[str, Any]:
+def _current_damage_rows(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+):
+    qs = DamagePartAssessment.objects.filter(complaint=claim).order_by("id")
+    started_at = current_lifecycle_started_at(latest_eval)
+    if started_at is not None:
+        qs = qs.filter(created_at__gte=started_at)
+    return list(qs)
+
+
+def _current_image_fraud_rows(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+):
+    qs = ImageFraudResult.objects.filter(complaint=claim).order_by("id")
+    started_at = current_lifecycle_started_at(latest_eval)
+    if started_at is not None:
+        qs = qs.filter(created_at__gte=started_at)
+    return list(qs)
+
+
+def _current_duplicate_rows(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+):
+    qs = ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by("id")
+    started_at = current_lifecycle_started_at(latest_eval)
+    if started_at is not None:
+        qs = qs.filter(created_at__gte=started_at)
+    return list(qs)
+
+
+def _current_phase1_valuation(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+) -> ClaimPhase1Valuation | None:
+    valuation = ClaimPhase1Valuation.objects.filter(complaint=claim).first()
+    if not valuation or not valuation_row_has_meaningful_output(valuation):
+        return None
+    started_at = current_lifecycle_started_at(latest_eval)
+    if started_at is not None and (
+        valuation.updated_at is None or valuation.updated_at < started_at
+    ):
+        return None
+    return valuation
+
+
+def build_claim_context(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None = None,
+) -> dict[str, Any]:
     """
     Stable, hashable context for snapshot hashing (counts and ids only).
 
@@ -80,29 +135,18 @@ def build_claim_context(claim: FnolClaim) -> dict[str, Any]:
         .order_by("id")
         .values_list("id", flat=True)
     )
-    latest_eval = (
-        ClaimEvaluationResponse.objects.filter(
-            complaint_id=complaint_id, is_latest=True
+    if latest_eval is None:
+        latest_eval = (
+            ClaimEvaluationResponse.objects.filter(
+                complaint_id=complaint_id, is_latest=True
+            )
+            .only("id", "version", "updated_date")
+            .first()
         )
-        .only("id", "version", "updated_date")
-        .first()
-    )
-    fraud_ids = list(
-        ImageFraudResult.objects.filter(complaint=claim)
-        .order_by("id")
-        .values_list("id", flat=True)
-    )
-    dup_ids = list(
-        ClaimDuplicateCandidate.objects.filter(complaint=claim)
-        .order_by("id")
-        .values_list("id", flat=True)
-    )
-    part_ids = list(
-        DamagePartAssessment.objects.filter(complaint=claim)
-        .order_by("id")
-        .values_list("id", flat=True)
-    )
-    has_valuation = ClaimPhase1Valuation.objects.filter(complaint=claim).exists()
+    fraud_ids = [row.id for row in _current_image_fraud_rows(claim, latest_eval)]
+    dup_ids = [row.id for row in _current_duplicate_rows(claim, latest_eval)]
+    part_ids = [row.id for row in _current_damage_rows(claim, latest_eval)]
+    has_valuation = _current_phase1_valuation(claim, latest_eval) is not None
 
     return {
         "complaint_id": complaint_id,
@@ -118,7 +162,11 @@ def build_claim_context(claim: FnolClaim) -> dict[str, Any]:
 
 def _image_authenticity_facts(claim: FnolClaim, latest_eval: ClaimEvaluationResponse | None):
     photos = list(FnolDamagePhoto.objects.filter(complaint=claim).order_by("id"))
-    fraud_rows = list(ImageFraudResult.objects.filter(complaint=claim).order_by("-created_at"))
+    fraud_rows = sorted(
+        _current_image_fraud_rows(claim, latest_eval),
+        key=lambda row: (row.created_at is not None, row.created_at, row.id),
+        reverse=True,
+    )
     scores = [float(r.fraud_score) for r in fraud_rows if r.fraud_score is not None]
     all_warnings: list[str] = []
     missing_exif = 0
@@ -174,19 +222,28 @@ def _image_authenticity_facts(claim: FnolClaim, latest_eval: ClaimEvaluationResp
     }
 
 
-def _duplicate_screening_facts(claim: FnolClaim):
+def _duplicate_screening_facts(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+):
     from damage_detection_llm.image_fraud_service import get_duplicate_detection_settings
 
-    candidates = list(
-        ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by(
-            "-similarity_score", "-created_at"
-        )
+    candidates = sorted(
+        _current_duplicate_rows(claim, latest_eval),
+        key=lambda row: (
+            float(row.similarity_score or 0),
+            row.created_at is not None,
+            row.created_at,
+            row.id,
+        ),
+        reverse=True,
     )
     settings = get_duplicate_detection_settings()
     photo_count = FnolDamagePhoto.objects.filter(complaint=claim).count()
-    has_image_hash_fingerprints = ImageFraudResult.objects.filter(complaint=claim).exclude(
-        p_hash=""
-    ).exists()
+    has_image_hash_fingerprints = any(
+        bool((row.p_hash or "").strip())
+        for row in _current_image_fraud_rows(claim, latest_eval)
+    )
 
     policy_overlap = 0
     pn = (claim.policy_number or "").strip()
@@ -228,17 +285,18 @@ def _duplicate_screening_facts(claim: FnolClaim):
 
 
 def _estimated_value_facts(claim: FnolClaim, latest_eval: ClaimEvaluationResponse | None):
-    from damage_detection_llm.valuation_service import calculate_claim_valuation
+    from damage_detection_llm.valuation_service import (
+        calculate_excess,
+        calculate_net_payable,
+        get_excess_settings,
+    )
 
-    parts = list(DamagePartAssessment.objects.filter(complaint=claim).order_by("sort_order", "id"))
+    parts = sorted(
+        _current_damage_rows(claim, latest_eval),
+        key=lambda row: (row.sort_order, row.id),
+    )
     parts_total = sum(float(p.estimated_amount or 0) for p in parts)
-    valuation_row = ClaimPhase1Valuation.objects.filter(complaint=claim).first()
-    computed = None
-    try:
-        computed = calculate_claim_valuation(claim.complaint_id)
-    except Exception:
-        computed = None
-
+    valuation_row = _current_phase1_valuation(claim, latest_eval)
     gross = None
     excess = None
     net = None
@@ -251,11 +309,13 @@ def _estimated_value_facts(claim: FnolClaim, latest_eval: ClaimEvaluationRespons
         net = _f(valuation_row.net_payable)
         currency = (valuation_row.currency_code or "").strip() or None
         source = "claim_phase1_valuation"
-    elif computed is not None:
-        gross = float(computed.get("gross_estimate") or 0)
-        excess = float(computed.get("excess_amount") or 0)
-        net = float(computed.get("net_payable") or 0)
-        currency = computed.get("currency_code")
+    elif parts_total > 0:
+        gross = round(parts_total, 2)
+        excess_decimal = calculate_excess(Decimal(str(parts_total)), get_excess_settings())
+        net_decimal = calculate_net_payable(Decimal(str(parts_total)), excess_decimal)
+        excess = float(excess_decimal)
+        net = float(net_decimal)
+        currency = None
         source = "calculated_from_parts"
 
     return {
@@ -282,7 +342,10 @@ def _estimated_value_facts(claim: FnolClaim, latest_eval: ClaimEvaluationRespons
 
 
 def _damage_detection_facts(claim: FnolClaim, latest_eval: ClaimEvaluationResponse | None):
-    parts = list(DamagePartAssessment.objects.filter(complaint=claim).order_by("sort_order", "id"))
+    parts = sorted(
+        _current_damage_rows(claim, latest_eval),
+        key=lambda row: (row.sort_order, row.id),
+    )
     total = sum(float(p.estimated_amount or 0) for p in parts)
     llm_damages = parse_llm_damages_field(latest_eval.llm_damages) if latest_eval else []
     inc = (claim.incident_description or "").strip() or None
@@ -319,7 +382,7 @@ def build_card_evidence_bundle(
     if card_key == "image_authenticity":
         return {"kind": "image_authenticity", "data": _image_authenticity_facts(claim, latest_eval)}
     if card_key == "duplicate_screening":
-        return {"kind": "duplicate_screening", "data": _duplicate_screening_facts(claim)}
+        return {"kind": "duplicate_screening", "data": _duplicate_screening_facts(claim, latest_eval)}
     if card_key == "estimated_value":
         return {"kind": "estimated_value", "data": _estimated_value_facts(claim, latest_eval)}
     if card_key == "damage_detection":

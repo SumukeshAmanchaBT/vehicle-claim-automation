@@ -52,8 +52,13 @@ from .models import (
 )
 from .workflow_state import (
     build_claim_workflow_snapshot,
+    build_claim_workflow_snapshot_for_list,
+    bulk_damage_assessment_persistence_state,
     compute_claim_workflow_state,
+    current_lifecycle_started_at,
+    derive_workflow_state_from_context,
     effective_claim_status,
+    valuation_row_has_meaningful_output,
 )
 from .decisioning import sync_claim_evaluation_decision_state
 from .reviewer_safe import sanitize_reviewer_llm_notes
@@ -217,6 +222,53 @@ def _delete_fnol_claim_record(claim: FnolClaim) -> dict[str, int]:
     if FnolClaim.objects.filter(complaint_id=complaint_id).exists():
         raise DatabaseError(f"fnol_claims row {complaint_id} still exists after delete()")
     return deleted_counts
+
+
+def _clear_claim_processing_artifacts(claim: FnolClaim) -> dict[str, int]:
+    """
+    Reset claim-scoped processing artifacts back to a fresh FNOL state.
+
+    This is intentionally narrower than deleting the FNOL row itself: it clears
+    persisted Phase 1/decisioning outputs and reverse duplicate links that would
+    otherwise leak stale results after a claim is re-fetched as fresh data.
+    """
+    complaint_id = claim.complaint_id
+    return {
+        "image_fraud_rows": _safe_counted_delete(
+            ImageFraudResult.objects.filter(complaint=claim),
+            "image fraud result rows",
+        ),
+        "duplicate_candidate_rows": _safe_counted_delete(
+            ClaimDuplicateCandidate.objects.filter(complaint=claim),
+            "duplicate candidate rows",
+        ),
+        "reverse_duplicate_rows": _safe_counted_delete(
+            ClaimDuplicateCandidate.objects.filter(other_complaint_id=complaint_id).exclude(
+                complaint__complaint_id=complaint_id
+            ),
+            "reverse duplicate rows",
+        ),
+        "damage_part_rows": _safe_counted_delete(
+            DamagePartAssessment.objects.filter(complaint=claim),
+            "damage part assessment rows",
+        ),
+        "phase1_valuation_rows": _safe_counted_delete(
+            ClaimPhase1Valuation.objects.filter(complaint=claim),
+            "phase1 valuation rows",
+        ),
+        "valuation_explanation_rows": _safe_counted_delete(
+            ClaimValuationExplanation.objects.filter(complaint=claim),
+            "valuation explanation rows",
+        ),
+        "card_insight_rows": _safe_counted_delete(
+            ClaimCardInsight.objects.filter(claim=claim),
+            "claim card insight rows",
+        ),
+        "evaluation_rows": _safe_counted_delete(
+            ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id),
+            "claim evaluation rows",
+        ),
+    }
 
 
 def _invalidate_phase1_damage_assessment_state(claim: FnolClaim) -> dict[str, int]:
@@ -1305,6 +1357,8 @@ def _fnol_claim_to_response(
     normalized_photo_paths: Optional[list[str]] = None,
     *,
     list_mode: bool = False,
+    workflow_state: Optional[str] = None,
+    damage_state: Optional[dict[str, int | bool]] = None,
 ) -> dict:
     """Convert FnolClaim to API response format. Includes latest evaluation amounts when available."""
     if latest_eval is None and not list_mode:
@@ -1380,10 +1434,25 @@ def _fnol_claim_to_response(
         "updated_date": claim.updated_date.isoformat() if getattr(claim, "updated_date", None) else None,
         "updated_by": getattr(claim, "updated_by", None),
         "re_open": 1 if getattr(claim, "re_open", 0) == 1 else 0,
-        "workflow_state": compute_claim_workflow_state(claim.complaint_id),
+        "workflow_state": workflow_state
+        if workflow_state is not None
+        else compute_claim_workflow_state(claim.complaint_id),
     }
 
-    if not list_mode:
+    if list_mode and damage_state is not None:
+        ws = (
+            workflow_state
+            if workflow_state is not None
+            else compute_claim_workflow_state(claim.complaint_id)
+        )
+        response["workflow_snapshot"] = build_claim_workflow_snapshot_for_list(
+            claim.complaint_id,
+            claim,
+            latest_eval,
+            damage_state,
+            ws,
+        )
+    elif not list_mode:
         response["workflow_snapshot"] = build_claim_workflow_snapshot(
             claim.complaint_id,
             fnol=claim,
@@ -1522,6 +1591,9 @@ def list_fnol(request):
         latest_eval_map = _latest_evaluations_by_complaint(
             complaint_ids, for_list=True
         )
+        damage_state_by_claim = bulk_damage_assessment_persistence_state(
+            qs, latest_eval_map
+        )
         photo_urls_by_claim, normalized_photos_by_claim = (
             _photo_maps_from_prefetched_fnol_claims(qs)
         )
@@ -1534,6 +1606,12 @@ def list_fnol(request):
                     obj.complaint_id, []
                 ),
                 list_mode=True,
+                workflow_state=derive_workflow_state_from_context(
+                    obj,
+                    latest_eval_map.get(obj.complaint_id),
+                    damage_state_by_claim[obj.complaint_id],
+                ),
+                damage_state=damage_state_by_claim[obj.complaint_id],
             )
             for obj in qs
         ]
@@ -1641,6 +1719,21 @@ def bulk_delete_fnol(request):
     )
 
 
+def _current_phase1_valuation_for_claim(
+    fnol: FnolClaim | None,
+    latest_eval: ClaimEvaluationResponse | None,
+) -> ClaimPhase1Valuation | None:
+    if not fnol:
+        return None
+    valuation = ClaimPhase1Valuation.objects.filter(complaint=fnol).first()
+    if not valuation or not valuation_row_has_meaningful_output(valuation):
+        return None
+    started_at = current_lifecycle_started_at(latest_eval)
+    if started_at and (valuation.updated_at is None or valuation.updated_at < started_at):
+        return None
+    return valuation
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_claim_evaluation(request, complaint_id: str):
@@ -1717,17 +1810,27 @@ def get_claim_evaluation(request, complaint_id: str):
     financials_ready = bool(
         workflow_snapshot.get("claim_evaluation", {}).get("financials_ready")
     )
+    current_valuation = (
+        _current_phase1_valuation_for_claim(fnol, latest) if financials_ready else None
+    )
+    estimated_amount = (
+        float(current_valuation.gross_estimate or 0)
+        if current_valuation
+        else float(latest.estimated_amount or 0)
+    )
     excess_amount = (
-        float(fnol.excess_amount or 0)
-        if financials_ready
-        and fnol
-        and getattr(fnol, "excess_amount", None) is not None
+        float(current_valuation.excess_amount or 0)
+        if current_valuation and current_valuation.excess_amount is not None
         else None
     )
-    claim_amount = float(latest.claim_amount or 0) if financials_ready else None
+    claim_amount = (
+        float(current_valuation.net_payable or 0)
+        if current_valuation and current_valuation.net_payable is not None
+        else None
+    )
     estimated_repair = (
-        max(0, claim_amount - excess_amount)
-        if financials_ready and claim_amount is not None and excess_amount is not None
+        float(current_valuation.gross_estimate or 0)
+        if current_valuation and current_valuation.gross_estimate is not None
         else None
     )
 
@@ -1744,8 +1847,11 @@ def get_claim_evaluation(request, complaint_id: str):
     # classification reflects actual assessed repair cost, not the FNOL estimate.
     # Falls back to claim_amount → estimated_amount → 0 when DA has not run yet.
     major_threshold = get_major_claim_threshold()
-    valuation = ClaimPhase1Valuation.objects.filter(complaint=fnol).first() if fnol else None
-    da_gross = float(valuation.gross_estimate or 0) if valuation else 0
+    da_gross = (
+        float(current_valuation.gross_estimate or 0)
+        if current_valuation
+        else 0
+    )
     complexity_amount = (
         da_gross
         if da_gross > 0
@@ -1765,7 +1871,7 @@ def get_claim_evaluation(request, complaint_id: str):
         "version": latest.version,
         "is_latest": latest.is_latest,
         "damage_confidence": float(latest.damage_confidence or 0),
-        "estimated_amount": float(latest.estimated_amount or 0),
+        "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
         "excess_amount": excess_amount,
         "estimated_repair": estimated_repair,
@@ -2016,30 +2122,39 @@ def save_fnol(request):
         )
 
     claim_data = _fnol_payload_to_claim_data(data)
-    record, _ = FnolClaim.objects.update_or_create(
+    record, created = FnolClaim.objects.update_or_create(
         complaint_id=complaint_id,
         defaults=claim_data,
     )
+    reset_artifact_counts = {}
+    if not created and claim_data.get("re_open", 0) == 0:
+        reset_artifact_counts = _clear_claim_processing_artifacts(record)
+        if any(reset_artifact_counts.values()):
+            logger.info(
+                "save_fnol reset persisted processing artifacts for %s: %s",
+                complaint_id,
+                reset_artifact_counts,
+            )
 
     # Handle damage photos (strings or { image: { url } } objects — normalized to basename)
     documents = data.get("documents") or {}
     photo_paths = documents.get("photos")
-    if isinstance(photo_paths, list):
-        from claims.media_paths import coerce_fnol_photo_entry
+    from claims.media_paths import coerce_fnol_photo_entry
 
-        record.damage_photos.all().delete()
+    record.damage_photos.all().delete()
+    if isinstance(photo_paths, list):
         for item in photo_paths:
             normalized = coerce_fnol_photo_entry(item)
             if normalized:
                 FnolDamagePhoto.objects.create(complaint=record, photo_path=normalized)
 
-    return Response(
-        {
-            "message": "FNOL saved successfully",
-            "id": record.complaint_id,
-        },
-        status=201,
-    )
+    payload = {
+        "message": "FNOL saved successfully",
+        "id": record.complaint_id,
+    }
+    if reset_artifact_counts:
+        payload["reset_processing_artifacts"] = reset_artifact_counts
+    return Response(payload, status=201)
 
 
 @api_view(['POST'])
@@ -2461,7 +2576,9 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     story.append(Spacer(1, 0.12 * inch))
 
     if part_rows:
-        part_table_rows = [["Part", "Damage", "Severity %", "Action", f"Amount ({currency_code})"]]
+        part_table_rows = [
+            ["Part", "Damage", "Part damage score (0–100)", "Action", f"Amount ({currency_code})"]
+        ]
         for row in part_rows[:12]:
             part_table_rows.append(
                 [
@@ -2483,7 +2600,16 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
         )
     else:
         t6_parts = _table_style_header_blue(
-            [["Part", "Damage", "Severity %", "Action", f"Amount ({currency_code})"], ["No part-level damage rows saved", "—", "—", "—", "—"]],
+            [
+                [
+                    "Part",
+                    "Damage",
+                    "Part damage score (0–100)",
+                    "Action",
+                    f"Amount ({currency_code})",
+                ],
+                ["No part-level damage rows saved", "—", "—", "—", "—"],
+            ],
             col_widths=[1.55 * inch, 1.2 * inch, 0.85 * inch, 1.45 * inch, 1.15 * inch],
             row_height=30,
         )

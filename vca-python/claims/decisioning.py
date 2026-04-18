@@ -559,14 +559,13 @@ def _build_primary_image_risk_insight(
         return None
 
     primary = candidates[0]
-    detail = f"Detected on {primary['count_label']}."
-    additional_labels = [category["label"] for category in candidates[1:3]]
-    if additional_labels:
-        detail += f" Additional image-risk categories: {', '.join(additional_labels)}"
-        if len(candidates) > 3:
-            detail += f" and {len(candidates) - 3} more."
-        else:
-            detail += "."
+    n_cat = len(candidates)
+    cat_word = "category" if n_cat == 1 else "categories"
+    # Keep the banner concise; labels live in Screening findings / image-risk UI.
+    detail = (
+        f"Authenticity screening flagged {n_cat} risk {cat_word} "
+        f"on {primary['count_label']}. See Screening findings for labels."
+    )
 
     return _insight(
         code=str(primary["code"]),
@@ -725,9 +724,11 @@ def build_claim_decision_summary(
     ) if has_current_damage_evidence else False
     assessment_ready = bool(
         has_current_valuation
-        or current_part_count > 0
-        or raw_llm_severity
-        or has_valid_damage
+        and (
+            current_part_count > 0
+            or raw_llm_severity
+            or has_valid_damage
+        )
     )
     image_risk_summary, image_risk_categories, analyzed_photo_count = (
         _aggregate_image_risk_summary(
@@ -800,7 +801,8 @@ def build_claim_decision_summary(
     )
     if primary_image_risk_insight:
         insights.append(primary_image_risk_insight)
-        blockers.append(primary_image_risk_insight)
+        if primary_image_risk_insight["blocking"]:
+            blockers.append(primary_image_risk_insight)
 
     image_authenticity_threshold_insight: dict[str, Any] | None = None
     if max_image_fraud_score is not None:
@@ -936,12 +938,15 @@ def build_claim_decision_summary(
         decision = "Manual Review"
         status_tone = "critical" if first_blocker["severity"] == "critical" else "warning"
         status_title = "Manual review required"
-        status_detail = first_blocker["detail"]
+        status_detail = (first_blocker.get("detail") or "").strip()
         if len(blockers) > 1:
-            status_detail = (
-                f"{status_detail} {len(blockers) - 1} additional blocking signal"
-                f"{'' if len(blockers) - 1 == 1 else 's'} also require review."
+            n_more = len(blockers) - 1
+            tail = (
+                "One more blocking item is listed in the assessment summary."
+                if n_more == 1
+                else f"{n_more} more blocking items are listed in the assessment summary."
             )
+            status_detail = f"{status_detail} {tail}".strip()
         stp_eligible = False
     elif not assessment_ready:
         approval_state = "pending_damage_assessment"

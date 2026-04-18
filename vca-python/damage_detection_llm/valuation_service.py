@@ -25,6 +25,32 @@ DEFAULT_EXCESS_MAXIMUM = Decimal("500.00")   # Maximum excess amount
 DEFAULT_CURRENCY = "THB"
 
 
+def _decimal_gt_zero(value) -> bool:
+    if value in (None, ""):
+        return False
+    try:
+        return Decimal(str(value)) > 0
+    except Exception:
+        return False
+
+
+def _valuation_has_meaningful_output(valuation_data: dict) -> bool:
+    gross_estimate = valuation_data.get("gross_estimate")
+    if _decimal_gt_zero(gross_estimate):
+        return True
+
+    breakdown = valuation_data.get("breakdown") or []
+    if not isinstance(breakdown, list):
+        return False
+
+    for row in breakdown:
+        if not isinstance(row, dict):
+            continue
+        if _decimal_gt_zero(row.get("estimated_amount", row.get("estimated_cost"))):
+            return True
+    return False
+
+
 def get_excess_settings() -> dict:
     """
     Get excess/deductible settings from PricingConfig or defaults.
@@ -223,6 +249,10 @@ def save_valuation_summary(complaint_id: str, valuation_data: dict) -> bool:
         claim = FnolClaim.objects.filter(complaint_id=complaint_id).first()
         if not claim:
             return False
+
+        if not _valuation_has_meaningful_output(valuation_data):
+            ClaimPhase1Valuation.objects.filter(complaint=claim).delete()
+            return True
 
         valuation, created = ClaimPhase1Valuation.objects.update_or_create(
             complaint=claim,

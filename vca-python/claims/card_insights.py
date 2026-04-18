@@ -105,7 +105,7 @@ def build_card_details_payload(
     )
     clean = _strip_analyzer_internal(analysis)
 
-    ctx = build_claim_context(claim)
+    ctx = build_claim_context(claim, latest_evaluation)
     ctx_digest = {
         "complaint_id": claim.complaint_id,
         "card_key": card_key,
@@ -165,7 +165,7 @@ def upsert_card_insight(
     clean = _strip_analyzer_internal(analysis)
     err_flag = bool(analysis.get("_analyzer_error"))
 
-    ctx = build_claim_context(claim)
+    ctx = build_claim_context(claim, latest_evaluation)
     ctx_digest = {
         "complaint_id": claim.complaint_id,
         "card_key": card_key,

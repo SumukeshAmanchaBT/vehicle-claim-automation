@@ -11,6 +11,9 @@ const statusBadgeVariants = cva(
         rejected: "status-rejected",
         processing: "status-processing",
         default: "bg-secondary text-secondary-foreground border-border",
+        /** Teal accent for workflow overlays (e.g. claim evaluation visible on list). */
+        evaluation_ready:
+          "border-teal-500/40 bg-teal-500/10 text-teal-900 dark:text-teal-100",
       },
     },
     defaultVariants: {

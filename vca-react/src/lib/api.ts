@@ -91,11 +91,25 @@ export async function bulkDeleteFnol(
   });
 }
 
+export interface SaveFnolResponse {
+  message: string;
+  id: string;
+  /** Present when an existing claim had persisted DA/evaluation artifacts cleared. */
+  reset_processing_artifacts?: Record<string, number>;
+}
+
+/** Use after `saveFnol` when wiring reset-to-FNOL: if true, run the same refetch/cache purge as other workflow mutations. */
+export function saveFnolResetProcessingArtifactsApplied(
+  response: SaveFnolResponse
+): boolean {
+  const rows = response.reset_processing_artifacts;
+  if (!rows) return false;
+  return Object.values(rows).some((count) => typeof count === "number" && count > 0);
+}
+
 /** POST /api/save-fnol/ - Save FNOL payload to fnol_claims + fnol_damage_photos */
-export async function saveFnol(
-  fnol: FnolPayload
-): Promise<{ message: string; id: string }> {
-  return fetchApi<{ message: string; id: string }>("/save-fnol", {
+export async function saveFnol(fnol: FnolPayload): Promise<SaveFnolResponse> {
+  return fetchApi<SaveFnolResponse>("/save-fnol", {
     method: "POST",
     data: { fnol },
   });
@@ -168,7 +182,11 @@ export interface ClaimEvaluationResponse {
   workflow_snapshot?: ClaimWorkflowSnapshot;
   damage_confidence: number | null;
   estimated_amount: number | null;
+  /** DA gross repair total (ClaimPhase1Valuation); same source as estimated_repair when present. */
+  gross_estimate?: number | null;
   claim_amount: number | null;
+  /** Same source as claim_amount when present: unified net from ClaimPhase1Valuation. */
+  net_payable?: number | null;
   excess_amount: number | null;
   estimated_repair: number | null;
   threshold_value: number | null;
@@ -261,6 +279,13 @@ export interface ImageRiskSummaryBlock {
   material_photo_count?: number;
   blocking_category_count?: number;
   critical_category_count?: number;
+  /** Current BRV lifecycle; use for gating image-risk UI (0 = no surfaced categories). */
+  categories_surfaced?: number;
+  photos_flagged?: number;
+  /** Truly blocking authenticity signals in this lifecycle. */
+  blocking_signals?: number;
+  highest_fraud_score?: number;
+  stp_threshold?: number;
   categories: ImageRiskCategorySummary[];
   additional_category_count: number;
   summary_card?: ImageRiskSummaryCard | null;
@@ -439,6 +464,8 @@ export interface TotalValueResponse {
   part_count: number;
   /** Sum of part line estimates; should match gross_estimate when data is consistent */
   parts_total_cross_check?: number;
+  /** Line items aligned with DA part costs; authoritative for UI breakdown when present. */
+  breakdown?: DamagePartAssessmentItem[];
 }
 
 export async function runImageFraudAnalysis(

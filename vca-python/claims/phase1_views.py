@@ -29,6 +29,7 @@ from claims.decisioning import sync_claim_evaluation_decision_state
 from claims.phase1_runtime import get_claim_market_context
 from claims.authenticity_classification import classify_image_authenticity_labels
 from claims.reviewer_safe import sanitize_reviewer_llm_notes
+from claims.workflow_state import current_lifecycle_started_at
 from damage_detection_llm.image_fraud_service import (
     analyze_image_fraud,
     check_image_reuse,
@@ -74,6 +75,17 @@ def _round_optional(value, digits: int = 2):
     if value is None:
         return None
     return round(float(value), digits)
+
+
+def _latest_eval_for_claim(claim: FnolClaim) -> ClaimEvaluationResponse | None:
+    return ClaimEvaluationResponse.objects.filter(
+        complaint_id=claim.complaint_id,
+        is_latest=True,
+    ).first()
+
+
+def _current_started_at_for_claim(claim: FnolClaim):
+    return current_lifecycle_started_at(_latest_eval_for_claim(claim))
 
 
 def _image_fraud_result_payload(
@@ -125,7 +137,11 @@ def _image_fraud_result_payload(
 
 def _image_fraud_results_payload(claim: FnolClaim) -> dict:
     """Serialize persisted image-fraud rows for a claim."""
-    results = ImageFraudResult.objects.filter(complaint=claim).order_by("-created_at")
+    started_at = _current_started_at_for_claim(claim)
+    results = ImageFraudResult.objects.filter(complaint=claim)
+    if started_at is not None:
+        results = results.filter(created_at__gte=started_at)
+    results = results.order_by("-created_at")
     return {
         "complaint_id": claim.complaint_id,
         "results_count": results.count(),
@@ -205,6 +221,7 @@ def image_fraud_analysis(request, complaint_id: str):
             )
 
         if request.method == "POST":
+            started_at = _current_started_at_for_claim(claim)
             # Get images to analyze
             photos = claim.damage_photos.order_by("id")
             if not photos:
@@ -227,9 +244,15 @@ def image_fraud_analysis(request, complaint_id: str):
                     continue
 
                 # Check if already analyzed
-                existing = ImageFraudResult.objects.filter(
-                    complaint=claim, photo_path=photo_path
-                ).first()
+                existing_qs = ImageFraudResult.objects.filter(
+                    complaint=claim,
+                    photo_path=photo_path,
+                ).order_by("-created_at")
+                existing = (
+                    existing_qs.filter(created_at__gte=started_at).first()
+                    if started_at is not None
+                    else existing_qs.first()
+                )
 
                 if existing:
                     duplicate_summary = check_image_reuse(
@@ -459,9 +482,11 @@ def duplicate_candidates(request, complaint_id: str):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        candidates = ClaimDuplicateCandidate.objects.filter(
-            complaint=claim
-        ).order_by("-similarity_score")
+        started_at = _current_started_at_for_claim(claim)
+        candidates = ClaimDuplicateCandidate.objects.filter(complaint=claim)
+        if started_at is not None:
+            candidates = candidates.filter(created_at__gte=started_at)
+        candidates = candidates.order_by("-similarity_score")
 
         out_candidates = []
         for c in candidates:
@@ -679,6 +704,8 @@ def total_value(request, complaint_id: str):
             "market_context": valuation.get("market_context") or market_context,
             "part_count": len(valuation.get("breakdown", [])),
             "parts_total_cross_check": round(parts_total, 2),
+            # Line items for the DA tab table (frontend `selectPartBreakdownRows`); must stay in sync with part_count.
+            "breakdown": valuation.get("breakdown") or [],
         })
 
     except Exception:

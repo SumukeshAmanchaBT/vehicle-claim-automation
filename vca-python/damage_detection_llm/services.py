@@ -4,6 +4,7 @@ Handles YOLO damage detection, Keras severity model, and vision LLM analysis.
 """
 import base64
 import hashlib
+import io
 import json
 import logging
 import os
@@ -245,6 +246,40 @@ def predict_severity(image_path, model):
 FLOOD_KEYWORDS = ("flood", "flooded", "submerged", "inundated", "water damage")
 
 
+def _encode_image_for_vision_llm(image_path: str) -> tuple[str, str] | None:
+    """
+    Resize and JPEG-compress before base64 so huge camera originals do not exhaust RAM
+    (raw f.read() + base64 can double memory; vision APIs do not need full resolution).
+    """
+    from PIL import Image
+
+    max_edge = int(os.environ.get("VISION_LLM_MAX_IMAGE_EDGE", "1536"))
+    jpeg_quality = int(os.environ.get("VISION_LLM_JPEG_QUALITY", "85"))
+    try:
+        resample = Image.Resampling.LANCZOS
+    except AttributeError:
+        resample = Image.LANCZOS
+    try:
+        with Image.open(image_path) as im:
+            rgb = im.convert("RGB")
+            rgb.thumbnail((max_edge, max_edge), resample)
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+            raw = buf.getvalue()
+        if not raw:
+            return None
+        return (base64.b64encode(raw).decode("utf-8"), "image/jpeg")
+    except MemoryError as e:
+        logger.warning("Vision LLM image encode OOM for %s: %s", image_path, e)
+        return None
+    except OSError as e:
+        logger.warning("Vision LLM image encode failed for %s: %s", image_path, e)
+        return None
+    except Exception as e:
+        logger.warning("Vision LLM image encode failed for %s: %s", image_path, e)
+        return None
+
+
 def _analyze_damage_with_vision_llm(image_path: str) -> tuple[list[str], str] | None:
     """
     Analyze vehicle damage image using Azure OpenAI or OpenAI vision (env-configured).
@@ -257,13 +292,10 @@ def _analyze_damage_with_vision_llm(image_path: str) -> tuple[list[str], str] | 
         return None
     if not os.path.isfile(image_path):
         return None
-    try:
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-    except OSError:
+    encoded = _encode_image_for_vision_llm(image_path)
+    if not encoded:
         return None
-    ext = Path(image_path).suffix.lower() or ".jpg"
-    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png" if ext == ".png" else "image/webp"
+    image_data, mime = encoded
     prompt = """Analyze this vehicle damage image. List ONLY the damage types you actually see.
 
 - FIRE: burnt, charred, melted, smoke, soot - include "fire" ONLY if clearly visible
@@ -803,28 +835,16 @@ def _resolve_part_breakdown_for_image(
         currency_code=currency_code,
     )
 
-    try:
-        canonical = CanonicalImageDamageAssessment.objects.create(
-            sha256_hex=image_sha256,
-            assessment_context_key=context_key,
-            assessment_context_json=assessment_context,
-            analysis_source="fresh_llm_assessment",
-            source_claim_id=complaint_id,
-            source_photo_path=image_url,
-            part_breakdown_json=part_breakdown,
-            total_estimated_cost=round(
-                sum(p.get("estimated_cost", 0) for p in part_breakdown), 2
-            ),
-            currency_code=currency_code,
-            pipeline_metadata_json=persisted_pipeline_metadata,
+    fresh_part_breakdown = _normalize_part_breakdown(part_breakdown)
+    if canonical:
+        canonical_part_breakdown = _normalize_part_breakdown(
+            canonical.part_breakdown_json
         )
-        part_breakdown = _normalize_part_breakdown(canonical.part_breakdown_json)
-    except IntegrityError:
-        canonical = CanonicalImageDamageAssessment.objects.get(
-            sha256_hex=image_sha256,
-            assessment_context_key=context_key,
-        )
-        part_breakdown = _normalize_part_breakdown(canonical.part_breakdown_json)
+    else:
+        canonical_part_breakdown = []
+
+    if canonical_part_breakdown:
+        part_breakdown = canonical_part_breakdown
         persisted_pipeline_metadata = _build_reuse_pipeline_metadata(
             base_metadata=canonical.pipeline_metadata_json,
             analysis_source=canonical.analysis_source or "canonical_snapshot",
@@ -832,6 +852,33 @@ def _resolve_part_breakdown_for_image(
             source_photo_path=canonical.source_photo_path or None,
             currency_code=canonical.currency_code or currency_code,
         )
+    elif canonical and not fresh_part_breakdown:
+        part_breakdown = canonical_part_breakdown
+        persisted_pipeline_metadata = _build_reuse_pipeline_metadata(
+            base_metadata=canonical.pipeline_metadata_json,
+            analysis_source=canonical.analysis_source or "canonical_snapshot",
+            source_claim_id=canonical.source_claim_id or None,
+            source_photo_path=canonical.source_photo_path or None,
+            currency_code=canonical.currency_code or currency_code,
+        )
+    else:
+        canonical, _ = CanonicalImageDamageAssessment.objects.update_or_create(
+            sha256_hex=image_sha256,
+            assessment_context_key=context_key,
+            defaults={
+                "assessment_context_json": assessment_context,
+                "analysis_source": "fresh_llm_assessment",
+                "source_claim_id": complaint_id,
+                "source_photo_path": image_url,
+                "part_breakdown_json": fresh_part_breakdown,
+                "total_estimated_cost": round(
+                    sum(p.get("estimated_cost", 0) for p in fresh_part_breakdown), 2
+                ),
+                "currency_code": currency_code,
+                "pipeline_metadata_json": persisted_pipeline_metadata,
+            },
+        )
+        part_breakdown = _normalize_part_breakdown(canonical.part_breakdown_json)
 
     return damages, severity, part_breakdown, persisted_pipeline_metadata
 

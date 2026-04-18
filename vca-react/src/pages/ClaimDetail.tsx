@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useSearchParams, Link } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
@@ -51,7 +51,6 @@ import {
   runImageFraudAnalysis,
   type BusinessRuleSummaryBlock,
   type ClaimWorkflowSnapshot,
-  type ClaimWorkflowState,
   type FnolPayload,
   type FnolResponse,
   type ClaimEvaluationResponse,
@@ -59,6 +58,7 @@ import {
   type DuplicateCandidatesResponse,
   type ImageFraudResultsResponse,
   type TotalValueResponse,
+  type ClaimDecisionInsight,
 } from "@/lib/api";
 import type { FraudRuleResult } from "@/models/fnol";
 import type { DamageAssessmentCardSummary } from "@/models/damageAssessmentCards";
@@ -73,6 +73,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { DamageAssessmentCardsPanel } from "@/components/damage-assessment/DamageAssessmentCardsPanel";
 import { DamageAssessmentDetailsDrawer } from "@/components/damage-assessment/DamageAssessmentDetailsDrawer";
 import { damageAssessmentCardsKey } from "@/components/damage-assessment/damageAssessmentQueryKeys";
+import {
+  fnolListQueryKey,
+  removeClaimScopedQueryCaches,
+} from "@/lib/claimScopedCache";
 import { ExpandableDetails } from "@/components/review/ExpandableDetails";
 import { ImageAuthenticityClassificationBadges } from "@/components/review/ImageAuthenticityClassificationBadges";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -85,7 +89,14 @@ import {
   buildClaimTopInsightRows,
   ClaimTopInsightsStrip,
 } from "@/components/claim/ClaimTopInsightsStrip";
-import { ClaimImageRiskSummaryCard } from "@/components/claim/ClaimImageRiskSummaryCard";
+import { ClaimImageRiskDuplicateWarnings } from "@/components/claim/ClaimImageRiskDuplicateWarnings";
+import {
+  DamageAssessmentFinancialSummary,
+  DamageAssessmentPartBreakdownTable,
+  selectPartBreakdownRows,
+  shouldShowPartBreakdownTable,
+} from "@/components/claim/DamageAssessmentTotalValueSection";
+import { ClaimEvaluationTabContent } from "@/components/claim/ClaimEvaluationTabContent";
 
 const formatElaScore = (value: number | null | undefined) => {
   if (value == null || Number.isNaN(value)) return "—";
@@ -260,23 +271,6 @@ const buildClaimPhotoAssets = (
     })
     .filter((photo): photo is ClaimPhotoAsset => Boolean(photo));
 
-/**
- * Returns true only when the backend has ACTUAL persisted assessment data
- * (non-zero counts/parts). Some insight endpoints may return 200 with empty
- * objects before a full Damage Assessment is run, so object-truthiness checks
- * are insufficient — we must inspect numeric fields.
- */
-const hasPersistedAssessmentInsights = ({
-  detailedDamageAssessment,
-  totalValueSummary,
-}: {
-  detailedDamageAssessment: DetailedDamageAssessmentResponse | null;
-  totalValueSummary: TotalValueResponse | null;
-}) =>
-  (detailedDamageAssessment?.total_parts ?? 0) > 0 ||
-  (totalValueSummary?.part_count ?? 0) > 0 ||
-  (totalValueSummary?.gross_estimate ?? 0) > 0;
-
 function fraudBandToNumeric(band: string | number): number {
   if (typeof band === "number") {
     return band;
@@ -380,6 +374,10 @@ export default function ClaimDetail() {
   const [claimInsightsLoading, setClaimInsightsLoading] = useState(false);
   const [assessmentSnapshot, setAssessmentSnapshot] =
     useState<AssessmentSnapshotState | null>(null);
+  /** Bumps when claim-scoped data is purged+refetched so tab bodies remount (no stale subtree state). */
+  const [claimDetailDataRevision, setClaimDetailDataRevision] = useState(0);
+  /** Full-page guard during post-mutation refetch so testers never see stale DA/evaluation rows. */
+  const [postActionRefetchBusy, setPostActionRefetchBusy] = useState(false);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0);
   const [photoPreviewOpen, setPhotoPreviewOpen] = useState(false);
   const { toast } = useToast();
@@ -389,6 +387,59 @@ export default function ClaimDetail() {
   const claimPhotoAssets = buildClaimPhotoAssets(rawPhotoEntries);
   const activeClaimEvaluation =
     claimEvaluation?.complaint_id === id ? claimEvaluation : null;
+  /** Authoritative lifecycle for tab/button gates (FNOL or latest evaluation payload). */
+  const workflowSnapshot = useMemo(
+    () =>
+      (activeClaimEvaluation?.workflow_snapshot ??
+        fnol?.workflow_snapshot ??
+        null) as ClaimWorkflowSnapshot | null,
+    [activeClaimEvaluation, fnol?.workflow_snapshot]
+  );
+
+  const claimDetailWorkflowGates = useMemo(() => {
+    const ws = workflowSnapshot;
+    if (!ws) {
+      return {
+        brvManualReviewBanner: false,
+        damageAssessmentTabUnlocked: false,
+        showRunBrvButton: false,
+        showRunDamageAssessmentButton: false,
+        damageAssessmentIncompleteNoValuation: false,
+        showDamageAssessmentResultsPanel: false,
+        showClaimEvaluationTabStrip: false,
+      };
+    }
+    const brv = ws.business_rule_validation;
+    const da = ws.damage_assessment;
+    const ce = ws.claim_evaluation;
+    const brvFailed = brv?.passed === false;
+    return {
+      brvManualReviewBanner: brvFailed,
+      damageAssessmentTabUnlocked: Boolean(da?.available) && !brvFailed,
+      showRunBrvButton:
+        Boolean(brv?.run_allowed) && brv?.completed === false,
+      showRunDamageAssessmentButton:
+        Boolean(da?.run_allowed) && da?.completed === false,
+      damageAssessmentIncompleteNoValuation:
+        Boolean(da?.completed) && da?.valuation_ready === false,
+      showDamageAssessmentResultsPanel:
+        Boolean(da?.completed) && da?.valuation_ready !== false,
+      showClaimEvaluationTabStrip: Boolean(ce?.available),
+    };
+  }, [workflowSnapshot]);
+
+  useEffect(() => {
+    if (activeTab === "assessment" && !claimDetailWorkflowGates.damageAssessmentTabUnlocked) {
+      setActiveTab("details");
+    }
+  }, [activeTab, claimDetailWorkflowGates.damageAssessmentTabUnlocked]);
+
+  useEffect(() => {
+    if (activeTab === "claim-evaluation" && !claimDetailWorkflowGates.showClaimEvaluationTabStrip) {
+      setActiveTab("details");
+    }
+  }, [activeTab, claimDetailWorkflowGates.showClaimEvaluationTabStrip]);
+
   const activeAssessmentSnapshot =
     assessmentSnapshot?.claimId === id ? assessmentSnapshot : null;
   const imageFraudResults = activeAssessmentSnapshot?.imageFraudResults ?? null;
@@ -405,20 +456,6 @@ export default function ClaimDetail() {
     (claimId?: string | null) =>
       Boolean(claimId && activeClaimIdRef.current === claimId),
     []
-  );
-
-  const shouldLoadEvaluationForFnol = useCallback(
-    (claim: FnolResponse | null | undefined) =>
-      Boolean(
-        id &&
-          claim &&
-          claim.complaint_id === id &&
-          (
-            claim.workflow_snapshot?.business_rule_validation.completed ||
-            (claim.workflow_state && claim.workflow_state !== "NOT_STARTED")
-          )
-      ),
-    [id]
   );
 
   const applyAssessmentSnapshot = useCallback(
@@ -439,10 +476,7 @@ export default function ClaimDetail() {
       setShowDamageRunSummary(false);
       setActiveAssessmentCard(null);
       if (claimId) {
-        queryClient.removeQueries({ queryKey: damageAssessmentCardsKey(claimId) });
-        queryClient.removeQueries({
-          queryKey: ["damage-assessment-card-details", claimId],
-        });
+        removeClaimScopedQueryCaches(queryClient, claimId);
       }
     },
     [queryClient]
@@ -455,16 +489,11 @@ export default function ClaimDetail() {
 
       setFnol(updatedFnol);
 
-      if (!shouldLoadEvaluationForFnol(updatedFnol)) {
-        setClaimEvaluation(null);
-        return { fnol: updatedFnol, evaluation: null };
-      }
-
       try {
-        const latestEvaluation = await Promise.resolve(getClaimEvaluation(claimId));
+        const latestEvaluation = await getClaimEvaluation(claimId);
         if (!isCurrentClaimRoute(claimId)) return null;
 
-        if (!latestEvaluation || latestEvaluation.not_started) {
+        if (!latestEvaluation) {
           setClaimEvaluation(null);
           return { fnol: updatedFnol, evaluation: null };
         }
@@ -478,7 +507,7 @@ export default function ClaimDetail() {
         return { fnol: updatedFnol, evaluation: null };
       }
     },
-    [isCurrentClaimRoute, shouldLoadEvaluationForFnol]
+    [isCurrentClaimRoute]
   );
 
   useEffect(() => {
@@ -524,6 +553,7 @@ export default function ClaimDetail() {
   }, [claimPhotoAssets.length, selectedPhotoIndex]);
 
   const loadAssessmentInsightsSnapshot = useCallback(async (claimId: string) => {
+    // All four requests run concurrently; damage-assessment-detailed and total-value in parallel.
     const [fraudResults, duplicateResults, detailedResults, totalResults] =
       await Promise.allSettled([
         getImageFraudResults(claimId),
@@ -568,6 +598,66 @@ export default function ClaimDetail() {
     };
   }, []);
 
+  const refetchClaimDetailAfterMutation = useCallback(
+    async (claimId: string) => {
+      if (!claimId || !isCurrentClaimRoute(claimId)) return;
+      setPostActionRefetchBusy(true);
+      setClaimEvaluationLoading(true);
+      try {
+        removeClaimScopedQueryCaches(queryClient, claimId);
+        resetDamageAssessmentUiState(claimId);
+        setClaimEvaluation(null);
+        setClaimInsightsLoading(true);
+
+        const updatedFnol = await getFnolById(claimId);
+        if (!isCurrentClaimRoute(claimId)) return;
+        setFnol(updatedFnol);
+
+        try {
+          const latestEvaluation = await getClaimEvaluation(claimId);
+          if (!isCurrentClaimRoute(claimId)) return;
+          setClaimEvaluation(latestEvaluation ?? null);
+        } catch {
+          if (isCurrentClaimRoute(claimId)) {
+            setClaimEvaluation(null);
+          }
+        }
+
+        const insightSnapshot = await loadAssessmentInsightsSnapshot(claimId);
+        if (!isCurrentClaimRoute(claimId)) return;
+        applyAssessmentSnapshot(claimId, {
+          imageFraudResults: insightSnapshot.imageFraudResults,
+          duplicateCandidates: insightSnapshot.duplicateCandidates,
+          detailedDamageAssessment: insightSnapshot.detailedDamageAssessment,
+          totalValueSummary: insightSnapshot.totalValueSummary,
+        });
+        if (isCurrentClaimRoute(claimId)) {
+          setClaimInsightsLoading(false);
+        }
+
+        await queryClient.invalidateQueries({
+          queryKey: damageAssessmentCardsKey(claimId),
+        });
+        await queryClient.invalidateQueries({ queryKey: fnolListQueryKey });
+        if (isCurrentClaimRoute(claimId)) {
+          setClaimDetailDataRevision((n) => n + 1);
+        }
+      } finally {
+        if (isCurrentClaimRoute(claimId)) {
+          setClaimEvaluationLoading(false);
+          setPostActionRefetchBusy(false);
+        }
+      }
+    },
+    [
+      applyAssessmentSnapshot,
+      isCurrentClaimRoute,
+      loadAssessmentInsightsSnapshot,
+      queryClient,
+      resetDamageAssessmentUiState,
+    ]
+  );
+
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -580,6 +670,7 @@ export default function ClaimDetail() {
     setFraudSuccessModalOpen(false);
     setClaimEvaluation(null);
     setClaimEvaluationLoading(false);
+    setClaimDetailDataRevision(0);
     resetDamageAssessmentUiState(id);
     setAssessmentInsightAlert(null);
     getFnolById(id)
@@ -599,9 +690,7 @@ export default function ClaimDetail() {
     return () => { cancelled = true; };
   }, [id, resetDamageAssessmentUiState]);
 
-  const shouldFetchClaimEvaluation =
-    Boolean(id && fnol?.complaint_id === id) &&
-    shouldLoadEvaluationForFnol(fnol);
+  const shouldFetchClaimEvaluation = Boolean(id && fnol?.complaint_id === id);
 
   useEffect(() => {
     if (!id) return;
@@ -610,13 +699,18 @@ export default function ClaimDetail() {
       setClaimEvaluationLoading(false);
       return;
     }
+    // refetchClaimDetailAfterMutation owns GET /evaluation while postActionRefetchBusy;
+    // without this guard the effect re-fetches against stale fnol and can resurrect old rows.
+    if (postActionRefetchBusy) {
+      return;
+    }
     let cancelled = false;
     setClaimEvaluationLoading(true);
     setClaimEvaluation(null);
     Promise.resolve(getClaimEvaluation(id))
       .then((data) => {
         if (cancelled) return;
-        if (!data || data.not_started) {
+        if (!data) {
           setClaimEvaluation(null);
         } else {
           setClaimEvaluation(data);
@@ -644,43 +738,31 @@ export default function ClaimDetail() {
         if (!cancelled) setClaimEvaluationLoading(false);
       });
     return () => { cancelled = true; };
-  }, [id, shouldFetchClaimEvaluation, shouldLoadEvaluationForFnol, fnol]);
+  }, [id, shouldFetchClaimEvaluation, fnol, postActionRefetchBusy]);
 
   useEffect(() => {
     if (activeClaimEvaluation) setShowDamageRunSummary(false);
   }, [activeClaimEvaluation]);
 
   useEffect(() => {
-    if (!fnol) return;
-    const workflowSnapshot = (
-      activeClaimEvaluation?.workflow_snapshot ?? fnol.workflow_snapshot ?? null
-    ) as ClaimWorkflowSnapshot | null;
-    const persistedWorkflowState =
-      (workflowSnapshot?.workflow_state as ClaimWorkflowState | undefined) ??
-      (fnol.workflow_state as ClaimWorkflowState | undefined) ??
-      "NOT_STARTED";
+    if (!fnol || !workflowSnapshot) return;
+    const ws = workflowSnapshot;
     const allowedTabs = new Set(["details", "documents"]);
 
-    if (
-      workflowSnapshot?.business_rule_validation.visible ||
-      persistedWorkflowState !== "NOT_STARTED"
-    ) {
+    if (ws.business_rule_validation?.visible) {
       allowedTabs.add("fraud-evaluation");
     }
-    if (
-      workflowSnapshot?.damage_assessment.visible ||
-      persistedWorkflowState === "DAMAGE_ASSESSMENT_COMPLETED"
-    ) {
+    if (ws.damage_assessment?.available) {
       allowedTabs.add("assessment");
     }
-    if (workflowSnapshot?.claim_evaluation.visible) {
+    if (ws.claim_evaluation?.available) {
       allowedTabs.add("claim-evaluation");
     }
 
     if (!allowedTabs.has(activeTab)) {
       setActiveTab("details");
     }
-  }, [fnol, activeClaimEvaluation, activeTab]);
+  }, [fnol, workflowSnapshot, activeTab]);
 
   useEffect(() => {
     resetDamageAssessmentUiState(id);
@@ -690,13 +772,12 @@ export default function ClaimDetail() {
     const shouldHydrateDamageAssessment = Boolean(
       id &&
         fnol &&
-        (
-          fnol.workflow_snapshot?.damage_assessment.completed ||
-          activeClaimEvaluation?.workflow_snapshot?.damage_assessment.completed ||
-          fnol.workflow_state === "DAMAGE_ASSESSMENT_COMPLETED"
-        )
+        workflowSnapshot?.damage_assessment?.completed
     );
     if (!shouldHydrateDamageAssessment || !id || !fnol) return;
+    if (postActionRefetchBusy) {
+      return;
+    }
     let cancelled = false;
 
     const hydrateClaimInsightsSnapshot = async () => {
@@ -722,7 +803,14 @@ export default function ClaimDetail() {
     return () => {
       cancelled = true;
     };
-  }, [id, fnol, activeClaimEvaluation, loadAssessmentInsightsSnapshot, applyAssessmentSnapshot]);
+  }, [
+    id,
+    fnol,
+    workflowSnapshot,
+    postActionRefetchBusy,
+    loadAssessmentInsightsSnapshot,
+    applyAssessmentSnapshot,
+  ]);
 
   const handleFraudDetection = async () => {
     if (!id) return;
@@ -730,10 +818,7 @@ export default function ClaimDetail() {
     setError(null);
     try {
       await runFraudDetection(id);
-      resetDamageAssessmentUiState(id);
-      setClaimEvaluation(null);
-      setClaimEvaluationLoading(true);
-      await refreshClaimContext(id);
+      await refetchClaimDetailAfterMutation(id);
       if (!isCurrentClaimRoute(id)) return;
       setActiveTab("fraud-evaluation");
       setFraudSuccessModalOpen(true);
@@ -743,7 +828,6 @@ export default function ClaimDetail() {
       }
     } finally {
       if (isCurrentClaimRoute(id)) {
-        setClaimEvaluationLoading(false);
         setFraudDetectionLoading(false);
       }
     }
@@ -789,6 +873,7 @@ export default function ClaimDetail() {
     }
 
     setDamageDetectionLoading(true);
+    setPostActionRefetchBusy(true);
     setClaimInsightsLoading(true);
     setError(null);
     setAssessmentInsightAlert(null);
@@ -890,6 +975,8 @@ export default function ClaimDetail() {
       queryClient.invalidateQueries({
         queryKey: ["damage-assessment-card-details", id],
       });
+      void queryClient.invalidateQueries({ queryKey: fnolListQueryKey });
+      setClaimDetailDataRevision((n) => n + 1);
     } catch (err) {
       if (isCurrentClaimRoute(id)) {
         setError(err instanceof Error ? err.message : "Damage detection failed");
@@ -899,6 +986,7 @@ export default function ClaimDetail() {
         setClaimEvaluationLoading(false);
         setClaimInsightsLoading(false);
         setDamageDetectionLoading(false);
+        setPostActionRefetchBusy(false);
       }
     }
   };
@@ -938,18 +1026,20 @@ export default function ClaimDetail() {
   const vehicle = (r.vehicle || {}) as FnolPayload["vehicle"];
   const claimant = (r.claimant || {}) as FnolPayload["claimant"];
 
-  const workflowSnapshot =
-    (activeClaimEvaluation?.workflow_snapshot ?? fnol.workflow_snapshot ?? null) as
-      | ClaimWorkflowSnapshot
-      | null;
-  const workflowState: ClaimWorkflowState =
-    (workflowSnapshot?.workflow_state as ClaimWorkflowState | undefined) ??
-    (fnol.workflow_state as ClaimWorkflowState | undefined) ??
-    "NOT_STARTED";
   const businessRuleValidationState =
     workflowSnapshot?.business_rule_validation ?? null;
   const damageAssessmentState = workflowSnapshot?.damage_assessment ?? null;
   const claimEvaluationState = workflowSnapshot?.claim_evaluation ?? null;
+
+  const {
+    brvManualReviewBanner,
+    damageAssessmentTabUnlocked,
+    showRunBrvButton,
+    showRunDamageAssessmentButton,
+    damageAssessmentIncompleteNoValuation,
+    showDamageAssessmentResultsPanel,
+    showClaimEvaluationTabStrip,
+  } = claimDetailWorkflowGates;
 
   // Prefer top-level API fields (complaint_id, incident_date_time, incident_location, etc.), fall back to raw_response
   const incidentDate = fnol.incident_date_time || incident.date_time_of_loss;
@@ -995,12 +1085,6 @@ export default function ClaimDetail() {
         0
       ) / fraudResults.length
       : 0;
-  const totalPartCount =
-    totalValueSummary?.part_count ?? detailedDamageAssessment?.total_parts ?? 0;
-  const totalEstimate =
-    totalValueSummary?.gross_estimate ??
-    detailedDamageAssessment?.total_estimated_cost ??
-    0;
   const pipelineMetadata = detailedDamageAssessment?.pipeline_metadata ?? null;
   const hasPipelineTransparencyData = Boolean(
     pipelineMetadata &&
@@ -1072,9 +1156,6 @@ export default function ClaimDetail() {
     statusForCheck === "pending damage detection" ||
     statusForCheck === "pending_damage_detection";
 
-  const isFraudDetection =
-    statusForCheck === "business rule validation-fail" ||
-    statusForCheck === "fraudulent";
   const hasPersistedValidation =
     Boolean(businessRuleValidationState?.completed || hasPersistedRuleSnapshot);
 
@@ -1083,33 +1164,17 @@ export default function ClaimDetail() {
     decisionSummary?.business_rule_validation_passed ??
     (isPendingDamageDetection || allStoredRulesPassed);
 
-  const isRecommendationShared =
-    (fnol.status || "").toLowerCase() === "recommendation shared";
-
-  const showDamageAssessmentExperience = Boolean(
-    damageAssessmentState?.completed ||
-      workflowState === "DAMAGE_ASSESSMENT_COMPLETED" ||
-      hasPersistedAssessmentInsights({ detailedDamageAssessment, totalValueSummary })
-  );
-  const hasBackendDamageAssessment = showDamageAssessmentExperience;
-
-  // "Recommendation shared" can be set without BRV snapshot (legacy / alternate API paths).
-  // Only hide BRV/DA actions when we have both a rule snapshot and real damage assessment.
-  const hideBrvDaHeaderButtons =
-    isRecommendationShared &&
-    hasPersistedValidation &&
-    hasBackendDamageAssessment;
-  const showBrvDaHeaderButtons = !hideBrvDaHeaderButtons;
+  const hasBackendDamageAssessment = showDamageAssessmentResultsPanel;
 
   const showGenerateRecommendationReport =
-    isRecommendationShared &&
-    hasPersistedValidation &&
-    hasBackendDamageAssessment;
+    Boolean(
+      businessRuleValidationState?.completed &&
+        businessRuleValidationState?.passed !== false
+    ) && hasBackendDamageAssessment;
 
   const canRunBusinessRuleValidation =
-    Boolean(fnol) && !fraudDetectionLoading && showBrvDaHeaderButtons;
+    Boolean(fnol) && !fraudDetectionLoading && showRunBrvButton;
 
-  // True once BRV produced a stored rule snapshot or FNOL reflects a BRV outcome
   const hasBrvBeenRun = hasPersistedValidation;
 
   const businessRuleActionLabel =
@@ -1121,13 +1186,11 @@ export default function ClaimDetail() {
     ? "Re-run Damage Assessment"
     : "Run Damage Assessment";
 
-  const daDisabledTooltip = !damageAssessmentState?.run_allowed
-    ? isFraudDetection
-      ? "Business Rule Validation failed — re-run and resolve all failing rules before assessing damage"
-      : hasBrvBeenRun
-        ? "Business Rule Validation did not pass — re-run it and ensure it passes first"
-        : "Run Business Rule Validation first to unlock Damage Assessment"
-    : undefined;
+  const daDisabledTooltip = brvManualReviewBanner
+    ? "Business Rule Validation failed — manual review is required before damage assessment."
+    : !damageAssessmentState?.run_allowed
+      ? "Complete Business Rule Validation successfully to unlock Damage Assessment."
+      : undefined;
 
   // ── Claim Amount: dynamic, source-priority order ──────────────────────────
   // 1. DA gross estimate (ClaimPhase1Valuation.gross_estimate via totalValueSummary)
@@ -1158,25 +1221,11 @@ export default function ClaimDetail() {
     Boolean(claimEvaluationState?.financials_ready) && displayClaimAmount > 0;
 
   const showBusinessRuleValidationTab =
-    Boolean(
-      businessRuleValidationState?.visible ||
-        workflowState !== "NOT_STARTED"
-    ) &&
-    !fraudDetectionLoading;
-  const showDamageAssessmentTab = Boolean(
-    damageAssessmentState?.visible ||
-      workflowState === "DAMAGE_ASSESSMENT_COMPLETED"
-  );
-  const showClaimEvaluationTab = Boolean(
-    claimEvaluationState?.visible ||
-      (activeClaimEvaluation && workflowState === "DAMAGE_ASSESSMENT_COMPLETED")
-  );
+    Boolean(businessRuleValidationState?.visible) && !fraudDetectionLoading;
+  const showDamageAssessmentTab = Boolean(damageAssessmentState?.available);
+  const showClaimEvaluationTab = showClaimEvaluationTabStrip;
   const prioritizeAssessmentLayout = activeTab === "assessment";
-  const businessRuleButtonVariant = hasBrvBeenRun ? "outline" : "default";
-  const damageAssessmentButtonVariant =
-    showDamageAssessmentExperience || !damageAssessmentState?.run_allowed
-      ? "outline"
-      : "default";
+  const businessRuleButtonVariant = showRunBrvButton ? "default" : "outline";
   const businessRuleSummary =
     decisionSummary?.business_rule_summary ??
     buildBusinessRuleSummaryFallback(
@@ -1213,9 +1262,13 @@ export default function ClaimDetail() {
           };
   const topLevelInsights = decisionSummary?.top_insights ?? [];
   const imageRiskSummaryBlock = decisionSummary?.image_risk_summary ?? null;
+  const topLevelInsightsForStrip = topLevelInsights.filter(
+    (insight: ClaimDecisionInsight) =>
+      !/^claim_duplicate_candidates|^image_fraud_results/.test(insight.source)
+  );
   const mergedTopSummaryRows = buildClaimTopInsightRows(
-    imageRiskSummaryBlock,
-    topLevelInsights
+    null,
+    topLevelInsightsForStrip
   );
   const hasMergedTopWarnings =
     mergedTopSummaryRows.length > 0 &&
@@ -1379,55 +1432,15 @@ export default function ClaimDetail() {
       )}
     </>
   );
+  const partBreakdownRowsForAssessment = selectPartBreakdownRows(
+    totalValueSummary,
+    detailedDamageAssessment
+  );
+
   const renderDamageBreakdownPageCopy = () =>
-    detailedDamageAssessment?.part_breakdown?.length ? (
-      <div className="overflow-x-auto">
-        <table className="min-w-full border-separate border-spacing-0 text-sm">
-          <thead>
-            <tr className="bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-foreground/60">
-              <th className="rounded-tl-lg px-4 py-3 pl-5 sm:pl-6">Part</th>
-              <th className="px-4 py-3">Damage</th>
-              <th className="px-4 py-3 text-right">Severity %</th>
-              <th className="px-4 py-3">Repair action</th>
-              <th className="rounded-tr-lg px-4 py-3 pr-5 text-right sm:pr-6">
-                Est. amount
-              </th>
-            </tr>
-          </thead>
-          <tbody className="text-[13px]">
-            {detailedDamageAssessment.part_breakdown.map((item, index) => (
-              <tr
-                key={`${item.part_name}-${item.damage_type}-${index}`}
-                className={cn(
-                  "border-b border-border/30 transition-colors hover:bg-muted/15",
-                  index % 2 === 1 && "bg-muted/5"
-                )}
-              >
-                <td className="px-4 py-3 pl-5 font-semibold text-foreground sm:pl-6">
-                  {item.part_name}
-                </td>
-                <td className="max-w-[12rem] px-4 py-3 text-muted-foreground">
-                  {item.damage_type}
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums text-foreground/90">
-                  {item.severity_percent}%
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">
-                  {item.repair_action}
-                </td>
-                <td className="px-4 py-3 pr-5 text-right text-sm font-semibold tabular-nums text-foreground sm:pr-6">
-                  {formatClaimCurrency(item.estimated_amount)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    ) : (
-      <p className="px-5 py-4 text-sm text-muted-foreground sm:px-6">
-        No part-level damage breakdown is available yet for this claim.
-      </p>
-    );
+    shouldShowPartBreakdownTable(totalValueSummary, detailedDamageAssessment) ? (
+      <DamageAssessmentPartBreakdownTable rows={partBreakdownRowsForAssessment} />
+    ) : null;
 
   const activeFindingsSubtitle =
     activeAssessmentCard?.key === "image_authenticity"
@@ -1566,7 +1579,7 @@ export default function ClaimDetail() {
       title={fnol.complaint_id || r.claim_id || `FNOL-${fnol.id}`}
       subtitle={`${incidentType || "Claim"} - ${fnol.policy_holder_name || claimant.driver_name || "—"}`}
     >
-      <div className="space-y-6 animate-fade-in">
+      <div className="relative min-h-[14rem] space-y-6 animate-fade-in">
         {error && (
           <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
@@ -1579,6 +1592,16 @@ export default function ClaimDetail() {
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>Some insights are partial</AlertTitle>
             <AlertDescription>{assessmentInsightAlert}</AlertDescription>
+          </Alert>
+        )}
+        {brvManualReviewBanner && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Business Rule Validation Failed – Manual Review</AlertTitle>
+            <AlertDescription>
+              Business Rule Validation did not pass. Damage Assessment is locked until this claim is
+              reviewed.
+            </AlertDescription>
           </Alert>
         )}
 
@@ -1629,8 +1652,8 @@ export default function ClaimDetail() {
               </Button>
             ) : null}
 
-            {/* Business Rule Validation — hidden only when workflow is truly terminal */}
-            {showBrvDaHeaderButtons && !(fnol?.re_open === 1 && isReopenFlow) && (
+            {/* Business Rule Validation — run only when workflow_snapshot allows a first run */}
+            {showRunBrvButton && !(fnol?.re_open === 1 && isReopenFlow) && (
               <Button
                 variant={businessRuleButtonVariant}
                 onClick={handleFraudDetection}
@@ -1650,10 +1673,10 @@ export default function ClaimDetail() {
               </Button>
             )}
 
-            {/* Damage Assessment — same visibility as BRV; disabled until BRV passes */}
-            {showBrvDaHeaderButtons && (
+            {/* Damage Assessment — run only when snapshot unlocks DA and first run is pending */}
+            {showRunDamageAssessmentButton && damageAssessmentTabUnlocked && (
               <Button
-                variant={damageAssessmentButtonVariant}
+                variant="destructive"
                 onClick={handleDamageDetection}
                 disabled={damageDetectionLoading || !damageAssessmentState?.run_allowed}
                 title={daDisabledTooltip}
@@ -1771,7 +1794,7 @@ export default function ClaimDetail() {
           {/* Main Content */}
           <div className="min-w-0 space-y-8">
             {/* Two-column overview cards: Fraud Evaluation (red if fraud, green otherwise) + AI Assessment */}
-            {(showBusinessRuleValidationTab || showDamageAssessmentExperience) && (
+            {(showBusinessRuleValidationTab || showDamageAssessmentResultsPanel) && (
               <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-[repeat(auto-fit,minmax(15rem,1fr))]">
                 {/* Column 1: Fraud Evaluation – red when fraud detected, green otherwise */}
 
@@ -1798,7 +1821,7 @@ export default function ClaimDetail() {
                   </CardContent>
                 </Card>
                 {/* Column 2: AI Assessment – visible only after Damage Detection is run */}
-                {showDamageAssessmentExperience && (
+                {showDamageAssessmentResultsPanel && (
                   <Card className="card-elevated">
                     <CardContent className="p-4">
                       <div className="flex items-center gap-3">
@@ -1857,8 +1880,17 @@ export default function ClaimDetail() {
                     </CardContent>
                   </Card>
                 )}
-                {imageRiskSummaryBlock?.summary_card ? (
-                  <ClaimImageRiskSummaryCard imageRiskSummary={imageRiskSummaryBlock} />
+                {showDamageAssessmentResultsPanel ? (
+                  <ClaimImageRiskDuplicateWarnings
+                    imageFraudResults={imageFraudResults}
+                    duplicateCandidates={duplicateCandidates}
+                    imageRiskSummary={imageRiskSummaryBlock}
+                    blockingImageRiskCodes={
+                      decisionSummary?.signals?.blocking_image_risk_codes
+                    }
+                    insightsLoading={claimInsightsLoading}
+                    snapshotReady={Boolean(activeAssessmentSnapshot?.claimId === id)}
+                  />
                 ) : null}
                 {/* Claim Amount / Gross Repair Estimate ─ dynamic source priority:
                     DA gross estimate > DA parts total > BRV claim_amount > 0 */}
@@ -1883,8 +1915,8 @@ export default function ClaimDetail() {
             )}
 
             <ClaimTopInsightsStrip
-              imageRiskSummary={imageRiskSummaryBlock}
-              insights={topLevelInsights}
+              imageRiskSummary={null}
+              insights={topLevelInsightsForStrip}
             />
 
             {prioritizeAssessmentLayout ? (
@@ -1966,7 +1998,12 @@ export default function ClaimDetail() {
             ) : null}
 
             {/* Tabs */}
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full space-y-6">
+            <Tabs
+              key={claimDetailDataRevision}
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="w-full space-y-6"
+            >
               <TabsList className="h-12 w-full justify-start gap-2 overflow-x-auto rounded-xl border border-border/70 bg-muted/30 p-1.5 whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 <TabsTrigger className="shrink-0 rounded-lg px-4 py-2" value="details">
                   Claim Details
@@ -1982,7 +2019,15 @@ export default function ClaimDetail() {
                   </TabsTrigger>
                 )}
                 {showDamageAssessmentTab && (
-                  <TabsTrigger className="shrink-0 rounded-lg px-4 py-2" value="assessment">
+                  <TabsTrigger
+                    className={cn(
+                      "shrink-0 rounded-lg px-4 py-2",
+                      !damageAssessmentTabUnlocked && "pointer-events-none opacity-50"
+                    )}
+                    value="assessment"
+                    disabled={!damageAssessmentTabUnlocked}
+                    aria-disabled={!damageAssessmentTabUnlocked || undefined}
+                  >
                     Damage Assessment
                   </TabsTrigger>
                 )}
@@ -2297,7 +2342,19 @@ export default function ClaimDetail() {
 
               {showDamageAssessmentTab && (
                 <TabsContent value="assessment">
-                  {showDamageAssessmentExperience ? (
+                  {damageAssessmentIncompleteNoValuation ? (
+                    <Card className="card-elevated">
+                      <CardContent className="flex flex-col items-center justify-center gap-4 px-5 py-14 text-center sm:px-6">
+                        <AlertTriangle className="h-10 w-10 text-warning" />
+                        <div className="space-y-2">
+                          <p className="text-base font-semibold">Incomplete DA</p>
+                          <p className="max-w-md text-sm text-muted-foreground">
+                            No structural damage detected. Manual review required.
+                          </p>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ) : showDamageAssessmentResultsPanel ? (
                     <Card className="card-elevated">
                       <CardHeader>
                         <CardTitle className="text-base flex items-center gap-2">
@@ -2334,42 +2391,22 @@ export default function ClaimDetail() {
                                 </div>
                               </div>
                               <Progress value={aiConfidence} className="h-1.5" />
-                              {isFallbackConfidence || pipelineMetadata?.confidence_level ? (
+                              {pipelineMetadata?.confidence_level ? (
                                 <p className="text-xs leading-relaxed text-muted-foreground">
-                                  {pipelineMetadata?.confidence_level
-                                    ? `Analysis indicates ${formatConfidenceLabel(
-                                        pipelineMetadata.confidence_level
-                                      ).toLowerCase()} confidence.`
-                                    : "Standard review indicator until a detailed confidence score is returned."}
+                                  Analysis indicates{" "}
+                                  {formatConfidenceLabel(
+                                    pipelineMetadata.confidence_level
+                                  ).toLowerCase()}{" "}
+                                  confidence.
                                 </p>
                               ) : null}
                             </div>
 
-                            {totalValueSummary ? (
-                              <div className="flex flex-col justify-center rounded-lg bg-muted/15 px-3.5 py-3 text-sm text-muted-foreground lg:col-span-7">
-                                <span className="text-xs font-medium text-foreground/70">
-                                  Valuation
-                                </span>
-                                <p className="mt-1 leading-snug">
-                                  Excess{" "}
-                                  <span className="font-semibold text-foreground tabular-nums">
-                                    {formatClaimCurrency(totalValueSummary.excess_amount ?? 0)}
-                                  </span>
-                                  {totalValueSummary.excess_from_fnol != null ? (
-                                    <span> (from policy)</span>
-                                  ) : (
-                                    <span> (computed)</span>
-                                  )}
-                                  {" · "}
-                                  Net payable{" "}
-                                  <span className="font-semibold text-foreground tabular-nums">
-                                    {formatClaimCurrency(
-                                      totalValueSummary.net_payable ?? totalEstimate
-                                    )}
-                                  </span>
-                                </p>
-                              </div>
-                            ) : null}
+                            <DamageAssessmentFinancialSummary
+                              totalValue={totalValueSummary}
+                              insightsLoading={claimInsightsLoading}
+                              affectedPartsCount={partBreakdownRowsForAssessment.length}
+                            />
                           </div>
 
                           {shouldRenderAssessmentDecisionBanner ? (
@@ -2532,17 +2569,23 @@ export default function ClaimDetail() {
                                 <div className="mt-4">{renderImageAuthenticityPageCopy()}</div>
                               </div>
 
-                              <div className="overflow-hidden rounded-xl border border-border/45 bg-card/95 shadow-sm">
-                                <div className="border-b border-border/35 bg-muted/10 px-4 py-3 sm:px-5">
-                                  <p className="text-sm font-semibold text-foreground">
-                                    Damage breakdown by part
-                                  </p>
-                                  <p className="mt-0.5 text-xs text-muted-foreground">
-                                    Line-level repair actions and estimates.
-                                  </p>
+                              {shouldShowPartBreakdownTable(
+                                totalValueSummary,
+                                detailedDamageAssessment
+                              ) ? (
+                                <div className="overflow-hidden rounded-xl border border-border/45 bg-card/95 shadow-sm">
+                                  <div className="border-b border-border/35 bg-muted/10 px-4 py-3 sm:px-5">
+                                    <p className="text-sm font-semibold text-foreground">
+                                      Damage breakdown by part
+                                    </p>
+                                    <p className="mt-0.5 text-xs text-muted-foreground">
+                                      Line-level repair actions and estimates (totals from valuation
+                                      service).
+                                    </p>
+                                  </div>
+                                  {renderDamageBreakdownPageCopy()}
                                 </div>
-                                {renderDamageBreakdownPageCopy()}
-                              </div>
+                              ) : null}
                             </>
                           )}
                         </div>
@@ -2590,11 +2633,33 @@ export default function ClaimDetail() {
                           <Brain className="h-7 w-7 text-primary" />
                         </div>
                         <div className="space-y-1">
-                          <p className="text-base font-semibold">Damage Assessment not yet available</p>
+                          <p className="text-base font-semibold">Damage Assessment not yet run</p>
                           <p className="max-w-sm text-sm text-muted-foreground">
-                            This tab appears only after a completed, persisted damage assessment is available for this claim.
+                            Run Damage Assessment from the button below or in the page header when Business Rule
+                            Validation has passed and the workflow unlocks this step.
                           </p>
                         </div>
+                        {showRunDamageAssessmentButton && damageAssessmentTabUnlocked ? (
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            onClick={handleDamageDetection}
+                            disabled={damageDetectionLoading || !damageAssessmentState?.run_allowed}
+                            title={daDisabledTooltip}
+                          >
+                            {damageDetectionLoading ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Assessing...
+                              </>
+                            ) : (
+                              <>
+                                <Brain className="mr-2 h-4 w-4" />
+                                {damageAssessmentActionLabel}
+                              </>
+                            )}
+                          </Button>
+                        ) : null}
                       </CardContent>
                     </Card>
                   )}
@@ -2616,44 +2681,7 @@ export default function ClaimDetail() {
                             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                           </div>
                         ) : activeClaimEvaluation ? (
-                          <div className="space-y-6">
-                            <div className="grid gap-4 sm:grid-cols-2">
-                              {activeClaimEvaluation.claim_complexity && (
-                                <div className="rounded-lg border p-4">
-                                  <p className="text-xs text-muted-foreground">Claim Type</p>
-                                  <p className="text-sm font-medium mt-1">
-                                    {activeClaimEvaluation.claim_complexity}
-                                  </p>
-                                </div>
-                              )}
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Conclusion</p>
-                                <p className="text-sm font-medium mt-1 capitalize">{activeClaimEvaluation.decision ?? "—"}</p>
-                              </div>
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Claim Amount</p>
-                                <p className="text-sm font-medium mt-1">
-                                  {formatOptionalClaimCurrency(activeClaimEvaluation.claim_amount)}
-                                </p>
-                              </div>
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Excess Amount</p>
-                                <p className="text-sm font-medium mt-1">
-                                  {formatOptionalClaimCurrency(activeClaimEvaluation.excess_amount)}
-                                </p>
-                              </div>
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Estimated Repair</p>
-                                <p className="text-sm font-medium mt-1">
-                                  {formatOptionalClaimCurrency(activeClaimEvaluation.estimated_repair)}
-                                </p>
-                              </div>
-                              <div className="rounded-lg border p-4">
-                                <p className="text-xs text-muted-foreground">Threshold Value</p>
-                                <p className="text-sm font-medium mt-1">{activeClaimEvaluation.threshold_value ?? "—"}</p>
-                              </div>
-                            </div>
-                          </div>
+                          <ClaimEvaluationTabContent evaluation={activeClaimEvaluation} />
                         ) : (
                           <p className="text-sm text-muted-foreground py-8 text-center">
                             No evaluation data found for this claim.

@@ -288,6 +288,7 @@ export async function attachDamageAssessmentE2eMocks(page: Page) {
         damage_confidence: 80,
         estimated_amount: 1500,
         claim_amount: 1400,
+        net_payable: 1400,
         excess_amount: 100,
         estimated_repair: 1400,
         threshold_value: 55,

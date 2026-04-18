@@ -29,6 +29,7 @@ import {
   getDamageAssessmentCardDetails,
   refreshDamageAssessmentCard,
 } from "@/lib/api";
+import { claimScopedQueryDefaults } from "@/lib/claimScopedCache";
 import {
   DAMAGE_ASSESSMENT_CARD_SURFACE_METRIC_COUNT,
   DAMAGE_ASSESSMENT_EVIDENCE_REPEAT_TYPES,
@@ -824,8 +825,7 @@ export function DamageAssessmentDetailsDrawer({
     queryFn: () =>
       getDamageAssessmentCardDetails(complaintId, cardKey as string),
     enabled,
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
+    ...claimScopedQueryDefaults,
   });
 
   const refreshMutation = useMutation({
