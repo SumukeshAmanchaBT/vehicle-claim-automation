@@ -50,6 +50,7 @@ from .models import (
     InvoiceCoreDetails,
     PricingConfig,
 )
+from .workflow_display import claim_status_implies_recommendation_terminal
 from .workflow_state import (
     build_claim_workflow_snapshot,
     build_claim_workflow_snapshot_for_list,
@@ -2266,6 +2267,84 @@ _CLAIM_TYPE_SEVERITY: dict[str, str] = {
     "COMPLEX": "severe",
 }
 
+
+def _pdf_llm_damage_tag_list(evaluation) -> list[str]:
+    """Parse persisted `llm_damages` as a list of display strings (strings or dicts with damage_type)."""
+    if not evaluation:
+        return []
+    raw = evaluation.llm_damages
+    if raw in (None, "", []):
+        return []
+    if isinstance(raw, str) and not str(raw).strip():
+        return []
+    damages = None
+    if raw:
+        try:
+            damages = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            damages = None
+    if not damages or not isinstance(damages, list):
+        return []
+    tags: list[str] = []
+    for x in damages:
+        if isinstance(x, str) and str(x).strip():
+            tags.append(str(x).strip())
+        elif isinstance(x, dict):
+            dt = str(x.get("damage_type") or "").strip()
+            if dt:
+                tags.append(dt)
+    return tags
+
+
+def _pdf_part_row_damage_tag_list(part_rows) -> list[str]:
+    """Unique damage_type labels from persisted part-level DA rows (order preserved)."""
+    if not part_rows:
+        return []
+    seen_lower: set[str] = set()
+    ordered: list[str] = []
+    for row in part_rows:
+        dt = (getattr(row, "damage_type", None) or "").strip()
+        if not dt:
+            continue
+        low = dt.lower()
+        if low in ("none", "—", "-", "n/a"):
+            continue
+        if low in seen_lower:
+            continue
+        seen_lower.add(low)
+        ordered.append(dt)
+    return ordered
+
+
+def _pdf_damages_detected_str(evaluation, part_rows=None) -> str:
+    """
+    Match Claim Detail: prefer `llm_damages`; if empty, same labels as the UI fallback
+    from persisted part rows (`DamagePartAssessment.damage_type`).
+    """
+    no_tags = "No structured damage tags were returned."
+    llm_tags = _pdf_llm_damage_tag_list(evaluation)
+    if llm_tags:
+        return ", ".join(llm_tags)
+    part_tags = _pdf_part_row_damage_tag_list(part_rows or [])
+    if part_tags:
+        return ", ".join(part_tags)
+    return no_tags
+
+
+def _pdf_damage_severity_str(evaluation) -> str:
+    """
+    Match `get_claim_evaluation` / Claim Detail: claim_type → minor|moderate|severe,
+    then fall back to `llm_severity` (same order as UI `severity ?? llm_severity`).
+    """
+    if not evaluation:
+        return "—"
+    claim_type_upper = (evaluation.claim_type or "").strip().upper()
+    raw = _CLAIM_TYPE_SEVERITY.get(claim_type_upper) or (evaluation.llm_severity or "").strip() or None
+    if not raw:
+        return "—"
+    return str(raw).strip().capitalize()
+
+
 # Report brand colors (blue and orange)
 _REPORT_BLUE = colors.HexColor("#00205B")
 _REPORT_ORANGE = colors.HexColor("#E87722")
@@ -2528,21 +2607,8 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     story.append(KeepTogether([_section_heading("5. Media Trust & Duplicate Review", use_orange=True), t5, _sp()]))
 
     # ----- 6. Damage Assessment & Part-Level Breakdown -----
-    llm_d = evaluation.llm_damages if evaluation else None
-    damages_str = "—"
-    if llm_d:
-        try:
-            damages = json.loads(llm_d) if isinstance(llm_d, str) else llm_d
-            if isinstance(damages, list):
-                parts = [
-                    d.get("damage_type", str(d)) if isinstance(d, dict) else str(d)
-                    for d in damages if d
-                ]
-                damages_str = ", ".join(parts) if parts else "—"
-            else:
-                damages_str = str(llm_d)
-        except (TypeError, json.JSONDecodeError):
-            damages_str = str(llm_d)
+    damages_str = _pdf_damages_detected_str(evaluation, part_rows)
+    severity_str = _pdf_damage_severity_str(evaluation)
 
     currency_code = (
         valuation.currency_code
@@ -2567,13 +2633,19 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     damage_summary_rows = [
         ["Damage Confidence (%)", str(evaluation.damage_confidence or 0) if evaluation else "—"],
         ["Damages Detected", damages_str],
-        ["Damage Severity", evaluation.llm_severity if evaluation and evaluation.llm_severity else "—"],
+        ["Damage Severity", severity_str],
         ["Part Rows", str(len(part_rows))],
         ["Line-item Total", f"{part_total:,.2f} {currency_code}" if part_rows else "—"],
     ]
     t6_summary = _table_style_header_blue([["Item", "Value"]] + damage_summary_rows)
     story.append(KeepTogether([_section_heading("6. Damage Assessment & Part-Level Breakdown"), t6_summary]))
     story.append(Spacer(1, 0.12 * inch))
+
+    # Same total width as Item/Value tables (2.5" + 4.0") so section 6 blocks align visually.
+    _part_table_total_w = _REPORT_TABLE_FIRST_COL + _REPORT_TABLE_SECOND_COL
+    _part_col_fracs = [1.55, 1.2, 0.85, 1.45, 1.15]
+    _part_col_sum = sum(_part_col_fracs)
+    part_col_widths = [_part_table_total_w * (f / _part_col_sum) for f in _part_col_fracs]
 
     if part_rows:
         part_table_rows = [
@@ -2595,8 +2667,8 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
             )
         t6_parts = _table_style_header_blue(
             part_table_rows,
-            col_widths=[1.55 * inch, 1.2 * inch, 0.85 * inch, 1.45 * inch, 1.15 * inch],
-            row_height=30,
+            col_widths=part_col_widths,
+            row_height=_REPORT_TABLE_ROW_HEIGHT,
         )
     else:
         t6_parts = _table_style_header_blue(
@@ -2610,8 +2682,8 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
                 ],
                 ["No part-level damage rows saved", "—", "—", "—", "—"],
             ],
-            col_widths=[1.55 * inch, 1.2 * inch, 0.85 * inch, 1.45 * inch, 1.15 * inch],
-            row_height=30,
+            col_widths=part_col_widths,
+            row_height=_REPORT_TABLE_ROW_HEIGHT,
         )
     story.append(t6_parts)
     story.append(_sp())
@@ -2671,26 +2743,44 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
 def recommendation_report_pdf(request, complaint_id: str):
     """
     Generate and return MOTOR CLAIM RECOMMENDATION REPORT as PDF.
-    Available when claim status is Recommendation shared.
+    Available when the claim has completed persisted damage assessment (and/or) reached
+    the recommendation phase — aligned with the React "Generate Recommendation Report" gate,
+    not only the literal human-readable string "Recommendation shared".
     Contains: business-rule validation, media trust and duplicate evidence, part-level damage
     breakdown, valuation summary, and final recommendation.
     """
     claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
-    evaluation = (
-        ClaimEvaluationResponse.objects.filter(complaint_id=complaint_id)
-        .order_by("-created_date")
-        .first()
-    )
-    status_name = effective_claim_status(claim, evaluation)
-    if status_name.lower() != "recommendation shared":
-        return Response(
-            {"detail": "Recommendation report is only available for claims with status 'Recommendation shared'."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    evaluation = ClaimEvaluationResponse.objects.filter(
+        complaint_id=complaint_id,
+        is_latest=True,
+    ).first()
     if not evaluation:
         return Response(
             {"detail": "No evaluation found for this claim."},
             status=status.HTTP_404_NOT_FOUND,
+        )
+    status_name = effective_claim_status(claim, evaluation)
+    status_norm = " ".join((status_name or "").strip().lower().split())
+    workflow_state = compute_claim_workflow_state(complaint_id)
+    pdf_allowed = (
+        workflow_state in ("DAMAGE_ASSESSMENT_COMPLETED", "RECOMMENDATION_SHARED")
+        or status_norm == "recommendation shared"
+        or status_norm in ("closed damage detection", "closed_damage_detection")
+        or claim_status_implies_recommendation_terminal(status_name)
+        or claim_status_implies_recommendation_terminal(
+            (evaluation.claim_status or "").strip()
+        )
+    )
+    if not pdf_allowed:
+        return Response(
+            {
+                "detail": (
+                    "Recommendation report is only available after damage assessment "
+                    "has produced persisted results and the claim has reached the recommendation "
+                    "phase (or equivalent terminal status)."
+                ),
+            },
+            status=status.HTTP_403_FORBIDDEN,
         )
     raw_response = _fnol_claim_to_raw_response(claim)
     fraud_result = _run_process_claim_logic(raw_response)

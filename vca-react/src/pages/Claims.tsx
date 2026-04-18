@@ -183,7 +183,7 @@ export default function Claims() {
   const [sortKey, setSortKey] = useState<ClaimSortKey | null>("date");
   const [sortDir, setSortDir] = useState<SortDirection>("desc");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(10);
 
   const loadClaims = useCallback(
     async ({
@@ -764,7 +764,7 @@ export default function Claims() {
                                   openDeleteDialog([claim.id]);
                                 }}
                               >
-                                <Trash2 className="h-4 w-4" />
+                                <Trash2 className="h-4 w-4 text-destructive" />
                               </Button>
                               <Button variant="ghost" size="icon" asChild>
                                 <Link to={`/claims/${claim.id}`} title="View claim">

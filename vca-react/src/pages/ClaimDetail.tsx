@@ -328,6 +328,41 @@ function normalizeSummaryCopy(value?: string | null) {
   return (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/** Tags from evaluation `llm_damages` (strings or `{ damage_type }` objects). */
+function normalizeStructuredDamageTags(llmDamages: unknown): string[] {
+  if (!Array.isArray(llmDamages) || llmDamages.length === 0) return [];
+  const out: string[] = [];
+  for (const item of llmDamages) {
+    if (typeof item === "string") {
+      const t = item.trim();
+      if (t) out.push(t);
+    } else if (item && typeof item === "object") {
+      const dt = String((item as { damage_type?: unknown }).damage_type ?? "").trim();
+      if (dt) out.push(dt);
+    }
+  }
+  return out;
+}
+
+/** When LLM did not persist tags, derive readable damage types from DA part lines. */
+function damageTagsFromPartBreakdown(
+  rows: Array<{ damage_type?: string | null }> | null | undefined
+): string[] {
+  if (!rows?.length) return [];
+  const seenLower = new Set<string>();
+  const tags: string[] = [];
+  for (const row of rows) {
+    const dt = (row.damage_type ?? "").trim();
+    if (!dt) continue;
+    const key = dt.toLowerCase();
+    if (key === "none" || key === "—" || key === "-" || key === "n/a") continue;
+    if (seenLower.has(key)) continue;
+    seenLower.add(key);
+    tags.push(dt);
+  }
+  return tags;
+}
+
 export default function ClaimDetail() {
   const queryClient = useQueryClient();
   const { id } = useParams<{ id: string }>();
@@ -447,6 +482,12 @@ export default function ClaimDetail() {
   const detailedDamageAssessment =
     activeAssessmentSnapshot?.detailedDamageAssessment ?? null;
   const totalValueSummary = activeAssessmentSnapshot?.totalValueSummary ?? null;
+
+  const displayDamageTags = useMemo(() => {
+    const fromLlm = normalizeStructuredDamageTags(activeClaimEvaluation?.llm_damages);
+    if (fromLlm.length > 0) return fromLlm;
+    return damageTagsFromPartBreakdown(detailedDamageAssessment?.part_breakdown);
+  }, [activeClaimEvaluation?.llm_damages, detailedDamageAssessment?.part_breakdown]);
 
   useEffect(() => {
     activeClaimIdRef.current = id ?? null;
@@ -2464,12 +2505,11 @@ export default function ClaimDetail() {
                               <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground/55">
                                 Damages detected
                               </p>
-                              {activeClaimEvaluation?.llm_damages &&
-                              activeClaimEvaluation.llm_damages.length > 0 ? (
+                              {displayDamageTags.length > 0 ? (
                                 <div className="mt-2 flex flex-wrap gap-1.5">
-                                  {activeClaimEvaluation.llm_damages.map((damage) => (
+                                  {displayDamageTags.map((damage, idx) => (
                                     <span
-                                      key={damage}
+                                      key={`${damage}-${idx}`}
                                       className="rounded-full bg-secondary/90 px-2.5 py-0.5 text-xs font-medium text-foreground"
                                     >
                                       {damage}
