@@ -421,6 +421,70 @@ def compute_composite_fraud_score(
     return Decimal(str(round(composite, 2)))
 
 
+# Authenticity label codes that are definitive fraud signals.
+# Kept in sync with claims.authenticity_classification._DEFINITIVE_RISK_CODES
+# but defined locally to avoid circular imports.
+_FRAUD_DEFINITIVE_LABEL_CODES: frozenset[str] = frozenset(
+    {"ai_generated", "stock_internet_sourced", "edited", "staged", "needs_review"}
+)
+# Codes that are soft / contextual signals (not definitive fraud evidence).
+_FRAUD_SOFT_LABEL_CODES: frozenset[str] = frozenset({"under_review", "metadata_stripped"})
+
+
+def boost_fraud_score_from_labels(
+    base_score: Decimal | float,
+    label_codes: list[str],
+) -> Decimal:
+    """
+    Apply evidence-based boosts to a per-image fraud score based on synthesized
+    authenticity label codes.
+
+    Boost amounts and caps are config-driven via PricingConfig:
+      - ``FRAUD_BOOST_DEFINITIVE_LABEL``: points added per definitive-risk label
+        (ai_generated, stock_internet_sourced, edited, staged, needs_review).
+        Default 15.0.
+      - ``FRAUD_BOOST_SOFT_LABEL``: points added per soft/contextual label
+        (under_review, metadata_stripped). Default 5.0.
+      - ``FRAUD_BOOST_LABEL_CAP``: maximum total boost from all label signals.
+        Default 30.0.
+
+    Returns a Decimal score capped at 100.
+    """
+    if not label_codes:
+        return Decimal(str(round(float(base_score), 2)))
+
+    try:
+        from claims.models import PricingConfig  # noqa: PLC0415
+
+        def _cfg_float(key: str, default: float) -> float:
+            row = PricingConfig.objects.filter(config_key=key, is_active=True).first()
+            if not row or not str(row.config_value).strip():
+                return default
+            try:
+                return float(Decimal(str(row.config_value).strip()))
+            except Exception:
+                return default
+
+        boost_definitive = _cfg_float("FRAUD_BOOST_DEFINITIVE_LABEL", 15.0)
+        boost_soft = _cfg_float("FRAUD_BOOST_SOFT_LABEL", 5.0)
+        label_boost_cap = _cfg_float("FRAUD_BOOST_LABEL_CAP", 30.0)
+    except Exception:
+        boost_definitive = 15.0
+        boost_soft = 5.0
+        label_boost_cap = 30.0
+
+    total_boost = 0.0
+    for code in label_codes:
+        if code in _FRAUD_DEFINITIVE_LABEL_CODES:
+            total_boost += boost_definitive
+        elif code in _FRAUD_SOFT_LABEL_CODES:
+            total_boost += boost_soft
+
+    total_boost = min(total_boost, label_boost_cap)
+    boosted = min(100.0, float(base_score) + total_boost)
+    return Decimal(str(round(boosted, 2)))
+
+
 def analyze_image_fraud(image_path: str) -> dict:
     """
     Complete fraud analysis pipeline for a single image.

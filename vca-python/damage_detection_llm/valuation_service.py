@@ -232,13 +232,22 @@ def calculate_claim_valuation(
     return result
 
 
-def save_valuation_summary(complaint_id: str, valuation_data: dict) -> bool:
+def save_valuation_summary(
+    complaint_id: str,
+    valuation_data: dict,
+    persist_sentinel: bool = True,
+) -> bool:
     """
     Save valuation results to the claim valuation snapshot and update ClaimEvaluationResponse.
 
     Args:
-        complaint_id: The claim ID
-        valuation_data: Dict from calculate_claim_valuation
+        complaint_id:     The claim ID
+        valuation_data:   Dict from calculate_claim_valuation
+        persist_sentinel: When True (default) and valuation has no meaningful output,
+                          upsert a zero sentinel row so workflow_state can detect that
+                          DA ran but found nothing.  Pass False from GET-only paths
+                          (e.g. run_full_valuation) so that a sentinel is not created
+                          before any DA has actually been executed.
 
     Returns:
         True if saved successfully
@@ -251,7 +260,21 @@ def save_valuation_summary(complaint_id: str, valuation_data: dict) -> bool:
             return False
 
         if not _valuation_has_meaningful_output(valuation_data):
-            ClaimPhase1Valuation.objects.filter(complaint=claim).delete()
+            if persist_sentinel:
+                # Upsert a zero sentinel row so that workflow_state can detect "DA ran
+                # but produced no meaningful financial output" via has_current_da_artifact.
+                # This avoids the UI incorrectly showing "Damage Assessment not yet run"
+                # when DA completed but found no priced parts (e.g. LLM unavailability).
+                ClaimPhase1Valuation.objects.update_or_create(
+                    complaint=claim,
+                    defaults={
+                        "gross_estimate": Decimal("0.00"),
+                        "excess_amount": Decimal("0.00"),
+                        "net_payable": Decimal("0.00"),
+                        "currency_code": valuation_data.get("currency_code", DEFAULT_CURRENCY),
+                        "breakdown_json": valuation_data.get("breakdown") or [],
+                    },
+                )
             return True
 
         valuation, created = ClaimPhase1Valuation.objects.update_or_create(
@@ -296,7 +319,7 @@ def run_full_valuation(complaint_id: str) -> dict:
     valuation = calculate_claim_valuation(complaint_id, apply_excess=True)
 
     # Persist results
-    save_valuation_summary(complaint_id, valuation)
+    save_valuation_summary(complaint_id, valuation, persist_sentinel=False)
 
     # Convert Decimal to float for JSON serialization
     return {

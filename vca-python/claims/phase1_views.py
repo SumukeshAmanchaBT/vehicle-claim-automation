@@ -27,11 +27,15 @@ from claims.models import (
 )
 from claims.decisioning import sync_claim_evaluation_decision_state
 from claims.phase1_runtime import get_claim_market_context
-from claims.authenticity_classification import classify_image_authenticity_labels
+from claims.authenticity_classification import (
+    classify_image_authenticity_labels,
+    synthesize_image_authenticity_labels,
+)
 from claims.reviewer_safe import sanitize_reviewer_llm_notes
 from claims.workflow_state import current_lifecycle_started_at
 from damage_detection_llm.image_fraud_service import (
     analyze_image_fraud,
+    boost_fraud_score_from_labels,
     check_image_reuse,
     get_duplicate_detection_settings,
     persist_duplicate_candidates,
@@ -325,6 +329,22 @@ def image_fraud_analysis(request, complaint_id: str):
                         complaint_id=claim.complaint_id,
                         photo_path=photo_path,
                     )
+                    # Synthesize authenticity labels once at analysis time.
+                    # Results are stored in signals_json so subsequent serialisation
+                    # calls return them directly without re-running any LLM.
+                    synthesized_labels = synthesize_image_authenticity_labels(
+                        exif_json=_json_safe(fraud_result["exif_data"]),
+                        llm_notes=reviewer_safe_reasoning,
+                        fraud_score=float(fraud_result["fraud_score"]),
+                        ela_score=fraud_result["ela_score"],
+                    )
+                    # Apply evidence-based label boosts so strong authenticity
+                    # signals (stock, ai_generated, edited, staged) are
+                    # reflected in the stored fraud score, not just in labels.
+                    label_codes = [item["code"] for item in synthesized_labels]
+                    boosted_fraud_score = boost_fraud_score_from_labels(
+                        fraud_result["fraud_score"], label_codes
+                    )
                     saved_result = ImageFraudResult.objects.create(
                         complaint=claim,
                         damage_photo=photo,
@@ -335,10 +355,11 @@ def image_fraud_analysis(request, complaint_id: str):
                         a_hash=fraud_result["a_hash"],
                         exif_json=_json_safe(fraud_result["exif_data"]),
                         ela_score=_json_safe(fraud_result["ela_score"]),
-                        fraud_score=fraud_result["fraud_score"],
+                        fraud_score=boosted_fraud_score,
                         signals_json=_json_safe({
                             "ela_score": fraud_result["ela_score"],
                             "exif_warnings": fraud_result["exif_data"].get("warnings", []),
+                            "synthesized_labels": synthesized_labels,
                         }),
                         llm_authenticity_notes=reviewer_safe_reasoning,
                     )
@@ -388,7 +409,7 @@ def image_fraud_analysis(request, complaint_id: str):
                         _image_fraud_result_payload(
                             result_id=saved_result.id,
                             photo_path=photo_path,
-                            fraud_score=fraud_result["fraud_score"],
+                            fraud_score=boosted_fraud_score,
                             ela_score=fraud_result["ela_score"],
                             p_hash=fraud_result["p_hash"],
                             d_hash=fraud_result["d_hash"],
@@ -602,6 +623,7 @@ def damage_assessment_detailed(request, complaint_id: str):
                         image_path=disk_path,
                         complaint_id=complaint_id,
                         incident_description=claim.incident_description,
+                        incident_type=getattr(claim, "incident_type", None),
                         flood_coverage=getattr(claim, "flood_coverage", False),
                         image_url=photo_path,
                         persist_claim_rows=False,

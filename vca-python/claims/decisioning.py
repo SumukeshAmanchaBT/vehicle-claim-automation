@@ -58,10 +58,17 @@ _IMAGE_RISK_CATEGORY_META = {
         "source": "image_fraud_results.authenticity_labels",
     },
     "staged": {
-        "label": "Likely staged",
-        "title": "Staged image suspected",
+        "label": "Staged",
+        "title": "Staged scene suspected",
         "tone": "rose",
         "severity": "critical",
+        "source": "image_fraud_results.authenticity_labels",
+    },
+    "under_review": {
+        "label": "Under review",
+        "title": "Authenticity signals are contradictory — reviewer verification required",
+        "tone": "yellow",
+        "severity": "warning",
         "source": "image_fraud_results.authenticity_labels",
     },
     "metadata_stripped": {
@@ -79,7 +86,7 @@ _IMAGE_RISK_CATEGORY_META = {
         "source": "image_fraud_results.authenticity_labels",
     },
     "genuine": {
-        "label": "Likely genuine",
+        "label": "Genuine",
         "title": "Image authenticity signals appear genuine",
         "tone": "green",
         "severity": "success",
@@ -103,8 +110,9 @@ _INSIGHT_PRIORITY_ORDER = {
     "stock_internet_sourced": 3,
     "staged": 4,
     "metadata_stripped": 5,
-    "needs_review": 6,
-    "image_authenticity_review_required": 7,
+    "under_review": 6,
+    "needs_review": 7,
+    "image_authenticity_review_required": 8,
     "business_rule_validation_failed": 8,
     "business_rule_high_fraud_band": 9,
     "severity_requires_manual_review": 10,
@@ -707,6 +715,18 @@ def build_claim_decision_summary(
         if row.fraud_score is not None
     ]
     max_image_fraud_score = max(fraud_scores) if fraud_scores else None
+
+    # Apply cross-claim duplicate boost to the claim-level composite fraud score.
+    # Duplicate candidates are a claim-level signal; per-image scores only reflect
+    # per-image signals, so the boost is applied here rather than to individual rows.
+    # Config keys (PricingConfig): FRAUD_BOOST_PER_DUPLICATE (default 4.0),
+    # FRAUD_BOOST_DUPLICATE_CAP (default 20.0).
+    if max_image_fraud_score is not None and duplicate_count > 0:
+        boost_per_dup = get_pricing_config_float("FRAUD_BOOST_PER_DUPLICATE", 4.0)
+        dup_boost_cap = get_pricing_config_float("FRAUD_BOOST_DUPLICATE_CAP", 20.0)
+        duplicate_boost = min(duplicate_count * boost_per_dup, dup_boost_cap)
+        max_image_fraud_score = min(100.0, max_image_fraud_score + duplicate_boost)
+
     high_risk_image_count = sum(
         1
         for score in fraud_scores

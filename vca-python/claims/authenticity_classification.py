@@ -7,17 +7,27 @@ This is intentionally heuristic and grounded only on stored signals:
 - fraud / ELA scores
 
 It does not claim forensic certainty; labels are UI-facing review aids.
+
+For new fraud analyses, call ``synthesize_image_authenticity_labels`` which
+optionally invokes a lightweight 4o-mini text adjudication step when
+contradictory signals are detected. The resolved labels are then stored in
+``ImageFraudResult.signals_json["synthesized_labels"]`` and returned directly
+by ``classify_image_authenticity_labels`` on subsequent serialisation calls.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 LABELS: dict[str, dict[str, str]] = {
     "genuine": {
         "code": "genuine",
-        "label": "Likely genuine",
+        "label": "Genuine",
         "tone": "green",
     },
     "edited": {
@@ -42,7 +52,7 @@ LABELS: dict[str, dict[str, str]] = {
     },
     "staged": {
         "code": "staged",
-        "label": "Likely staged",
+        "label": "Staged",
         "tone": "rose",
     },
     "needs_review": {
@@ -50,7 +60,18 @@ LABELS: dict[str, dict[str, str]] = {
         "label": "Needs review",
         "tone": "yellow",
     },
+    "under_review": {
+        "code": "under_review",
+        "label": "Under review",
+        "tone": "yellow",
+    },
 }
+
+# Codes that are mutually contradictory with "genuine" — having any one of these
+# alongside genuine indicates the genuine classification is not credible.
+_DEFINITIVE_RISK_CODES: frozenset[str] = frozenset(
+    {"ai_generated", "stock_internet_sourced", "edited", "staged", "needs_review"}
+)
 
 _AI_GENERATED_RE = re.compile(
     r"\b(ai[- ]generated|synthetic|computer[- ]generated|cgi|rendered|midjourney|dall[ -]?e|stable diffusion)\b",
@@ -104,7 +125,26 @@ def _add_label(out: list[dict[str, str]], code: str) -> None:
     out.append(dict(LABELS[code]))
 
 
-def classify_image_authenticity_labels(
+def _resolve_contradictions(labels: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Replace ``genuine`` with ``under_review`` when definitive risk codes are also
+    present.  A genuine classification is not credible alongside strong risk
+    signals such as stock/staged/edited/ai_generated or a high-score needs_review.
+    ``metadata_stripped`` alone (missing EXIF) is not treated as a contradiction
+    because real damage photos can lack EXIF data.
+    """
+    codes = {item["code"] for item in labels}
+    if "genuine" not in codes:
+        return labels
+    risk_codes_present = codes & _DEFINITIVE_RISK_CODES
+    if not risk_codes_present:
+        return labels
+    resolved = [item for item in labels if item["code"] != "genuine"]
+    _add_label(resolved, "under_review")
+    return resolved
+
+
+def _classify_raw(
     *,
     exif_json: dict[str, Any] | None,
     llm_notes: str | None,
@@ -113,23 +153,25 @@ def classify_image_authenticity_labels(
     signals_json: dict[str, Any] | None = None,
 ) -> list[dict[str, str]]:
     """
-    Return ordered authenticity labels for one image fraud result row.
-
-    Labels are additive because one image can be both likely genuine and
-    metadata-stripped, or both stock-like and staged.
+    Pure deterministic signal-to-label mapping, without pre-synthesised lookup or
+    contradiction resolution.  Internal helper shared by
+    ``classify_image_authenticity_labels`` and ``synthesize_image_authenticity_labels``.
     """
-
     warnings = _warnings(exif_json)
     software = _normalize_text((exif_json or {}).get("software"))
     llm_notes_text = _normalize_text(llm_notes)
-    signal_blob = _normalize_text(signals_json) if signals_json else ""
+    # Exclude synthesized_labels key from text blob to avoid false regex matches.
+    signal_text_parts: list[str] = []
+    if isinstance(signals_json, dict):
+        safe_signals = {k: v for k, v in signals_json.items() if k != "synthesized_labels"}
+        signal_text_parts.append(_normalize_text(safe_signals) if safe_signals else "")
     exif_present = None
     if isinstance(exif_json, dict) and "exif_present" in exif_json:
         exif_present = bool(exif_json.get("exif_present"))
 
     combined_text = " ".join(
         segment
-        for segment in [llm_notes_text, software, signal_blob, *warnings]
+        for segment in [llm_notes_text, software, *signal_text_parts, *warnings]
         if segment
     )
 
@@ -173,16 +215,198 @@ def classify_image_authenticity_labels(
         and fraud >= 60.0
         and not any(item["code"] == "needs_review" for item in labels)
         and not any(
-            item["code"]
-            in {
-                "ai_generated",
-                "stock_internet_sourced",
-                "edited",
-                "staged",
-            }
+            item["code"] in {"ai_generated", "stock_internet_sourced", "edited", "staged"}
             for item in labels
         )
     ):
         _add_label(labels, "needs_review")
 
     return labels
+
+
+def classify_image_authenticity_labels(
+    *,
+    exif_json: dict[str, Any] | None,
+    llm_notes: str | None,
+    fraud_score: float | int | None,
+    ela_score: float | int | None,
+    signals_json: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """
+    Return ordered authenticity labels for one image fraud result row.
+
+    When ``signals_json`` contains a ``synthesized_labels`` key (written at
+    analysis time by ``synthesize_image_authenticity_labels``), those labels are
+    returned directly — the LLM adjudication result is already persisted.
+
+    For legacy rows without that key the deterministic pipeline runs and
+    ``_resolve_contradictions`` ensures no contradictory label pairs are emitted.
+    """
+    # Fast path: pre-synthesised labels stored at analysis time.
+    if isinstance(signals_json, dict):
+        pre = signals_json.get("synthesized_labels")
+        if isinstance(pre, list) and pre:
+            return pre
+
+    labels = _classify_raw(
+        exif_json=exif_json,
+        llm_notes=llm_notes,
+        fraud_score=fraud_score,
+        ela_score=ela_score,
+        signals_json=signals_json,
+    )
+    return _resolve_contradictions(labels)
+
+
+# ---------------------------------------------------------------------------
+# Optional 4o-mini adjudication for contradictory signal combos
+# ---------------------------------------------------------------------------
+
+_VALID_LABEL_CODES = frozenset(LABELS.keys())
+
+_ADJUDICATION_SYSTEM_PROMPT = (
+    "You are an insurance image fraud signal adjudicator. "
+    "Given structured per-image analysis signals, determine the most accurate set "
+    "of authenticity label codes. "
+    "Valid codes: genuine, ai_generated, edited, stock_internet_sourced, "
+    "metadata_stripped, staged, under_review, needs_review. "
+    "Rules: "
+    "1. Do NOT include 'genuine' alongside ai_generated, stock_internet_sourced, "
+    "edited, or staged — these are mutually contradictory. "
+    "2. Use 'under_review' when evidence is mixed or insufficient for a definitive "
+    "risk classification. "
+    "3. Only include labels directly supported by the signals provided. "
+    "4. Do not invent new risk signals not present in the input. "
+    "Respond ONLY with valid JSON: "
+    '{"final_labels": ["code1", ...], "reasoning": "one sentence"}'
+)
+
+
+def _adjudicate_authenticity_with_llm(
+    *,
+    raw_labels: list[dict[str, str]],
+    exif_json: dict[str, Any] | None,
+    llm_notes: str | None,
+    fraud_score: float | int | None,
+    ela_score: float | int | None,
+) -> list[dict[str, str]] | None:
+    """
+    Invoke the lightweight (4o-mini / ``profile='light'``) model to resolve
+    contradictory authenticity signals.  Returns a resolved label list, or
+    ``None`` if the call fails or is not configured.
+
+    This is a text-only call — no image data is transmitted.
+    """
+    try:
+        from claim_automation.llm_client import get_chat_completion_client_and_model
+
+        client, model = get_chat_completion_client_and_model(profile="light")
+        if not client:
+            return None
+
+        exif_present = None
+        if isinstance(exif_json, dict) and "exif_present" in exif_json:
+            exif_present = bool(exif_json.get("exif_present"))
+        exif_warnings = _warnings(exif_json)
+
+        signals_payload = {
+            "detected_labels": [item["code"] for item in raw_labels],
+            "fraud_score": float(fraud_score) if fraud_score is not None else None,
+            "ela_score": float(ela_score) if ela_score is not None else None,
+            "exif_present": exif_present,
+            "exif_warnings": exif_warnings,
+            "reviewer_notes_excerpt": (_normalize_text(llm_notes) or "")[:300],
+        }
+
+        user_message = (
+            "Signals:\n"
+            + json.dumps(signals_payload, indent=2)
+            + "\n\nResolve the label set."
+        )
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _ADJUDICATION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=200,
+            temperature=0.0,
+        )
+
+        content = response.choices[0].message.content or ""
+        # Strip optional markdown fences
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(content)
+        final_codes = result.get("final_labels") or []
+        if not isinstance(final_codes, list):
+            return None
+
+        resolved: list[dict[str, str]] = []
+        for code in final_codes:
+            if isinstance(code, str) and code in _VALID_LABEL_CODES:
+                _add_label(resolved, code)
+        return resolved if resolved else None
+
+    except Exception:
+        logger.debug("LLM authenticity adjudication failed", exc_info=True)
+        return None
+
+
+def synthesize_image_authenticity_labels(
+    *,
+    exif_json: dict[str, Any] | None,
+    llm_notes: str | None,
+    fraud_score: float | int | None,
+    ela_score: float | int | None,
+    signals_json: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """
+    Compute final authenticity labels for a **new** fraud analysis, with optional
+    4o-mini adjudication when contradictory signals are detected.
+
+    Call this once at analysis time and store the result in
+    ``ImageFraudResult.signals_json["synthesized_labels"]``.  Subsequent
+    serialisation calls to ``classify_image_authenticity_labels`` will return the
+    stored result directly without re-running the LLM.
+
+    Falls back to deterministic ``_resolve_contradictions`` when the LLM is not
+    configured or the call fails.
+    """
+    labels = _classify_raw(
+        exif_json=exif_json,
+        llm_notes=llm_notes,
+        fraud_score=fraud_score,
+        ela_score=ela_score,
+        signals_json=signals_json,
+    )
+
+    codes = {item["code"] for item in labels}
+    has_contradiction = "genuine" in codes and bool(codes & _DEFINITIVE_RISK_CODES)
+
+    if not has_contradiction:
+        return labels
+
+    # Attempt LLM adjudication for contradictory signal combos.
+    try:
+        from claim_automation.llm_client import llm_configured
+
+        if llm_configured("light"):
+            adjudicated = _adjudicate_authenticity_with_llm(
+                raw_labels=labels,
+                exif_json=exif_json,
+                llm_notes=llm_notes,
+                fraud_score=fraud_score,
+                ela_score=ela_score,
+            )
+            if adjudicated is not None:
+                return adjudicated
+    except Exception:
+        logger.debug("Could not import llm_configured", exc_info=True)
+
+    # Deterministic fallback: replace genuine with under_review.
+    return _resolve_contradictions(labels)

@@ -136,6 +136,7 @@ def current_damage_assessment_persistence_state(
             "current_part_count": 0,
             "current_valuation_ready": False,
             "has_current_evidence": False,
+            "has_current_da_artifact": False,
         }
 
     evaluation_started_at = current_lifecycle_started_at(latest_eval)
@@ -149,6 +150,18 @@ def current_damage_assessment_persistence_state(
         and current_valuation.updated_at is not None
         and current_valuation.updated_at >= evaluation_started_at
         and valuation_row_has_meaningful_output(current_valuation)
+    )
+
+    # has_current_da_artifact: True when DA ran and created a valuation artifact for this
+    # lifecycle (even gross_estimate == 0 / zero parts).  Separates "DA was attempted" from
+    # "DA produced meaningful financial output" (current_valuation_ready).
+    has_current_da_artifact = bool(
+        (
+            current_valuation is not None
+            and current_valuation.updated_at is not None
+            and current_valuation.updated_at >= evaluation_started_at
+        )
+        or current_part_count > 0
     )
 
     # Safety net: if timestamps are unexpectedly null/legacy on either table,
@@ -175,6 +188,7 @@ def current_damage_assessment_persistence_state(
         "current_part_count": current_part_count,
         "current_valuation_ready": current_valuation_ready,
         "has_current_evidence": bool(current_part_count or current_valuation_ready),
+        "has_current_da_artifact": has_current_da_artifact,
     }
 
 
@@ -192,6 +206,7 @@ def bulk_damage_assessment_persistence_state(
         "current_part_count": 0,
         "current_valuation_ready": False,
         "has_current_evidence": False,
+        "has_current_da_artifact": False,
     }
     result: dict[str, dict[str, int | bool]] = {
         f.complaint_id: dict(empty) for f in fnol_claims
@@ -256,10 +271,15 @@ def bulk_damage_assessment_persistence_state(
                 current_part_count = len(parts)
                 current_valuation_ready = bool(valuation_snapshot["has_output"])
 
+        has_current_da_artifact = bool(
+            (val_updated is not None and val_updated >= evaluation_started_at)
+            or current_part_count > 0
+        )
         result[cid] = {
             "current_part_count": current_part_count,
             "current_valuation_ready": current_valuation_ready,
             "has_current_evidence": bool(current_part_count or current_valuation_ready),
+            "has_current_da_artifact": has_current_da_artifact,
         }
     return result
 
@@ -276,7 +296,13 @@ def derive_workflow_state_from_context(
         return "NOT_STARTED"
     eff = effective_claim_status(fnol, latest_eval)
     eval_cs = (latest_eval.claim_status or "").strip() if latest_eval else ""
-    if damage_state["has_current_evidence"]:
+    # da_ran: DA was attempted and created artifacts (even for zero-output / no-damage runs).
+    # This is intentionally broader than has_current_evidence (which requires meaningful output)
+    # so the workflow advances to DAMAGE_ASSESSMENT_COMPLETED even when gross_estimate == 0.
+    da_ran = damage_state["has_current_evidence"] or damage_state.get(
+        "has_current_da_artifact", False
+    )
+    if da_ran:
         if claim_status_implies_recommendation_terminal(
             eff
         ) or claim_status_implies_recommendation_terminal(eval_cs):

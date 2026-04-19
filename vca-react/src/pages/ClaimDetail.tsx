@@ -451,10 +451,8 @@ export default function ClaimDetail() {
     return {
       brvManualReviewBanner: brvFailed,
       damageAssessmentTabUnlocked: Boolean(da?.available) && !brvFailed,
-      showRunBrvButton:
-        Boolean(brv?.run_allowed) && brv?.completed === false,
-      showRunDamageAssessmentButton:
-        Boolean(da?.run_allowed) && da?.completed === false,
+      showRunBrvButton: Boolean(brv?.run_allowed),
+      showRunDamageAssessmentButton: Boolean(da?.run_allowed),
       damageAssessmentIncompleteNoValuation:
         Boolean(da?.completed) && da?.valuation_ready === false,
       showDamageAssessmentResultsPanel:
@@ -1033,7 +1031,7 @@ export default function ClaimDetail() {
   };
 
   const isRouteClaimLoading =
-    loading || (Boolean(id) && Boolean(fnol) && fnol.complaint_id !== id);
+    loading || (id != null && fnol != null && fnol.complaint_id !== id);
 
   if (isRouteClaimLoading) {
     return (
@@ -1931,6 +1929,9 @@ export default function ClaimDetail() {
                     }
                     insightsLoading={claimInsightsLoading}
                     snapshotReady={Boolean(activeAssessmentSnapshot?.claimId === id)}
+                    evaluationDuplicateCandidateCount={
+                      decisionSummary?.signals?.duplicate_candidate_count
+                    }
                   />
                 ) : null}
                 {/* Claim Amount / Gross Repair Estimate ─ dynamic source priority:
@@ -2450,7 +2451,7 @@ export default function ClaimDetail() {
                             />
                           </div>
 
-                          {shouldRenderAssessmentDecisionBanner ? (
+                          {shouldRenderAssessmentDecisionBanner && decisionSummary ? (
                             <div
                               className={cn(
                                 "flex items-center gap-2.5 rounded-lg border px-3 py-2.5",

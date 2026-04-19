@@ -123,10 +123,15 @@ def _node_part_segmentation(state: DamageState) -> DamageState:
     """
     Node A: Run Vision LLM part-level segmentation on the image.
     Populates state['initial_parts'].
+
+    Passes incident_description to _analyze_damage_part_level so the vision LLM
+    can reason about non-visible damage when the incident context warrants it
+    (e.g. flood submersion, fire, rollover).
     """
     from damage_detection_llm.services import _analyze_damage_part_level
 
     image_path = state.get("image_path", "")
+    incident_description = state.get("incident_description")
     logger.debug("LangGraph node A (part_segmentation): analyzing %s", image_path)
 
     try:
@@ -134,6 +139,7 @@ def _node_part_segmentation(state: DamageState) -> DamageState:
             image_path,
             market_context=state.get("market_context"),
             vehicle_profile=state.get("vehicle_profile"),
+            incident_description=incident_description,
         )
         if parts:
             return {

@@ -6,7 +6,7 @@ import type {
 const LABELS = {
   genuine: {
     code: "genuine",
-    label: "Likely genuine",
+    label: "Genuine",
     tone: "green",
   },
   edited: {
@@ -31,7 +31,7 @@ const LABELS = {
   },
   staged: {
     code: "staged",
-    label: "Likely staged",
+    label: "Staged",
     tone: "rose",
   },
   needs_review: {
@@ -39,9 +39,23 @@ const LABELS = {
     label: "Needs review",
     tone: "yellow",
   },
+  under_review: {
+    code: "under_review",
+    label: "Under review",
+    tone: "yellow",
+  },
 } satisfies Record<string, ImageAuthenticityLabel>;
 
 type LabelCode = keyof typeof LABELS;
+
+// Risk codes that are mutually contradictory with "genuine".
+const DEFINITIVE_RISK_CODES = new Set([
+  "ai_generated",
+  "stock_internet_sourced",
+  "edited",
+  "staged",
+  "needs_review",
+]);
 
 const AI_GENERATED_RE =
   /\b(ai[- ]generated|synthetic|computer[- ]generated|cgi|rendered|midjourney|dall[ -]?e|stable diffusion)\b/i;
@@ -172,6 +186,20 @@ export function getImageAuthenticityLabels(source: LabelSource) {
     )
   ) {
     addLabel(labels, "needs_review");
+  }
+
+  // Mirror backend _resolve_contradictions: replace 'genuine' with 'under_review'
+  // when any definitive risk code is also present.
+  const codes = new Set(labels.map((l) => l.code));
+  if (codes.has("genuine")) {
+    const riskPresent = [...codes].some((c) => DEFINITIVE_RISK_CODES.has(c));
+    if (riskPresent) {
+      const resolved = labels.filter((l) => l.code !== "genuine");
+      if (!resolved.some((l) => l.code === "under_review")) {
+        resolved.push({ ...LABELS.under_review });
+      }
+      return resolved;
+    }
   }
 
   return labels;

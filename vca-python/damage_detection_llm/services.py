@@ -803,6 +803,8 @@ def _resolve_part_breakdown_for_image(
             image_path,
             market_context=market_context,
             vehicle_profile=vehicle_profile,
+            incident_description=incident_description,
+            detected_damage_types=list(damages) if damages else None,
         ) or []
         part_breakdown = _normalize_part_breakdown(part_breakdown)
         pipeline_metadata = {
@@ -887,13 +889,15 @@ def _analyze_damage_part_level(
     *,
     market_context: dict | None = None,
     vehicle_profile: dict | None = None,
+    incident_description: str | None = None,
+    detected_damage_types: list[str] | None = None,
 ) -> list[dict] | None:
     """
     Analyze image using vision LLM for part-level damage breakdown.
 
     Returns list of dicts with:
-    - part: str (e.g., "Front Bumper", "Left Door")
-    - damage_type: str (scratch, dent, crack, etc.)
+    - part: str (e.g., "Front Bumper", "Engine", "Left Door")
+    - damage_type: str (scratch, dent, flood-contamination, fire-damage, etc.)
     - severity_percent: int (0-100)
     - repair_action: str (REPAIR, REPLACE, PAINT, NONE)
     - estimated_cost: float
@@ -940,19 +944,47 @@ def _analyze_damage_part_level(
         or "not provided"
     )
 
-    prompt = f"""Analyze this vehicle damage image and provide a detailed breakdown of damaged parts.
+    # Build optional claim-context section for context-aware damage assessment
+    context_lines: list[str] = []
+    if incident_description and incident_description.strip():
+        context_lines.append(f"Incident narrative: {incident_description.strip()[:600]}")
+    if detected_damage_types:
+        readable = ", ".join(
+            str(d).replace("-", " ").replace("_", " ").strip()
+            for d in detected_damage_types
+            if str(d).strip().lower() not in ("none", "")
+        )
+        if readable:
+            context_lines.append(f"Pre-analysis detected: {readable}")
+    incident_section = (
+        "\n\nClaim context (use to infer probable non-visible damage):\n"
+        + "\n".join(f"- {l}" for l in context_lines)
+        + "\n"
+    ) if context_lines else ""
 
-Vehicle profile: {vehicle_summary}
-Use the vehicle profile only when it materially affects parts pricing. Do not infer policy-specific pricing.
+    prompt = f"""Analyze this vehicle damage image and provide a detailed part-level damage breakdown.
 
-For each visible damage, provide:
-- part: The specific vehicle part (e.g., "Front Bumper", "Left Front Door", "Hood", "Rear Quarter Panel", "Windshield", "Headlight", "Taillight")
-- damage_type: The type of damage (scratch, dent, crack, chip, scuff, deformation, tear)
-- severity_percent: Severity as a percentage from 0-100 (25 = minor, 50 = moderate, 75 = major, 100 = severe/total loss)
-- repair_action: Recommended action (REPAIR for fixable damage, REPLACE for broken/severely damaged parts, PAINT for cosmetic damage, NONE if unsure)
-- estimated_cost: Estimated repair cost in {currency_code} for this specific damage, using current pricing in the {market_label} around {market_location}
+Vehicle: {vehicle_summary}
+Use vehicle profile only when it materially affects parts pricing. Do not infer policy-specific pricing.{incident_section}
+Pricing: {currency_code}, {market_label}, near {market_location}
 
-Respond in this exact JSON format:
+For each damaged component provide:
+- part: specific component name (e.g. "Front Bumper", "Engine", "Electrical Wiring Harness", "Interior Carpet", "Headlight", "Hood", "Left Front Door")
+- damage_type: most specific applicable category —
+    cosmetic/structural: scratch, dent, crack, chip, scuff, deformation, broken, tear
+    environmental: flood-contamination, water-ingress, corrosion, heat-damage, smoke-damage, soot
+    mechanical/internal: engine-damage, electrical-damage, transmission-damage, fuel-system-damage, fire-damage
+- severity_percent: 0–100 (25=minor, 50=moderate, 75=major, 90+=replace/total-loss)
+- repair_action: REPAIR / REPLACE / PAINT / NONE
+- estimated_cost: in {currency_code} for {market_label}
+
+IMPORTANT: If the claim context or image evidence indicates probable non-visible damage
+(e.g. submersion causing engine/electrical contamination, fire causing heat damage to hidden
+components, rollover causing frame deformation), include those probable components with the
+appropriate damage_type. Base ALL entries on available evidence — do NOT invent damage
+without any supporting signal.
+
+Respond ONLY in this exact JSON format, no other text:
 {{
     "damages": [
         {{
@@ -965,7 +997,7 @@ Respond in this exact JSON format:
     ]
 }}
 
-If no damage visible, respond with damages: []."""
+If there is no evidence of any damage at all, respond with: {{"damages": []}}"""
 
     try:
         resp = client.chat.completions.create(
@@ -1106,6 +1138,7 @@ def run_damage_assessment_detailed(
     image_path: str,
     complaint_id: str,
     incident_description: str | None = None,
+    incident_type: str | None = None,
     flood_coverage: bool = False,
     image_url: str = "",
     enable_web_search: bool = True,
@@ -1119,26 +1152,31 @@ def run_damage_assessment_detailed(
       1. LangGraph Agentic Pipeline (Part Segmentation → Pricing Agent → Estimation)
          — uses web search + LLM reasoning for market-accurate costs.
          — requires: pip install langgraph duckduckgo-search
-      2. Existing Vision LLM (_analyze_damage_part_level) — current behaviour.
-      3. YOLO + Keras severity only (no cost breakdown, part_breakdown=[]).
+      2. Vision LLM direct (_analyze_damage_part_level) — context-aware fallback.
+      3. Context Enrichment layer — when all visual paths return no parts but claim
+         evidence (incident type/narrative/detected signals) indicates significant
+         damage.  Calls LLM as a senior loss adjuster to reason about probable
+         non-visible components.  Never hardcodes per-incident-type logic.
+      4. YOLO + Keras severity only (no cost breakdown, part_breakdown=[]).
 
     Args:
-        image_path: Path to the image file on disk.
-        complaint_id: Claim ID to associate assessments with.
-        incident_description: Optional claim description for LLM context.
-        flood_coverage: Whether flood coverage applies.
-        image_url: Source image URL / storage key (used for DB scoping).
-        enable_web_search: Pass False to disable live pricing searches (test envs).
-        prefer_agentic_pipeline: When False, skip the LangGraph agentic path and use
-            Vision LLM / downstream fallbacks only (additive; default preserves behaviour).
+        image_path:            Path to the image file on disk.
+        complaint_id:          Claim ID to associate assessments with.
+        incident_description:  Optional claim narrative for LLM context.
+        incident_type:         Optional FnolClaim.incident_type for context enrichment.
+        flood_coverage:        Whether flood coverage applies.
+        image_url:             Source image URL / storage key (used for DB scoping).
+        enable_web_search:     Pass False to disable live pricing searches (test envs).
+        persist_claim_rows:    Persist DamagePartAssessment rows to DB.
+        prefer_agentic_pipeline: When False, skip the LangGraph agentic path.
 
     Returns:
         Dict with:
-          - damages, severity: from YOLO/LLM (unchanged)
+          - damages, severity: from YOLO/LLM
           - part_breakdown: list[dict] with part, damage_type, severity_percent,
-                            repair_action, estimated_cost (and persisted to DB)
+                            repair_action, estimated_cost
           - total_parts, total_estimated_cost
-          - pipeline_metadata (new, additive): transparency data from agentic pipeline
+          - pipeline_metadata: transparency data including which path was used
     """
     market_context = get_claim_market_context(complaint_id=complaint_id)
     vehicle_profile = get_claim_vehicle_profile(complaint_id=complaint_id)
@@ -1155,6 +1193,59 @@ def run_damage_assessment_detailed(
         enable_web_search=enable_web_search,
         prefer_agentic_pipeline=prefer_agentic_pipeline,
     )
+
+    # -------------------------------------------------------------------------
+    # Context Enrichment Layer: if all visual paths returned no parts but there
+    # is claim evidence (incident type, narrative, detected damage signals),
+    # reason from context to produce a probable-damage assessment.
+    # This layer is ADDITIVE ONLY — collision claims that already produce visual
+    # parts never reach this code path.
+    # -------------------------------------------------------------------------
+    if not part_breakdown:
+        has_damage_signal = bool(damages and any(d not in ("none", "") for d in damages))
+        has_narrative = bool(incident_description and len(incident_description.strip()) > 10)
+        has_incident_type = bool(incident_type and incident_type.strip())
+        if has_damage_signal or has_narrative or has_incident_type:
+            try:
+                from damage_detection_llm.context_enrichment import enrich_parts_from_claim_context
+
+                enriched = enrich_parts_from_claim_context(
+                    incident_type=incident_type,
+                    incident_description=incident_description,
+                    detected_damage_types=list(damages) if damages else [],
+                    severity=severity or "unknown",
+                    vehicle_profile=vehicle_profile,
+                    market_context=market_context,
+                    currency_code=currency_code,
+                )
+                if enriched:
+                    part_breakdown = _normalize_part_breakdown(enriched)
+                    pipeline_metadata = {
+                        **pipeline_metadata,
+                        "pipeline": "context_enrichment",
+                        "pricing_source": "context_enrichment_llm",
+                        "enrichment_basis": "claim_context_llm_reasoning",
+                        "confidence_level": "medium",
+                        "reasoning_summary": (
+                            "Visual inspection found no part-level damage. "
+                            "Damage inferred from claim context, incident narrative, "
+                            "and detected damage signals using LLM loss-adjuster reasoning."
+                        ),
+                    }
+                    logger.info(
+                        "run_damage_assessment_detailed: context enrichment produced "
+                        "%d parts for %s (incident_type=%r damages=%r)",
+                        len(part_breakdown),
+                        complaint_id,
+                        incident_type,
+                        damages,
+                    )
+            except Exception:
+                logger.warning(
+                    "Context enrichment failed for %s — continuing without enrichment.",
+                    complaint_id,
+                    exc_info=True,
+                )
 
     # Persist part assessments (per-image scope — multi-photo claims accumulate rows)
     if persist_claim_rows and part_breakdown and complaint_id:

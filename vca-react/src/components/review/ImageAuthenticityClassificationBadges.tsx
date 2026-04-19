@@ -30,8 +30,9 @@ export function ImageAuthenticityClassificationBadges({
       stock_internet_sourced: 2,
       staged: 3,
       metadata_stripped: 4,
-      needs_review: 5,
-      genuine: 6,
+      under_review: 5,
+      needs_review: 6,
+      genuine: 7,
     };
 
     return (priority[left.code] ?? 99) - (priority[right.code] ?? 99);

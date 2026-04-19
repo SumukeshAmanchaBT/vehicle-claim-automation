@@ -24,8 +24,22 @@ type Props = {
   insightsLoading: boolean;
   /** True once lifecycle-scoped snapshot rows have been loaded for this claim. */
   snapshotReady: boolean;
+  /**
+   * From GET /evaluation `decision_summary.signals.duplicate_candidate_count`.
+   * Lets the card show duplicate context before duplicate-candidates rows hydrate.
+   */
+  evaluationDuplicateCandidateCount?: number;
   className?: string;
 };
+
+/** Evaluation payload can render this card while detailed GETs are still in flight. */
+function evaluationProvidesScreeningPreview(
+  imageRiskSummary: ImageRiskSummaryBlock | null | undefined,
+  duplicateCandidateCount: number | undefined
+): boolean {
+  if (imageRiskSummary != null) return true;
+  return typeof duplicateCandidateCount === "number" && duplicateCandidateCount > 0;
+}
 
 const LABEL_SORT_ORDER: Record<string, number> = {
   ai_generated: 0,
@@ -33,8 +47,9 @@ const LABEL_SORT_ORDER: Record<string, number> = {
   stock_internet_sourced: 2,
   staged: 3,
   metadata_stripped: 4,
-  needs_review: 5,
-  genuine: 6,
+  under_review: 5,
+  needs_review: 6,
+  genuine: 7,
 };
 
 function mergeAuthenticityLabelsAcrossPhotos(
@@ -172,9 +187,16 @@ export function ClaimImageRiskDuplicateWarnings({
   blockingImageRiskCodes,
   insightsLoading,
   snapshotReady,
+  evaluationDuplicateCandidateCount,
   className,
 }: Props) {
-  const pending = insightsLoading || !snapshotReady;
+  const previewFromEvaluation = evaluationProvidesScreeningPreview(
+    imageRiskSummary,
+    evaluationDuplicateCandidateCount
+  );
+  /** Skeleton only when we have neither persisted snapshot rows nor evaluation summary hints. */
+  const pending =
+    !previewFromEvaluation && (insightsLoading || !snapshotReady);
 
   if (pending) {
     return (
@@ -211,7 +233,9 @@ export function ClaimImageRiskDuplicateWarnings({
   const highestFraud = imageRiskSummary?.highest_fraud_score ?? maxFraudScore(results);
   const stpThreshold = imageRiskSummary?.stp_threshold ?? 0;
 
-  const hasDup = dupItems.length > 0;
+  const dupHintCount = evaluationDuplicateCandidateCount ?? 0;
+  const hasDupRows = dupItems.length > 0;
+  const hasDup = hasDupRows || dupHintCount > 0;
   const hasPhotoRows = results.length > 0;
   const hasConcernLabels = mergedLabels.some(
     (l) => l.code !== "genuine" && l.code !== "needs_review"
@@ -224,7 +248,8 @@ export function ClaimImageRiskDuplicateWarnings({
     dupItems.some((c) => {
       const pct = formatSimilarityPercent(c);
       return pct === "100%" || (c.match_reason && /exact/i.test(c.match_reason));
-    });
+    }) ||
+    (!snapshotReady && dupHintCount > 0);
 
   const toneKey = screeningCardTone({
     blockingSignals,
@@ -234,7 +259,8 @@ export function ClaimImageRiskDuplicateWarnings({
   const tc = toneClasses[toneKey];
 
   const dataBothEmpty = !hasPhotoRows && dupItems.length === 0;
-  if (dataBothEmpty) {
+  /** Empty GET rows are only authoritative after snapshot hydration; evaluation may already have headline data. */
+  if (snapshotReady && dataBothEmpty) {
     return (
       <Card
         data-testid="claim-no-image-risk-confirmation"
@@ -295,13 +321,19 @@ export function ClaimImageRiskDuplicateWarnings({
             ) : hasDup && mergedLabels.length === 0 ? (
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <p className={cn("text-xl font-bold tabular-nums", tc.headline)}>
-                  {dedupedDupRows.length}
+                  {hasDupRows ? dedupedDupRows.length : dupHintCount}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Other claim{dedupedDupRows.length === 1 ? "" : "s"} flagged
-                  {dupItems.length > dedupedDupRows.length
-                    ? ` · ${dupItems.length} photo match${dupItems.length === 1 ? "" : "es"}`
-                    : ""}
+                  {hasDupRows ? (
+                    <>
+                      Other claim{dedupedDupRows.length === 1 ? "" : "s"} flagged
+                      {dupItems.length > dedupedDupRows.length
+                        ? ` · ${dupItems.length} photo match${dupItems.length === 1 ? "" : "es"}`
+                        : ""}
+                    </>
+                  ) : (
+                    <>Other claims flagged · loading match details…</>
+                  )}
                 </p>
               </div>
             ) : categoriesSurfaced > 0 ? (
@@ -341,6 +373,11 @@ export function ClaimImageRiskDuplicateWarnings({
                 <Badge variant="outline" className="text-[10px] font-semibold">
                   Duplicate findings
                 </Badge>
+                {!hasDupRows && dupHintCount > 0 ? (
+                  <span className="self-center text-[10px] text-muted-foreground">
+                    Loading cross-claim rows…
+                  </span>
+                ) : null}
                 {dedupedDupRows.slice(0, 4).map(({ candidate: c, matchCount }) => (
                   <Badge
                     key={c.other_complaint_id}
