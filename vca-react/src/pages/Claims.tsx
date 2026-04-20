@@ -276,8 +276,8 @@ export default function Claims() {
       source?.raw_response?.policy?.policy_status ?? source?.policy_status ?? "ACTIVE";
     const sourceCustomerName =
       source?.raw_response?.claimant?.driver_name ?? source?.policy_holder_name ?? "Dummy Customer";
-    const sourceIncidentType =
-      source?.raw_response?.incident?.claim_type ?? source?.incident_type ?? "Own Damage";
+    // Default incident type for newly created/fetched FNOL records.
+    const sourceIncidentType = "Hit-and-Run Accident by Unknown Third Party";
     const sourceVehicle = source?.raw_response?.vehicle ?? null;
 
     const stop = globalLoader.start("Fetching FNOL data...");
@@ -618,13 +618,13 @@ export default function Claims() {
               <Table>
                 <TableHeader className="table-header-bg">
                   <TableRow className="bg-muted/50 hover:bg-muted/50">
-                    <TableHead className="w-12 pl-6">
-                      <Checkbox
+                    <TableHead className="w-9 pl-3 pr-0">
+                      {/* <Checkbox
                         aria-label="Select all visible claims"
                         checked={allVisibleSelected ? true : someVisibleSelected ? "indeterminate" : false}
                         disabled={visibleClaimIds.length === 0 || deletePending}
                         onCheckedChange={handleToggleVisibleClaims}
-                      />
+                      /> */}
                     </TableHead>
                     <SortableTableHead
                       sortKey="claimNumber"
@@ -706,7 +706,7 @@ export default function Claims() {
                       const selected = selectedClaimIds.includes(claim.id);
                       return (
                         <TableRow key={claim.id} className="group" data-state={selected ? "selected" : undefined}>
-                          <TableCell className="pl-6">
+                          <TableCell className="pl-3 pr-0 w-9">
                             <Checkbox
                               aria-label={`Select claim ${claim.claimNumber}`}
                               checked={selected}
@@ -718,7 +718,7 @@ export default function Claims() {
                               }}
                             />
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="pl-1">
                             <Link
                               to={`/claims/${claim.id}`}
                               className="font-medium text-primary hover:underline"

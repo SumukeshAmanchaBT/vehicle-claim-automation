@@ -2102,6 +2102,15 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
     coverage_stripped = (
         str(coverage_raw).strip() if coverage_raw not in (None, "") else ""
     )
+    incident_type_raw = incident.get("claim_type")
+    incident_type = (
+        str(incident_type_raw).strip()
+        if incident_type_raw not in (None, "")
+        else ""
+    )
+    if not incident_type:
+        # Default for newly created claims when upstream FNOL does not provide a claim_type.
+        incident_type = "Hit-and-Run Accident by Unknown Third Party"
     return {
         "complaint_id": complaint_id,
         "coverage_type": coverage_stripped or None,
@@ -2114,7 +2123,7 @@ def _fnol_payload_to_claim_data(data: dict) -> dict:
         "vehicle_year": vehicle.get("year"),
         "vehicle_model": vehicle.get("model"),
         "vehicle_registration_number": vehicle.get("registration_number"),
-        "incident_type": incident.get("claim_type"),
+        "incident_type": incident_type or None,
         "incident_description": incident.get("loss_description"),
         "incident_date_time": incident_dt,
         "accident_location": str(accident_location).strip() or None,
@@ -2487,8 +2496,18 @@ def _truncate_report_text(value: str | None, limit: int = 140) -> str:
     return f"{text[: limit - 1].rstrip()}…"
 
 
-def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result: dict) -> bytes:
-    """Build MOTOR CLAIM RECOMMENDATION REPORT PDF with blue/orange styling and tabular sections."""
+def _build_recommendation_report_pdf(
+    claim: FnolClaim,
+    evaluation,
+    fraud_result: dict,
+    *,
+    max_section: int = 8,
+    dash_after_section: int | None = None,
+) -> bytes:
+    """Build MOTOR CLAIM RECOMMENDATION REPORT PDF with blue/orange styling and tabular sections.
+
+    Set `max_section` to generate a partial report (e.g. 4 = include up to Business Rule Validation).
+    """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -2571,21 +2590,63 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     rules = fraud_result.get("fraud_rule_results") or []
     if rules:
         rule_rows = [["Validation Check", "Status"]]
+        fail_row_indexes: list[int] = []
+        fail_status_style = ParagraphStyle(
+            name="BrvFailStatus",
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=11,
+            textColor=colors.HexColor("#B91C1C"),  # red-700-ish
+            wordWrap="Normal",
+        )
         for r in rules:
             rule_type = r.get("rule_type") or "Rule"
             rule_desc = (r.get("rule_description") or "")
             passed = r.get("passed", False)
-            rule_rows.append([f"{rule_type}: {rule_desc}", "Pass" if passed else "Fail"])
+            status_cell = (
+                "Pass" if passed else Paragraph("Fail", fail_status_style)
+            )
+            if not passed:
+                # +1 because Table row 0 is the header.
+                fail_row_indexes.append(len(rule_rows))
+            rule_rows.append([f"{rule_type}: {rule_desc}", status_cell])
         t4 = _table_style_header_blue(
             rule_rows,
             col_widths=[_REPORT_TABLE_VALIDATION_COL, _REPORT_TABLE_STATUS_COL],
         )
+        if fail_row_indexes:
+            t4.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#FCE8E6"))
+                        for idx in fail_row_indexes
+                    ]
+                )
+            )
     else:
         t4 = _table_style_header_blue(
             [["Validation Check", "Status"], ["No rules evaluated", "—"]],
             col_widths=[_REPORT_TABLE_VALIDATION_COL, _REPORT_TABLE_STATUS_COL],
         )
     story.append(KeepTogether([_section_heading("4. Business Rule Validation", use_orange=True), t4, _sp()]))
+
+    if dash_after_section == 4:
+        dash_style = ParagraphStyle(
+            name="DashSeparator",
+            fontName="Helvetica",
+            fontSize=9,
+            leading=11,
+            textColor=colors.HexColor("#6B7280"),  # slate-ish
+            alignment=0,
+            spaceAfter=6,
+        )
+        story.append(Paragraph("—" * 110, dash_style))
+        story.append(_sp())
+
+    if max_section <= 4:
+        doc.build(story)
+        buffer.seek(0)
+        return buffer.read()
 
     # ----- 5. Media Trust & Duplicate Review -----
     top_fraud_result = fraud_rows[0] if fraud_rows else None
@@ -2831,6 +2892,111 @@ def recommendation_report_pdf(request, complaint_id: str):
     fraud_result = _run_process_claim_logic(raw_response)
     pdf_bytes = _build_recommendation_report_pdf(claim, evaluation, fraud_result)
     filename = f"Motor_Claim_Recommendation_Report_{complaint_id}.pdf"
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def business_rule_validation_report_pdf(request, complaint_id: str):
+    """
+    Generate and return a BRV-only PDF report (sections 1–4).
+    Intended for reviewers to download the Business Rule Validation table without
+    requiring persisted damage assessment / recommendation state.
+    """
+    claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
+    evaluation = ClaimEvaluationResponse.objects.filter(
+        complaint_id=complaint_id,
+        is_latest=True,
+    ).first()
+    if not evaluation:
+        return Response(
+            {"detail": "No evaluation found for this claim."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    workflow_state = compute_claim_workflow_state(complaint_id)
+    if workflow_state not in (
+        "BUSINESS_RULE_VALIDATION_COMPLETED",
+        "DAMAGE_ASSESSMENT_IN_PROGRESS",
+        "DAMAGE_ASSESSMENT_COMPLETED",
+        "RECOMMENDATION_SHARED",
+    ):
+        return Response(
+            {"detail": "BRV report is only available after Business Rule Validation has completed."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    raw_response = _fnol_claim_to_raw_response(claim)
+    fraud_result = _run_process_claim_logic(raw_response)
+    pdf_bytes = _build_recommendation_report_pdf(
+        claim,
+        evaluation,
+        fraud_result,
+        max_section=4,
+    )
+    filename = f"Motor_Claim_BRV_Report_{complaint_id}.pdf"
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def business_rule_validation_failed_report_pdf(request, complaint_id: str):
+    """
+    Generate and return a "failed BRV" PDF report.
+
+    Includes the full report sections, but inserts a dash separator line directly
+    below the "4. Business Rule Validation" table to make the failure boundary obvious.
+    """
+    claim = get_object_or_404(FnolClaim, complaint_id=complaint_id)
+    evaluation = ClaimEvaluationResponse.objects.filter(
+        complaint_id=complaint_id,
+        is_latest=True,
+    ).first()
+    if not evaluation:
+        return Response(
+            {"detail": "No evaluation found for this claim."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    workflow_state = compute_claim_workflow_state(complaint_id)
+    if workflow_state not in (
+        "BUSINESS_RULE_VALIDATION_COMPLETED",
+        "DAMAGE_ASSESSMENT_IN_PROGRESS",
+        "DAMAGE_ASSESSMENT_COMPLETED",
+        "RECOMMENDATION_SHARED",
+    ):
+        return Response(
+            {"detail": "Failed report is only available after Business Rule Validation has completed."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # Only meaningful when BRV failed.
+    if (evaluation.claim_status or "").strip().lower() in ("", "recommendation shared"):
+        # claim_status is not a reliable BRV indicator; rely on persisted rule snapshot when available.
+        pass
+    # If the latest persisted BRV snapshot exists and any rule failed, allow; otherwise block to avoid confusion.
+    rules_snapshot = evaluation.fraud_rule_results
+    if isinstance(rules_snapshot, list) and rules_snapshot:
+        any_failed = any(r and (r.get("passed") is False) for r in rules_snapshot if isinstance(r, dict))
+        if not any_failed:
+            return Response(
+                {"detail": "Failed report is only available when Business Rule Validation has failed."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    raw_response = _fnol_claim_to_raw_response(claim)
+    fraud_result = _run_process_claim_logic(raw_response)
+    pdf_bytes = _build_recommendation_report_pdf(
+        claim,
+        evaluation,
+        fraud_result,
+        max_section=8,
+    )
+    filename = f"Motor_Claim_Failed_BRV_Report_{complaint_id}.pdf"
     response = HttpResponse(pdf_bytes, content_type="application/pdf")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response

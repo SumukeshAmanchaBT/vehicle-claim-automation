@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from django.conf import settings
 
@@ -193,6 +194,24 @@ def digitization_doc_local_path(document) -> tuple[Path, bool]:
     Return (path, needs_cleanup). If file is on remote storage, downloads to a temp file.
     Caller must unlink temp path when needs_cleanup is True.
     """
+    def _download_url_to_temp(url: str, suffix: str) -> Path:
+        import requests
+
+        fd, tmp = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+        tmp_path = Path(tmp)
+        try:
+            with requests.get(url, stream=True, timeout=30) as resp:
+                resp.raise_for_status()
+                with open(tmp_path, "wb") as out:
+                    for chunk in resp.iter_content(chunk_size=65536):
+                        if chunk:
+                            out.write(chunk)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        return tmp_path
+
     name = ""
     try:
         name = document.file.name
@@ -209,6 +228,19 @@ def digitization_doc_local_path(document) -> tuple[Path, bool]:
     except Exception:
         pass
 
+    # If the DB references a local path but the file is missing (common when sharing DB across machines),
+    # try to download from an absolute URL (S3/public) when available.
+    try:
+        url = getattr(document.file, "url", "") or ""
+    except Exception:
+        url = ""
+    if url:
+        parsed = urlparse(str(url))
+        if parsed.scheme in ("http", "https"):
+            suffix = Path(document.original_filename or name).suffix or ".bin"
+            tmp_path = _download_url_to_temp(str(url), suffix=suffix)
+            return tmp_path, True
+
     suffix = Path(document.original_filename or name).suffix or ".bin"
     fd, tmp = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
@@ -220,7 +252,11 @@ def digitization_doc_local_path(document) -> tuple[Path, bool]:
                     out.write(chunk)
     except Exception:
         tmp_path.unlink(missing_ok=True)
-        raise
+        raise FileNotFoundError(
+            "Digitization document file is not available on this server. "
+            "If you're using a shared DB across machines, re-upload the document on this environment "
+            "or enable S3 media (USE_S3_FOR_MEDIA=1) so files are retrievable everywhere."
+        )
     return tmp_path, True
 
 

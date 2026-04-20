@@ -10,6 +10,7 @@ from .views import (
     login,
     process_claim,
     recommendation_report_pdf,
+    business_rule_validation_report_pdf,
     run_fraud_detection,
     save_fnol,
     create_user,
@@ -28,6 +29,7 @@ from .views import (
     damage_code_master_detail,
     pricing_config_collection,
     pricing_config_detail,
+    business_rule_validation_failed_report_pdf,
 )
 from .digitization_views import (
     digitization_upload,
@@ -104,6 +106,8 @@ urlpatterns = [
     path("fnol/bulk-delete", bulk_delete_fnol, name="bulk_delete_fnol"),
     path("fnol/<str:complaint_id>/evaluation", get_claim_evaluation, name="get_claim_evaluation"),
     path("fnol/<str:complaint_id>/recommendation-report/", recommendation_report_pdf, name="recommendation_report_pdf"),
+    path("fnol/<str:complaint_id>/brv-report/", business_rule_validation_report_pdf, name="business_rule_validation_report_pdf"),
+    path("fnol/<str:complaint_id>/brv-failed-report/", business_rule_validation_failed_report_pdf, name="business_rule_validation_failed_report_pdf"),
     path("fnol/<str:pk>/", get_fnol, name="get_fnol"),
     # Same view without trailing slash (avoids 301 redirect when clients do not follow redirects with auth)
     path("fnol/<str:pk>", get_fnol, name="get_fnol_no_slash"),

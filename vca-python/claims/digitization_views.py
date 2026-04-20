@@ -662,25 +662,385 @@ def digitization_extract_kv(request):
             if ai_error:
                 return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
         elif ext == ".pdf":
+            def _to_loose_key(k: str) -> str:
+                return str(k or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+            def _import_pymupdf():
+                """
+                PyMuPDF can be imported as `pymupdf` (newer) or `fitz` (classic).
+                Return the module-like object that provides `open`, `Rect`, etc.
+                """
+                try:
+                    import pymupdf  # type: ignore
+
+                    return pymupdf
+                except Exception:
+                    import fitz  # type: ignore
+
+                    return fitz
+
+            def _extract_parts_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+                """
+                Extractors can emit table rows under different keys (parts/items/line_items/etc).
+                Normalize to list[dict] so UI always reads kv_json["parts"].
+                """
+                candidates = [
+                    "parts",
+                    "part_details",
+                    "parts_details",
+                    "line_items",
+                    "lineitems",
+                    "items",
+                    "item_rows",
+                    "invoice_parts",
+                ]
+                loose_map = {_to_loose_key(k): k for k in payload.keys()}
+                for c in candidates:
+                    actual = loose_map.get(_to_loose_key(c))
+                    if not actual:
+                        continue
+                    raw = payload.get(actual)
+                    if isinstance(raw, str):
+                        t = raw.strip()
+                        if t.startswith("[") or t.startswith("{"):
+                            try:
+                                raw = json.loads(t)
+                            except Exception:
+                                raw = None
+                    if isinstance(raw, list):
+                        return [p for p in raw if isinstance(p, dict)]
+                    if isinstance(raw, dict):
+                        return [raw]
+                return []
+
+            def _extract_parts_from_pdf_images(pdf_path: str, base_tmp: Path) -> tuple[list[dict[str, Any]], list[str]]:
+                """
+                Render first 1-2 PDF pages to images and run vision extractor to get parts lines.
+                Returns (parts, errors).
+                """
+                try:
+                    mupdf = _import_pymupdf()
+                except Exception:
+                    return [], ["PyMuPDF is not installed for scanned-PDF parts extraction."]
+
+                page_paths: list[Path] = []
+                errors: list[str] = []
+                parts_out: list[dict[str, Any]] = []
+                try:
+                    pdf = mupdf.open(pdf_path)
+                    max_pages = min(2, pdf.page_count or 0)
+                    for i in range(max_pages):
+                        page = pdf.load_page(i)
+                        # Higher DPI improves small-table readability for the vision model.
+                        pix_full = page.get_pixmap(dpi=320)
+                        out_path_full = Path(str(base_tmp) + f".page{i+1}.full.png")
+                        pix_full.save(str(out_path_full))
+                        page_paths.append(out_path_full)
+
+                        # Parts table is typically in the lower half; also render a focused crop.
+                        try:
+                            rect = page.rect
+                            clip = mupdf.Rect(
+                                rect.x0,
+                                rect.y0 + (rect.height * 0.35),
+                                rect.x1,
+                                rect.y1,
+                            )
+                            pix_crop = page.get_pixmap(dpi=360, clip=clip)
+                            out_path_crop = Path(str(base_tmp) + f".page{i+1}.parts.png")
+                            pix_crop.save(str(out_path_crop))
+                            page_paths.append(out_path_crop)
+                        except Exception:
+                            # Crop is best-effort; full-page render should still work.
+                            pass
+                except Exception as e:
+                    return [], [f"Failed to render PDF pages: {e}"]
+
+                try:
+                    for img_path in page_paths:
+                        data, err = _openai_extract_invoice_data(str(img_path))
+                        if err:
+                            errors.append(err)
+                            continue
+                        if not isinstance(data, dict):
+                            continue
+                        parts_out.extend(_extract_parts_from_payload(data))
+                finally:
+                    for p in page_paths:
+                        try:
+                            p.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+
+                # de-dupe while preserving order
+                seen: set[str] = set()
+                deduped: list[dict[str, Any]] = []
+                for row in parts_out:
+                    sig = json.dumps(row, sort_keys=True, default=str)
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    deduped.append(row)
+                return deduped, errors
+
+            def _extract_parts_from_pdf_text(pdf_path: str) -> list[dict[str, Any]]:
+                """
+                Deterministic fallback: extract table-like lines from PDF text and parse part rows.
+                This helps when header fields are text-based but the LLM doesn't return `parts`.
+                """
+                try:
+                    mupdf = _import_pymupdf()
+                except Exception:
+                    return []
+
+                try:
+                    pdf = mupdf.open(pdf_path)
+                except Exception:
+                    return []
+
+                def _is_money_token(tok: str) -> bool:
+                    t = tok.replace(",", "").strip()
+                    return bool(re.match(r"^\d+(\.\d{2})$", t))
+
+                def _parse_row_tokens(tokens: list[str]) -> dict[str, Any] | None:
+                    if not tokens:
+                        return None
+                    joined = " ".join(tokens)
+                    if re.match(r"^(add|sub\s*total|subtotal|total|gst|vat|grand\s*total)\b", joined, re.IGNORECASE):
+                        return None
+
+                    # Find qty token (first small integer) and last money tokens.
+                    money_idxs = [i for i, t in enumerate(tokens) if _is_money_token(t)]
+                    if not money_idxs:
+                        return None
+                    # Most invoices have unit price + amount; if only one money value, keep as amount.
+                    last_money = tokens[money_idxs[-1]].replace(",", "")
+                    prev_money = tokens[money_idxs[-2]].replace(",", "") if len(money_idxs) >= 2 else ""
+                    # Some invoices omit "Amount" per-line and only show the cost/rate (or vice versa).
+                    # Normalize by always filling at least one numeric field.
+                    unit_price = prev_money
+                    amt = last_money
+                    if not unit_price and amt:
+                        unit_price = amt
+
+                    qty_idx = None
+                    for i, t in enumerate(tokens):
+                        if re.match(r"^\d{1,3}$", t.strip()):
+                            qty_idx = i
+                            break
+                    if qty_idx is None:
+                        return None
+                    qty = tokens[qty_idx].strip()
+
+                    # Description is everything before qty.
+                    desc_tokens = tokens[:qty_idx]
+                    desc = " ".join(desc_tokens).strip()
+                    if not desc:
+                        return None
+                    return {
+                        "description": desc,
+                        "quantity": qty,
+                        "unit_price": unit_price,
+                        "amount": amt,
+                    }
+
+                part_rows: list[dict[str, Any]] = []
+                # Use word coordinates to reconstruct rows; tables often split "lines" into multiple blocks.
+                for page_index in range(min(3, pdf.page_count or 0)):
+                    try:
+                        page = pdf.load_page(page_index)
+                        words = page.get_text("words")  # (x0,y0,x1,y1,word,block,line,wordno)
+                    except Exception:
+                        continue
+                    if not words:
+                        continue
+
+                    # Cluster by Y (row) with a tolerance in points.
+                    row_tol = 4.0
+                    rows: list[dict[str, Any]] = []  # { y: float, items: [(x, text)] }
+                    for w in words:
+                        try:
+                            x0, y0, x1, y1, text, *_rest = w
+                        except Exception:
+                            continue
+                        t = str(text).strip()
+                        if not t:
+                            continue
+                        y = float(y0)
+                        x = float(x0)
+                        placed = False
+                        for row in rows:
+                            if abs(row["y"] - y) <= row_tol:
+                                row["items"].append((x, t))
+                                # keep y as running average for stability
+                                row["y"] = (row["y"] + y) / 2.0
+                                placed = True
+                                break
+                        if not placed:
+                            rows.append({"y": y, "items": [(x, t)]})
+
+                    # Sort rows by y, then tokens by x.
+                    rows.sort(key=lambda r: r["y"])
+                    for row in rows:
+                        items = row["items"]
+                        items.sort(key=lambda it: it[0])
+                        tokens = [t for _, t in items]
+                        parsed = _parse_row_tokens(tokens)
+                        if parsed:
+                            part_rows.append(parsed)
+
+                # de-dupe by description+qty+unit+amt
+                seen_sig: set[tuple[str, str, str, str]] = set()
+                deduped: list[dict[str, Any]] = []
+                for r in part_rows:
+                    sig = (
+                        str(r.get("description") or "").strip().lower(),
+                        str(r.get("quantity") or "").strip(),
+                        str(r.get("unit_price") or "").strip(),
+                        str(r.get("amount") or "").strip(),
+                    )
+                    if sig in seen_sig:
+                        continue
+                    seen_sig.add(sig)
+                    deduped.append(r)
+                return deduped
+
+            # PDFs can be text-based OR scanned (image-only). Try text extraction first.
             text, text_error = _extract_text_from_pdf(file_path)
-            if text_error:
-                return Response({"error": text_error}, status=status.HTTP_400_BAD_REQUEST)
+            text = (text or "").strip()
+            if text and not text_error:
+                logger.info(
+                    "[digitization] extract-kv pdf text mode doc_id=%s complaint_id=%s text_len=%s",
+                    doc.id,
+                    doc.complaint_id,
+                    len(text),
+                )
+                fallback_kv = _fallback_extract_kv_from_text(text)
+                kv_json, ai_error = _openai_extract_kv_from_text(text)
+                if ai_error:
+                    return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
 
-            fallback_kv = _fallback_extract_kv_from_text(text)
-            kv_json, ai_error = _openai_extract_kv_from_text(text)
-            if ai_error:
-                return Response({"error": ai_error}, status=status.HTTP_400_BAD_REQUEST)
+                # Ensure broader PDF fields are present in RawData even if AI returned
+                # only a small canonical subset.
+                if isinstance(kv_json, dict):
+                    for k, v in fallback_kv.items():
+                        if k not in kv_json or kv_json.get(k) in (None, "", "null"):
+                            kv_json[k] = v
 
-            # Ensure broader PDF fields are present in RawData even if AI returned
-            # only a small canonical subset.
-            if isinstance(kv_json, dict):
-                for k, v in fallback_kv.items():
-                    if k not in kv_json or kv_json.get(k) in (None, "", "null"):
-                        kv_json[k] = v
+                # Even for text-based PDFs, the parts table is often an embedded image.
+                # If we did not get parts, run the PDF->image vision fallback just for parts.
+                existing_parts = kv_json.get("parts") if isinstance(kv_json, dict) else None
+                if not (isinstance(existing_parts, list) and len(existing_parts) > 0):
+                    # First, attempt a deterministic parse from PDF text (works for many invoices).
+                    parsed_parts = _extract_parts_from_pdf_text(file_path)
+                    if parsed_parts:
+                        kv_json["parts"] = parsed_parts
+                        logger.info(
+                            "[digitization] extract-kv pdf parts-from-text doc_id=%s parts=%s",
+                            doc.id,
+                            len(parsed_parts),
+                        )
+                        existing_parts = parsed_parts
+
+                # If still empty, fall back to the heavier PDF->image vision extraction.
+                existing_parts = kv_json.get("parts") if isinstance(kv_json, dict) else None
+                if not (isinstance(existing_parts, list) and len(existing_parts) > 0):
+                    parts_from_images, errors = _extract_parts_from_pdf_images(file_path, tmp_path)
+                    if parts_from_images:
+                        kv_json["parts"] = parts_from_images
+                    logger.info(
+                        "[digitization] extract-kv pdf parts-from-images doc_id=%s parts=%s errors=%s",
+                        doc.id,
+                        len(parts_from_images),
+                        errors[:2],
+                    )
+            else:
+                logger.info(
+                    "[digitization] extract-kv pdf scanned fallback doc_id=%s complaint_id=%s text_error=%s",
+                    doc.id,
+                    doc.complaint_id,
+                    text_error,
+                )
+                # Scanned PDF fallback: render pages to images and run the vision extractor.
+                # This is required for invoices that are essentially photos embedded in a PDF.
+                try:
+                    mupdf = _import_pymupdf()
+                except Exception:
+                    return Response(
+                        {"error": "Scanned PDF detected, but PyMuPDF is not installed. Install: pip install PyMuPDF"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                page_paths: list[Path] = []
+                try:
+                    pdf = mupdf.open(file_path)
+                    max_pages = min(2, pdf.page_count or 0)  # invoices are usually 1 page; allow 2
+                    for i in range(max_pages):
+                        page = pdf.load_page(i)
+                        pix = page.get_pixmap(dpi=320)
+                        out_path = Path(str(tmp_path) + f".page{i+1}.png")
+                        pix.save(str(out_path))
+                        page_paths.append(out_path)
+                    logger.info(
+                        "[digitization] extract-kv rendered pages doc_id=%s pages=%s",
+                        doc.id,
+                        len(page_paths),
+                    )
+                except Exception as e:
+                    return Response({"error": f"Failed to render scanned PDF: {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+                merged: dict[str, Any] = {}
+                merged_parts: list[dict[str, Any]] = []
+                errors: list[str] = []
+
+                for img_path in page_paths:
+                    data, err = _openai_extract_invoice_data(str(img_path))
+                    if err:
+                        errors.append(err)
+                        continue
+                    if isinstance(data, dict):
+                        for k, v in data.items():
+                            if _to_loose_key(k) in ("parts", "part_details", "parts_details", "line_items", "lineitems", "items", "item_rows", "invoice_parts"):
+                                continue
+                            if k not in merged or merged.get(k) in (None, "", "null"):
+                                merged[k] = v
+                        merged_parts.extend(_extract_parts_from_payload(data))
+                if merged_parts:
+                    merged["parts"] = merged_parts
+                kv_json = merged
+                logger.info(
+                    "[digitization] extract-kv scanned merge doc_id=%s parts=%s keys=%s",
+                    doc.id,
+                    len(merged_parts),
+                    sorted(list((kv_json or {}).keys()))[:25],
+                )
+
+                # Cleanup rendered page images (the main tmp_path cleanup still applies separately)
+                for p in page_paths:
+                    try:
+                        p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+                if not kv_json:
+                    return Response(
+                        {"error": errors[0] if errors else "Could not extract data from scanned PDF."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
         else:
             return Response(
                 {"error": f"Unsupported file type for key-value extraction: {ext}"},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if isinstance(kv_json, dict):
+            parts_val = kv_json.get("parts")
+            logger.info(
+                "[digitization] extract-kv result doc_id=%s complaint_id=%s parts_type=%s parts_count=%s",
+                doc.id,
+                doc.complaint_id,
+                type(parts_val).__name__,
+                len(parts_val) if isinstance(parts_val, list) else None,
             )
 
         # Persist extraction so history edit can locate the source document later.
@@ -1115,20 +1475,45 @@ def digitization_save_invoice_details(request):
                 # so UI/history reads the real claim number everywhere.
                 if prev_complaint_id and prev_complaint_id != claim_number:
                     try:
+                        def _local_move_media_key(old_key: str, new_key: str) -> None:
+                            """
+                            When using local MEDIA_ROOT storage, moving a digitization key requires
+                            physically moving the file on disk; updating `file.name` alone breaks later reads.
+                            """
+                            from pathlib import Path as _Path
+
+                            root = _Path(settings.MEDIA_ROOT)
+                            src = root / old_key
+                            dst = root / new_key
+                            if not src.exists():
+                                return
+                            dst.parent.mkdir(parents=True, exist_ok=True)
+                            try:
+                                src.replace(dst)
+                            except Exception:
+                                # Best-effort: do not fail invoice save if the file can't be moved.
+                                return
+
                         for d in DigitizationDocument.objects.filter(complaint_id=prev_complaint_id).only("id", "file"):
                             key = str(getattr(d.file, "name", "") or "")
+                            new_key = key
                             if key.startswith(f"digitization/{prev_complaint_id}/"):
-                                d.file.name = key.replace(
+                                new_key = key.replace(
                                     f"digitization/{prev_complaint_id}/",
                                     f"digitization/{claim_number}/",
                                     1,
                                 )
                             elif key.startswith(f"digitization/classified/{prev_complaint_id}/"):
-                                d.file.name = key.replace(
+                                new_key = key.replace(
                                     f"digitization/classified/{prev_complaint_id}/",
                                     f"digitization/classified/{claim_number}/",
                                     1,
                                 )
+                            # If we are not on S3, also move the underlying file on disk.
+                            if not s3_enabled() and new_key != key and key and new_key:
+                                _local_move_media_key(key, new_key)
+                            if new_key != key:
+                                d.file.name = new_key
                             d.complaint_id = claim_number
                             d.save(update_fields=["complaint_id", "file"])
                     except Exception:

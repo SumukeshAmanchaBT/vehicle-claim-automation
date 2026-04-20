@@ -44,6 +44,7 @@ import {
   getDetailedDamageAssessment,
   getDuplicateCandidates,
   getImageFraudResults,
+  getBusinessRuleValidationFailedReportPdf,
   getRecommendationReportPdf,
   getTotalValue,
   runDetailedDamageAssessment,
@@ -404,6 +405,7 @@ export default function ClaimDetail() {
   const [claimEvaluation, setClaimEvaluation] = useState<ClaimEvaluationResponse | null>(null);
   const [claimEvaluationLoading, setClaimEvaluationLoading] = useState(false);
   const [reportPdfLoading, setReportPdfLoading] = useState(false);
+  const [brvPdfLoading, setBrvPdfLoading] = useState(false);
   /** True after user runs “Damage detection” until a persisted evaluation exists */
   const [showDamageRunSummary, setShowDamageRunSummary] = useState(false);
   const [claimInsightsLoading, setClaimInsightsLoading] = useState(false);
@@ -891,6 +893,25 @@ export default function ClaimDetail() {
     }
   };
 
+  const handleGenerateBrvFailedReport = async () => {
+    if (!id) return;
+    setBrvPdfLoading(true);
+    setError(null);
+    try {
+      const blob = await getBusinessRuleValidationFailedReportPdf(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Motor_Claim_Failed_BRV_Report_${id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate failed BRV report");
+    } finally {
+      setBrvPdfLoading(false);
+    }
+  };
+
   const handleDamageDetection = async () => {
     if (!id || !fnol) return;
     const rawPhotos =
@@ -1210,6 +1231,8 @@ export default function ClaimDetail() {
       businessRuleValidationState?.completed &&
         businessRuleValidationState?.passed !== false
     ) && hasBackendDamageAssessment;
+
+  const showGenerateFailedBrvReport = Boolean(businessRuleValidationState?.completed && businessRuleValidationState?.passed === false);
 
   const canRunBusinessRuleValidation =
     Boolean(fnol) && !fraudDetectionLoading && showRunBrvButton;
@@ -1653,6 +1676,25 @@ export default function ClaimDetail() {
             </Link>
           </Button>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            {showGenerateFailedBrvReport && (
+              <Button
+                variant="destructive"
+                onClick={handleGenerateBrvFailedReport}
+                disabled={brvPdfLoading}
+              >
+                {brvPdfLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="mr-2 h-4 w-4" />
+                    Share Failed Report
+                  </>
+                )}
+              </Button>
+            )}
             {/* Generate Recommendation Report — only when BRV snapshot + DA exist */}
             {showGenerateRecommendationReport && (
               <Button

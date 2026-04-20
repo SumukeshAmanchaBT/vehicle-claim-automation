@@ -591,13 +591,13 @@ export default function Fraud() {
 
   return (
     <AppLayout
-      title="Fraud Review"
+      title="Re-Open Claims"
       subtitle="Re-open claims enriched with media trust, duplicate detection, and valuation signals"
     >
       <div className="space-y-6 animate-fade-in">
         <Alert className="border-primary/20 bg-primary/5">
           <AlertTriangle className="h-4 w-4 text-primary" />
-          <AlertTitle>Fraud review queue</AlertTitle>
+          <AlertTitle>Re-Open Claims review queue</AlertTitle>
           <AlertDescription>
             This workspace combines business-rule history with image authenticity,
             duplicate reuse, and valuation signals. If media trust or valuation
@@ -705,7 +705,7 @@ export default function Fraud() {
                 }
                 placeholder="Search by claim number, complaint ID, customer, or review state"
                 className="pl-9"
-                aria-label="Search fraud review queue"
+                aria-label="Search Re-Open Claims review queue"
               />
             </div>
 
@@ -734,7 +734,7 @@ export default function Fraud() {
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-base flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-warning" />
-              Fraud Review Queue
+              Re-Open Claims Review Queue
             </CardTitle>
             {!loading && (
               <div className="text-right text-sm text-muted-foreground">

@@ -46,7 +46,7 @@ const navItems = [
     permission: "reports.view",
   },
   {
-    title: "Claim Digitization",
+    title: "Claim Process",
     href: "/claim-digitization",
     icon: Monitor,
     permission: "damage.view",

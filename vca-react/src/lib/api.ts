@@ -766,6 +766,28 @@ export async function getRecommendationReportPdf(complaintId: string): Promise<B
   return response.data as Blob;
 }
 
+/** GET /api/fnol/:complaintId/brv-report/ - Download BRV-only PDF report (sections 1–4). */
+export async function getBusinessRuleValidationReportPdf(
+  complaintId: string
+): Promise<Blob> {
+  const response = await httpClient.get(
+    `/fnol/${encodeURIComponent(complaintId)}/brv-report/`,
+    { responseType: "blob" }
+  );
+  return response.data as Blob;
+}
+
+/** GET /api/fnol/:complaintId/brv-failed-report/ - Download BRV-failed PDF report (full report + dash separator after section 4). */
+export async function getBusinessRuleValidationFailedReportPdf(
+  complaintId: string
+): Promise<Blob> {
+  const response = await httpClient.get(
+    `/fnol/${encodeURIComponent(complaintId)}/brv-failed-report/`,
+    { responseType: "blob" }
+  );
+  return response.data as Blob;
+}
+
 /** ****************************
  * Master data APIs
  * **************************** */

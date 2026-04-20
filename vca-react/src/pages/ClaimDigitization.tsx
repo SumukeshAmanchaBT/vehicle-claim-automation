@@ -269,14 +269,56 @@ export default function ClaimDigitization() {
     const makeCandidate = makeModel || vehicleName;
     const split = makeCandidate.split(" ");
 
-    const rawParts = (kv as any).parts as unknown;
+    const toLooseKey = (k: string) =>
+      String(k || "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w]/g, "");
+
+    const getFirstMatchingKey = (obj: Record<string, unknown>, keys: string[]) => {
+      const looseToActual: Record<string, string> = {};
+      Object.keys(obj).forEach((k) => {
+        looseToActual[toLooseKey(k)] = k;
+      });
+      for (const k of keys) {
+        const actual = looseToActual[toLooseKey(k)];
+        if (actual) return actual;
+      }
+      return null;
+    };
+
+    // Different extractors can emit different shapes/keys for parts.
+    // Prefer canonical `parts`, but accept common alternates too.
+    const partsKey = getFirstMatchingKey(kv, [
+      "parts",
+      "part",
+      "part_details",
+      "parts_details",
+      "line_items",
+      "lineitems",
+      "items",
+      "item_rows",
+      "invoice_parts",
+    ]);
+
+    let rawParts: unknown = partsKey ? (kv as any)[partsKey] : undefined;
+    // Some extractors return parts as a JSON string; attempt to parse.
+    if (typeof rawParts === "string") {
+      const trimmed = rawParts.trim();
+      if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+        try {
+          rawParts = JSON.parse(trimmed);
+        } catch {
+          // leave as string; mapping below will handle null/unsupported
+        }
+      }
+    }
     const partsFromKv = Array.isArray(rawParts)
       ? rawParts
       : rawParts && typeof rawParts === "object"
         ? [rawParts]
         : null;
-
-    const toLooseKey = (k: string) => String(k || "").trim().toLowerCase().replace(/\s+/g, "_").replace(/[^\w]/g, "");
 
     const pickFirst = (row: Record<string, unknown>, keys: string[]) => {
       for (const k of keys) {
@@ -331,8 +373,37 @@ export default function ClaimDigitization() {
             .filter((r) => (r.description || "").trim().length > 0)
         : [];
 
+    // Ensure RawData also reflects the parsed part lines (matches screenshot #3),
+    // even when upstream extractor used non-canonical keys or returned parts separately.
+    const rawDataWithParts: Record<string, unknown> = { ...(kv || {}) };
+    const existingParts = (rawDataWithParts as any).parts;
+    if (!Array.isArray(existingParts) || existingParts.length === 0) {
+      if (mappedParts.length > 0) {
+        rawDataWithParts.parts = mappedParts.map((p) => ({
+          description: p.description,
+          quantity: p.quantity === "" ? null : Number(p.quantity) || p.quantity,
+          unit_price: p.unitPrice === "" ? null : Number(p.unitPrice) || p.unitPrice,
+          amount: p.amount === "" ? null : Number(p.amount) || p.amount,
+        }));
+      }
+    }
+
+    if (import.meta.env.DEV) {
+      // Debugging aid: helps trace why parts are not showing up.
+      // Use console.log (not debug) so it shows under default Chrome levels.
+      // eslint-disable-next-line no-console
+      console.log("[digitization] buildValidationFromKv", {
+        keys: Object.keys(kv || {}).slice(0, 60),
+        partsKey,
+        rawPartsType: Array.isArray(rawParts) ? "array" : typeof rawParts,
+        rawPartsCount: Array.isArray(rawParts) ? rawParts.length : null,
+        mappedPartsCount: mappedParts.length,
+        mappedPartsPreview: mappedParts.slice(0, 3),
+      });
+    }
+
     return {
-      rawData: kv,
+      rawData: rawDataWithParts,
       coreDetails: {
         claimNumber: String(kv.claim_number ?? ""),
         vehicleNumber: String(kv.vehicle_number ?? ""),
@@ -366,6 +437,23 @@ export default function ClaimDigitization() {
     setLoading(true);
     try {
       const res = await extractDigitizationKv(serverDocId);
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.log("[digitization] extractDigitizationKv response", {
+          localDocId,
+          serverDocId,
+          filename: (res as any)?.filename,
+          document_id: (res as any)?.document_id,
+          kvKeys: Object.keys((res as any)?.key_value_json ?? {}).slice(0, 80),
+          partsKeyPresent: Object.prototype.hasOwnProperty.call((res as any)?.key_value_json ?? {}, "parts"),
+          partsValueType: Array.isArray((res as any)?.key_value_json?.parts)
+            ? "array"
+            : typeof (res as any)?.key_value_json?.parts,
+          partsValueCount: Array.isArray((res as any)?.key_value_json?.parts)
+            ? (res as any).key_value_json.parts.length
+            : null,
+        });
+      }
       const kv = (res.key_value_json ?? {}) as Record<string, unknown>;
       const built = buildValidationFromKv(kv);
       setValidationDataByLocalId((prev) => ({ ...prev, [localDocId]: built }));
@@ -507,6 +595,23 @@ export default function ClaimDigitization() {
         if (!serverId) continue;
 
         const res = await extractDigitizationKv(serverId);
+        if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.log("[digitization] extractDigitizationKv (submit loop)", {
+            localDocId: doc.id,
+            serverDocId: serverId,
+            filename: (res as any)?.filename,
+            document_id: (res as any)?.document_id,
+            kvKeys: Object.keys((res as any)?.key_value_json ?? {}).slice(0, 120),
+            partsKeyPresent: Object.prototype.hasOwnProperty.call((res as any)?.key_value_json ?? {}, "parts"),
+            partsValueType: Array.isArray((res as any)?.key_value_json?.parts)
+              ? "array"
+              : typeof (res as any)?.key_value_json?.parts,
+            partsValueCount: Array.isArray((res as any)?.key_value_json?.parts)
+              ? (res as any).key_value_json.parts.length
+              : null,
+          });
+        }
         const kv = (res.key_value_json ?? {}) as Record<string, unknown>;
         const built = buildValidationFromKv(kv);
         nextValidationByLocalId[doc.id] = built;
@@ -589,7 +694,7 @@ export default function ClaimDigitization() {
   };
 
   return (
-    <AppLayout title="Claim Digitization" subtitle="">
+    <AppLayout title="Claim Process" subtitle="">
       <div className="space-y-4 animate-fade-in">
         <div className="rounded-xl border p-4">
           <div className="grid gap-4 lg:grid-cols-12 lg:items-stretch">
