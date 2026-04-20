@@ -2,6 +2,8 @@ import type { AxiosRequestConfig } from "axios";
 import { httpClient, LONG_REQUEST_TIMEOUT_MS } from "./httpClient";
 import type {
   ClaimWorkflowSnapshot,
+  ClaimVideoAssetSummary,
+  ClaimVideoDamageAssessmentSummary,
   FnolPayload,
   FnolResponse,
   FraudRuleResult,
@@ -19,6 +21,8 @@ import {
 
 export type {
   ClaimWorkflowSnapshot,
+  ClaimVideoAssetSummary,
+  ClaimVideoDamageAssessmentSummary,
   FnolPayload,
   FnolResponse,
   FraudRuleResult,
@@ -613,6 +617,69 @@ export interface ClaimVideoAnalysisResponse {
   metrics: Record<string, unknown>;
 }
 
+export interface ClaimVideoAnalysisArtifact {
+  id: number;
+  complaint_id?: string;
+  video_asset_id?: number | null;
+  job_id?: number | null;
+  status: string;
+  summary_text: string;
+  analysis_context_json: Record<string, unknown>;
+  keyframes_json: Array<Record<string, unknown>>;
+  timeline_json: Array<Record<string, unknown>>;
+  metrics_json: Record<string, unknown>;
+  motion_summary_json: Record<string, unknown>;
+  scenario_summary_json: Record<string, unknown>;
+  fraud_signals_json: Record<string, unknown>;
+  decision_support_json: Record<string, unknown>;
+  progress_json: Record<string, unknown>;
+  error_json: Record<string, unknown>;
+  processing_started_at?: string | null;
+  processing_completed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  frames?: Array<Record<string, unknown>>;
+}
+
+export interface ClaimVideoJobStatus {
+  id: number;
+  complaint_id?: string;
+  status: string;
+  idempotency_key?: string;
+  request_payload_json?: Record<string, unknown>;
+  metrics_json?: Record<string, unknown>;
+  error_json?: Record<string, unknown>;
+  progress_stage?: string;
+  progress_message?: string;
+  progress_percent?: number;
+  attempt_count?: number;
+  max_attempts?: number;
+  next_retry_at?: string | null;
+  locked_at?: string | null;
+  worker_token?: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  last_heartbeat_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  asset_ids?: number[];
+}
+
+export interface ClaimVideoAssessmentResponse {
+  complaint_id: string;
+  analysis_source: string;
+  analysis: ClaimVideoAnalysisArtifact | null;
+  timeline: Array<Record<string, unknown>>;
+  video_assets: ClaimVideoAssetSummary[];
+  video_asset_count: number;
+  job: ClaimVideoJobStatus | null;
+  video_pipeline_runtime?: Record<string, unknown>;
+  video_damage_assessment: ClaimVideoDamageAssessmentSummary;
+  phase1_context?: Record<string, unknown>;
+  poll_url?: string;
+  result_url?: string;
+}
+
 export interface BatchValidateClaimsResponse {
   requested_count: number;
   processed_count: number;
@@ -688,6 +755,40 @@ export async function getClaimVideoTimeline(
 ): Promise<ClaimVideoAnalysisResponse> {
   return fetchApi<ClaimVideoAnalysisResponse>(
     `/claims/${encodeURIComponent(complaintId)}/timeline`
+  );
+}
+
+export async function getVideoDamageAssessment(
+  complaintId: string
+): Promise<ClaimVideoAssessmentResponse> {
+  return fetchApi<ClaimVideoAssessmentResponse>(
+    `/fnol/${encodeURIComponent(complaintId)}/video-damage-assessment`
+  );
+}
+
+export async function runVideoDamageAssessment(params: {
+  complaintId: string;
+  assetIds?: number[];
+  reprocess?: boolean;
+  idempotencyKey?: string;
+}): Promise<ClaimVideoAssessmentResponse> {
+  const payload: Record<string, unknown> = {};
+  if (params.assetIds && params.assetIds.length > 0) {
+    payload.asset_ids = params.assetIds;
+  }
+  if (params.reprocess) {
+    payload.reprocess = true;
+  }
+  if (params.idempotencyKey) {
+    payload.idempotency_key = params.idempotencyKey;
+  }
+  return fetchApi<ClaimVideoAssessmentResponse>(
+    `/fnol/${encodeURIComponent(params.complaintId)}/video-damage-assessment`,
+    {
+      method: "POST",
+      data: payload,
+      timeout: LONG_REQUEST_TIMEOUT_MS,
+    }
   );
 }
 

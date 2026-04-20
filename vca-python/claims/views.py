@@ -49,6 +49,7 @@ from .models import (
     ImageFraudResult,
     InvoiceCoreDetails,
     PricingConfig,
+    ClaimVideoAsset,
 )
 from .workflow_display import claim_status_implies_recommendation_terminal
 from .workflow_state import (
@@ -731,18 +732,30 @@ def _policy_data_mismatch_passed(
 
 def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[dict] = None) -> bool:
     """
-    Check if damage photos exist with valid photo_path. Uses fnol_damage_photos.photo_path
-    when complaint_id given - requires non-null, non-empty photo_path.
+    Check if claim media exists for BRV.
+
+    Photo-backed claims still use fnol_damage_photos, while video-first claims satisfy
+    the same rule through claim_video_assets so BRV/DA can proceed without image uploads.
     """
     if complaint_id:
-        return FnolDamagePhoto.objects.filter(
+        has_photos = FnolDamagePhoto.objects.filter(
             complaint_id=complaint_id
         ).exclude(Q(photo_path__isnull=True) | Q(photo_path="")).exists()
+        if has_photos:
+            return True
+        return ClaimVideoAsset.objects.filter(
+            complaint_id=complaint_id
+        ).exclude(Q(source_path__isnull=True) | Q(source_path="")).exists()
     docs = documents or {}
     if docs.get("photos_uploaded"):
         return True
+    if docs.get("videos_uploaded"):
+        return True
     photos = docs.get("photos")
     if isinstance(photos, list) and len(photos) > 0:
+        return True
+    videos = docs.get("videos") or docs.get("video_assets")
+    if isinstance(videos, list) and len(videos) > 0:
         return True
     return False
 
@@ -1357,6 +1370,7 @@ def _fnol_claim_to_response(
     latest_eval: ClaimEvaluationResponse | None = None,
     photo_urls: Optional[list[str]] = None,
     normalized_photo_paths: Optional[list[str]] = None,
+    request=None,
     *,
     list_mode: bool = False,
     workflow_state: Optional[str] = None,
@@ -1460,7 +1474,7 @@ def _fnol_claim_to_response(
             fnol=claim,
             latest_eval=latest_eval,
         )
-        response.update(build_claim_video_overview(claim))
+        response.update(build_claim_video_overview(claim, request=request))
 
     return response
 
@@ -1655,6 +1669,7 @@ def get_fnol(request, pk: str):
         latest_eval=latest_eval_map.get(pk),
         photo_urls=photo_urls_by_claim.get(pk, []),
         normalized_photo_paths=normalized_photos_by_claim.get(pk, []),
+        request=request,
         list_mode=False,
     )
     return Response(data)

@@ -185,6 +185,18 @@ export function resolveDamagePhotoUrl(raw: string): string {
   return `${base}/${tail}`;
 }
 
+export function resolveClaimVideoUrl(raw: string): string {
+  const u = (raw || "").trim();
+  if (!u) return "";
+  if (/^https?:\/\//i.test(u)) return u;
+  const path = u.replace(/^\/+/, "");
+  const origin = API_BASE_URL ? new URL(API_BASE_URL).origin : "";
+  if (path.startsWith("media/")) {
+    return `${origin}/${path}`;
+  }
+  return `${origin}/media/${path}`;
+}
+
 export function getApiErrorDetail(err: unknown): string {
   return getApiErrorSummary(err).userMessage;
 }

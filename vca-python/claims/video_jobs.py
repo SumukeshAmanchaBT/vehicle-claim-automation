@@ -22,7 +22,10 @@ from claims.models import (
     FnolClaim,
 )
 from claims.video_analysis import analyze_video_file, probe_video_metadata
-from claims.video_claim_flow import persist_claim_video_damage_assessments
+from claims.video_claim_flow import (
+    persist_claim_video_damage_assessments,
+    sync_video_damage_assessment_to_phase1,
+)
 from claims.video_runtime import (
     build_video_provider_selection_preview,
     get_video_pipeline_runtime_status,
@@ -919,6 +922,17 @@ def process_claimed_video_processing_job(
                     "metrics_json",
                     "updated_at",
                 ]
+            )
+        try:
+            sync_video_damage_assessment_to_phase1(
+                claim=claim,
+                result=result,
+                job=job,
+            )
+        except Exception:
+            logger.exception(
+                "Video processing job %s completed but canonical phase-1 sync failed",
+                job.id,
             )
         return job
     except Exception as exc:

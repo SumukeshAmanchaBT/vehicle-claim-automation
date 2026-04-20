@@ -47,10 +47,13 @@ import {
   getBusinessRuleValidationFailedReportPdf,
   getRecommendationReportPdf,
   getTotalValue,
+  getVideoDamageAssessment,
   runDetailedDamageAssessment,
   runFraudDetection,
   runImageFraudAnalysis,
+  runVideoDamageAssessment,
   type BusinessRuleSummaryBlock,
+  type ClaimVideoAssessmentResponse,
   type ClaimWorkflowSnapshot,
   type FnolPayload,
   type FnolResponse,
@@ -63,7 +66,12 @@ import {
 } from "@/lib/api";
 import type { FraudRuleResult } from "@/models/fnol";
 import type { DamageAssessmentCardSummary } from "@/models/damageAssessmentCards";
-import { getApiErrorDetail, getApiErrorSummary, resolveDamagePhotoUrl } from "@/lib/httpClient";
+import {
+  getApiErrorDetail,
+  getApiErrorSummary,
+  resolveClaimVideoUrl,
+  resolveDamagePhotoUrl,
+} from "@/lib/httpClient";
 import {
   formatCurrency,
   inferCurrencyLocale,
@@ -243,6 +251,18 @@ type ClaimPhotoAsset = {
   url: string;
 };
 
+type ClaimVideoPlayerAsset = {
+  id: number;
+  key: string;
+  label: string;
+  url: string;
+  sourceType: string;
+  durationMs?: number | null;
+  frameCount?: number | null;
+  width?: number | null;
+  height?: number | null;
+};
+
 type AssessmentSnapshotState = {
   claimId: string;
   imageFraudResults: ImageFraudResultsResponse | null;
@@ -271,6 +291,57 @@ const buildClaimPhotoAssets = (
       };
     })
     .filter((photo): photo is ClaimPhotoAsset => Boolean(photo));
+
+const buildClaimVideoAssets = (
+  videoAssets: FnolResponse["video_assets"] | undefined
+): ClaimVideoPlayerAsset[] =>
+  (videoAssets ?? [])
+    .map((asset, index) => {
+      const url = resolveClaimVideoUrl(
+        asset.file_url || asset.source_path || ""
+      );
+      if (!url) return null;
+
+      const label =
+        asset.original_filename?.trim() ||
+        asset.source_path?.split(/[\\/]/).filter(Boolean).at(-1) ||
+        `Video ${index + 1}`;
+
+      return {
+        id: asset.id,
+        key: `${asset.id}-${label}-${index}`,
+        label,
+        url,
+        sourceType: asset.source_type || "video",
+        durationMs: asset.duration_ms ?? null,
+        frameCount: asset.frame_count ?? null,
+        width: asset.width ?? null,
+        height: asset.height ?? null,
+      };
+    })
+    .filter((asset): asset is ClaimVideoPlayerAsset => Boolean(asset));
+
+const formatVideoDuration = (durationMs?: number | null) => {
+  if (durationMs == null || durationMs <= 0) return null;
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+};
+
+const formatVideoTimestamp = (timestampMs?: number | null) => {
+  if (timestampMs == null || timestampMs < 0) return null;
+  const totalSeconds = Math.floor(timestampMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+};
+
+const formatVideoReviewAction = (value?: string | null) => {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return "Not available";
+  return normalized.replace(/_/g, " ");
+};
 
 function fraudBandToNumeric(band: string | number): number {
   if (typeof band === "number") {
@@ -416,14 +487,31 @@ export default function ClaimDetail() {
   /** Full-page guard during post-mutation refetch so testers never see stale DA/evaluation rows. */
   const [postActionRefetchBusy, setPostActionRefetchBusy] = useState(false);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(0);
+  const [selectedVideoAssetIndex, setSelectedVideoAssetIndex] = useState(0);
   const [photoPreviewOpen, setPhotoPreviewOpen] = useState(false);
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const activeClaimIdRef = useRef<string | null>(id ?? null);
   const rawPhotoEntries = fnol?.raw_response?.documents?.photos ?? fnol?.damage_photos ?? [];
   const claimPhotoAssets = buildClaimPhotoAssets(rawPhotoEntries);
+  const claimVideoAssets = buildClaimVideoAssets(fnol?.video_assets);
+  const selectedVideoAsset =
+    claimVideoAssets[selectedVideoAssetIndex] ??
+    claimVideoAssets[0] ??
+    null;
+  const claimUsesVideoFlow =
+    claimPhotoAssets.length === 0 && claimVideoAssets.length > 0;
+  const claimVideoAssessmentSummary = fnol?.video_damage_assessment ?? null;
+  const shouldRenderPhotoMediaPanel =
+    claimPhotoAssets.length > 0 || claimVideoAssets.length === 0;
   const activeClaimEvaluation =
     claimEvaluation?.complaint_id === id ? claimEvaluation : null;
+  const hasInlineAssessmentResults =
+    assessmentSnapshot?.claimId === id &&
+    Boolean(
+      assessmentSnapshot.detailedDamageAssessment ||
+        assessmentSnapshot.totalValueSummary
+    );
   /** Authoritative lifecycle for tab/button gates (FNOL or latest evaluation payload). */
   const workflowSnapshot = useMemo(
     () =>
@@ -456,12 +544,15 @@ export default function ClaimDetail() {
       showRunBrvButton: Boolean(brv?.run_allowed),
       showRunDamageAssessmentButton: Boolean(da?.run_allowed),
       damageAssessmentIncompleteNoValuation:
-        Boolean(da?.completed) && da?.valuation_ready === false,
+        Boolean(da?.completed) &&
+        da?.valuation_ready === false &&
+        !hasInlineAssessmentResults,
       showDamageAssessmentResultsPanel:
-        Boolean(da?.completed) && da?.valuation_ready !== false,
+        (Boolean(da?.completed) && da?.valuation_ready !== false) ||
+        Boolean(showDamageRunSummary && hasInlineAssessmentResults),
       showClaimEvaluationTabStrip: Boolean(ce?.available),
     };
-  }, [workflowSnapshot]);
+  }, [workflowSnapshot, hasInlineAssessmentResults, showDamageRunSummary]);
 
   useEffect(() => {
     if (activeTab === "assessment" && !claimDetailWorkflowGates.damageAssessmentTabUnlocked) {
@@ -551,8 +642,60 @@ export default function ClaimDetail() {
     [isCurrentClaimRoute]
   );
 
+  const waitForVideoAssessmentCompletion = useCallback(
+    async (
+      claimId: string,
+      initialResponse: ClaimVideoAssessmentResponse
+    ): Promise<ClaimVideoAssessmentResponse> => {
+      const isTerminal = (status?: string | null) =>
+        status === "completed" || status === "failed";
+
+      let response = initialResponse;
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        if (!isCurrentClaimRoute(claimId)) {
+          return response;
+        }
+
+        const analysisStatus =
+          response.video_damage_assessment?.analysis_status ??
+          response.analysis?.status ??
+          null;
+        const jobStatus =
+          response.job?.status ??
+          response.video_damage_assessment?.job_status ??
+          null;
+
+        if (isTerminal(analysisStatus)) {
+          return response;
+        }
+
+        if (
+          analysisStatus === "not_started" &&
+          !jobStatus &&
+          response.analysis_source === "asset_inventory"
+        ) {
+          return response;
+        }
+
+        if (
+          jobStatus &&
+          !["queued", "running", "retrying"].includes(jobStatus)
+        ) {
+          return response;
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        response = await getVideoDamageAssessment(claimId);
+      }
+
+      return response;
+    },
+    [isCurrentClaimRoute]
+  );
+
   useEffect(() => {
     setSelectedPhotoIndex(0);
+    setSelectedVideoAssetIndex(0);
     setPhotoPreviewOpen(false);
     setActiveAssessmentCard(null);
   }, [id]);
@@ -592,6 +735,19 @@ export default function ClaimDetail() {
       setSelectedPhotoIndex(claimPhotoAssets.length - 1);
     }
   }, [claimPhotoAssets.length, selectedPhotoIndex]);
+
+  useEffect(() => {
+    if (claimVideoAssets.length === 0 && selectedVideoAssetIndex !== 0) {
+      setSelectedVideoAssetIndex(0);
+      return;
+    }
+    if (
+      selectedVideoAssetIndex >= claimVideoAssets.length &&
+      claimVideoAssets.length > 0
+    ) {
+      setSelectedVideoAssetIndex(claimVideoAssets.length - 1);
+    }
+  }, [claimVideoAssets.length, selectedVideoAssetIndex]);
 
   const loadAssessmentInsightsSnapshot = useCallback(async (claimId: string) => {
     // All four requests run concurrently; damage-assessment-detailed and total-value in parallel.
@@ -927,8 +1083,12 @@ export default function ClaimDetail() {
       })
       .filter(Boolean) as string[];
 
-    if (imageUrls.length === 0) {
+    if (!claimUsesVideoFlow && imageUrls.length === 0) {
       setError("No images attached to process damage detection.");
+      return;
+    }
+    if (claimUsesVideoFlow && claimVideoAssets.length === 0) {
+      setError("No videos attached to process damage detection.");
       return;
     }
 
@@ -938,6 +1098,103 @@ export default function ClaimDetail() {
     setError(null);
     setAssessmentInsightAlert(null);
     try {
+      if (claimUsesVideoFlow) {
+        const initialVideoAssessment = await runVideoDamageAssessment({
+          complaintId: id,
+          assetIds: claimVideoAssets.map((asset) => asset.id),
+          idempotencyKey: `claim-detail-video-da-${id}`,
+        });
+        const completedVideoAssessment =
+          await waitForVideoAssessmentCompletion(id, initialVideoAssessment);
+        if (!isCurrentClaimRoute(id)) return;
+
+        const finalAnalysisStatus =
+          completedVideoAssessment.video_damage_assessment?.analysis_status ??
+          completedVideoAssessment.analysis?.status ??
+          "";
+        const videoSummaryText =
+          completedVideoAssessment.video_damage_assessment?.summary_text ||
+          completedVideoAssessment.analysis?.summary_text ||
+          "";
+
+        if (finalAnalysisStatus === "failed") {
+          setError(videoSummaryText || "Video damage assessment failed.");
+          return;
+        }
+
+        if (finalAnalysisStatus !== "completed") {
+          setError(
+            "Video damage assessment is still processing. Results will appear once the backend completes the run."
+          );
+          return;
+        }
+
+        const snapshot = await loadAssessmentInsightsSnapshot(id);
+        const videoAssessment =
+          completedVideoAssessment.video_damage_assessment ?? null;
+
+        applyAssessmentSnapshot(id, {
+          imageFraudResults: snapshot.imageFraudResults,
+          duplicateCandidates: snapshot.duplicateCandidates,
+          detailedDamageAssessment: snapshot.detailedDamageAssessment,
+          totalValueSummary: snapshot.totalValueSummary,
+        });
+
+        if (videoAssessment) {
+          const costRange =
+            videoAssessment.total_estimated_cost_min > 0 ||
+            videoAssessment.total_estimated_cost_max > 0
+              ? `${formatClaimCurrency(
+                  videoAssessment.total_estimated_cost_min
+                )} - ${formatClaimCurrency(
+                  videoAssessment.total_estimated_cost_max
+                )}`
+              : "No priced range returned";
+
+          toast({
+            title: "Damage assessment complete",
+            description: `${claimVideoAssets.length} video${
+              claimVideoAssets.length === 1 ? "" : "s"
+            } · ${videoAssessment.total_parts} part line${
+              videoAssessment.total_parts === 1 ? "" : "s"
+            } · Range ${costRange} · ${formatVideoReviewAction(
+              videoAssessment.recommended_action
+            )}`,
+          });
+        } else {
+          toast({
+            title: "Damage assessment complete",
+            description:
+              videoSummaryText || "Video analysis finished and claim results were refreshed.",
+          });
+        }
+
+        if (snapshot.failedSections.length > 0) {
+          const issues = snapshot.failedSections.join("; ");
+          setAssessmentInsightAlert(
+            `Some Assessment insights could not be loaded: ${issues}.`
+          );
+          toast({
+            title: "Analysis partially loaded",
+            description: `Issues: ${issues}.`,
+          });
+        }
+
+        setShowDamageRunSummary(true);
+        setActiveTab("assessment");
+        setClaimEvaluationLoading(true);
+        await refreshClaimContext(id);
+        if (!isCurrentClaimRoute(id)) return;
+
+        queryClient.invalidateQueries({ queryKey: damageAssessmentCardsKey(id) });
+        queryClient.invalidateQueries({
+          queryKey: ["damage-assessment-card-details", id],
+        });
+        void queryClient.invalidateQueries({ queryKey: fnolListQueryKey });
+        setClaimDetailDataRevision((n) => n + 1);
+        return;
+      }
+
       const [fraudRun, detailedRun] = await Promise.allSettled([
         runImageFraudAnalysis(id),
         runDetailedDamageAssessment(id),
@@ -2232,87 +2489,191 @@ export default function ClaimDetail() {
                       </div> */}
 
 
-                      <div className="rounded-lg border p-4 space-y-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <span className="text-sm font-medium">Photos</span>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {claimPhotoAssets.length > 0
-                                ? `${claimPhotoAssets.length} attached claim photo${claimPhotoAssets.length === 1 ? "" : "s"
-                                }`
-                                : "No vehicle photos attached yet"}
-                            </p>
-                          </div>
-                          <StatusBadge
-                            status={claimPhotoAssets.length >= 1 ? "approved" : "pending"}
-                          >
-                            {claimPhotoAssets.length >= 1 ? "Available" : "Missing"}
-                          </StatusBadge>
-                        </div>
-
-                        {selectedPhoto ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => setPhotoPreviewOpen(true)}
-                              aria-label={`Open full-size photo: ${selectedPhoto.label}`}
-                              className="w-full overflow-hidden rounded-lg border text-left transition hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
-                            >
-                              <img
-                                src={selectedPhoto.url}
-                                alt={selectedPhoto.label}
-                                className="h-[320px] w-full object-cover sm:h-[360px]"
-                                loading="lazy"
-                              />
-                            </button>
-
-                            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                              <span className="truncate font-medium text-foreground">
-                                {selectedPhoto.label}
-                              </span>
-                              <span>
-                                {selectedPhotoIndex + 1} / {claimPhotoAssets.length}
-                              </span>
+                      {claimVideoAssets.length > 0 ? (
+                        <div className="rounded-lg border p-4 space-y-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <span className="text-sm font-medium">Videos</span>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {claimVideoAssets.length > 0
+                                  ? `${claimVideoAssets.length} attached claim video${
+                                      claimVideoAssets.length === 1 ? "" : "s"
+                                    }`
+                                  : "No vehicle videos attached yet"}
+                              </p>
                             </div>
-
-                            {claimPhotoAssets.length > 1 ? (
-                              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-                                {claimPhotoAssets.map((photo, index) => {
-                                  const isSelected = index === selectedPhotoIndex;
-                                  return (
-                                    <button
-                                      key={photo.key}
-                                      type="button"
-                                      onClick={() => setSelectedPhotoIndex(index)}
-                                      aria-label={`Photo ${index + 1} of ${claimPhotoAssets.length}: ${photo.label}`}
-                                      className={`overflow-hidden rounded-lg border text-left transition focus:outline-none focus:ring-2 focus:ring-primary/40 ${isSelected
-                                          ? "border-primary ring-1 ring-primary/30"
-                                          : "hover:border-primary/60"
-                                        }`}
-                                    >
-                                      <img
-                                        src={photo.url}
-                                        alt={photo.label}
-                                        className="h-24 w-full object-cover sm:h-28"
-                                        loading="lazy"
-                                      />
-                                      <div className="border-t px-3 py-2">
-                                        <p className="truncate text-xs font-medium text-foreground">
-                                          {photo.label}
-                                        </p>
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </>
-                        ) : (
-                          <div className="flex h-32 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-sm text-muted-foreground">
-                            No vehicle photos are attached to this claim yet.
+                            <StatusBadge
+                              status={claimVideoAssets.length >= 1 ? "approved" : "pending"}
+                            >
+                              {claimVideoAssets.length >= 1 ? "Available" : "Missing"}
+                            </StatusBadge>
                           </div>
-                        )}
-                      </div>
+
+                          {selectedVideoAsset ? (
+                            <>
+                              <div className="overflow-hidden rounded-lg border bg-black">
+                                <video
+                                  key={selectedVideoAsset.key}
+                                  controls
+                                  preload="metadata"
+                                  className="h-[320px] w-full bg-black object-contain sm:h-[420px]"
+                                  src={selectedVideoAsset.url}
+                                >
+                                  Your browser does not support the video tag.
+                                </video>
+                              </div>
+
+                              <div className="flex flex-col gap-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-medium text-foreground">
+                                    {selectedVideoAsset.label}
+                                  </span>
+                                  <span className="rounded-full bg-muted px-2 py-0.5 uppercase tracking-wide">
+                                    {selectedVideoAsset.sourceType}
+                                  </span>
+                                  {selectedVideoAsset.durationMs ? (
+                                    <span>
+                                      Duration {formatVideoDuration(selectedVideoAsset.durationMs)}
+                                    </span>
+                                  ) : null}
+                                  {selectedVideoAsset.frameCount ? (
+                                    <span>
+                                      {selectedVideoAsset.frameCount} frame
+                                      {selectedVideoAsset.frameCount === 1 ? "" : "s"}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <span>
+                                  {selectedVideoAssetIndex + 1} / {claimVideoAssets.length}
+                                </span>
+                              </div>
+
+                              {claimVideoAssets.length > 1 ? (
+                                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                                  {claimVideoAssets.map((asset, index) => {
+                                    const isSelected = index === selectedVideoAssetIndex;
+                                    return (
+                                      <button
+                                        key={asset.key}
+                                        type="button"
+                                        onClick={() => setSelectedVideoAssetIndex(index)}
+                                        className={cn(
+                                          "rounded-lg border px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-primary/40",
+                                          isSelected
+                                            ? "border-primary ring-1 ring-primary/30"
+                                            : "hover:border-primary/60"
+                                        )}
+                                      >
+                                        <p className="truncate text-sm font-medium text-foreground">
+                                          {asset.label}
+                                        </p>
+                                        <p className="mt-1 text-xs uppercase tracking-wide text-muted-foreground">
+                                          {asset.sourceType}
+                                        </p>
+                                        {asset.durationMs ? (
+                                          <p className="mt-1 text-xs text-muted-foreground">
+                                            {formatVideoDuration(asset.durationMs)}
+                                          </p>
+                                        ) : null}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                            </>
+                          ) : (
+                            <div className="flex h-32 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                              No vehicle videos are attached to this claim yet.
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
+
+                      {shouldRenderPhotoMediaPanel ? (
+                        <div className="rounded-lg border p-4 space-y-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <span className="text-sm font-medium">Photos</span>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {claimPhotoAssets.length > 0
+                                  ? `${claimPhotoAssets.length} attached claim photo${
+                                      claimPhotoAssets.length === 1 ? "" : "s"
+                                    }`
+                                  : "No vehicle photos attached yet"}
+                              </p>
+                            </div>
+                            <StatusBadge
+                              status={claimPhotoAssets.length >= 1 ? "approved" : "pending"}
+                            >
+                              {claimPhotoAssets.length >= 1 ? "Available" : "Missing"}
+                            </StatusBadge>
+                          </div>
+
+                          {selectedPhoto ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => setPhotoPreviewOpen(true)}
+                                aria-label={`Open full-size photo: ${selectedPhoto.label}`}
+                                className="w-full overflow-hidden rounded-lg border text-left transition hover:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+                              >
+                                <img
+                                  src={selectedPhoto.url}
+                                  alt={selectedPhoto.label}
+                                  className="h-[320px] w-full object-cover sm:h-[360px]"
+                                  loading="lazy"
+                                />
+                              </button>
+
+                              <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                                <span className="truncate font-medium text-foreground">
+                                  {selectedPhoto.label}
+                                </span>
+                                <span>
+                                  {selectedPhotoIndex + 1} / {claimPhotoAssets.length}
+                                </span>
+                              </div>
+
+                              {claimPhotoAssets.length > 1 ? (
+                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                                  {claimPhotoAssets.map((photo, index) => {
+                                    const isSelected = index === selectedPhotoIndex;
+                                    return (
+                                      <button
+                                        key={photo.key}
+                                        type="button"
+                                        onClick={() => setSelectedPhotoIndex(index)}
+                                        aria-label={`Photo ${index + 1} of ${claimPhotoAssets.length}: ${photo.label}`}
+                                        className={`overflow-hidden rounded-lg border text-left transition focus:outline-none focus:ring-2 focus:ring-primary/40 ${
+                                          isSelected
+                                            ? "border-primary ring-1 ring-primary/30"
+                                            : "hover:border-primary/60"
+                                        }`}
+                                      >
+                                        <img
+                                          src={photo.url}
+                                          alt={photo.label}
+                                          className="h-24 w-full object-cover sm:h-28"
+                                          loading="lazy"
+                                        />
+                                        <div className="border-t px-3 py-2">
+                                          <p className="truncate text-xs font-medium text-foreground">
+                                            {photo.label}
+                                          </p>
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                            </>
+                          ) : (
+                            <div className="flex h-32 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                              No vehicle photos are attached to this claim yet.
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
 
 
                     </div>
@@ -2578,6 +2939,137 @@ export default function ClaimDetail() {
                             ) : null}
                           </div>
                         </section>
+
+                        {claimUsesVideoFlow && claimVideoAssessmentSummary ? (
+                          <section className="space-y-4">
+                            <div>
+                              <p className="text-sm font-semibold text-foreground">
+                                Video analysis evidence
+                              </p>
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                Review action, timeline coverage, and timestamped part findings
+                                from the stored video analysis.
+                              </p>
+                            </div>
+
+                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                              <div className="rounded-lg bg-muted/15 p-3.5">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground/55">
+                                  Analysis status
+                                </p>
+                                <p className="mt-1.5 text-base font-semibold capitalize text-foreground">
+                                  {claimVideoAssessmentSummary.analysis_status.replace(
+                                    /_/g,
+                                    " "
+                                  )}
+                                </p>
+                              </div>
+
+                              <div className="rounded-lg bg-muted/15 p-3.5">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground/55">
+                                  Review action
+                                </p>
+                                <p className="mt-1.5 text-base font-semibold capitalize text-foreground">
+                                  {formatVideoReviewAction(
+                                    claimVideoAssessmentSummary.recommended_action
+                                  )}
+                                </p>
+                              </div>
+
+                              <div className="rounded-lg bg-muted/15 p-3.5">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground/55">
+                                  Representative frames
+                                </p>
+                                <p className="mt-1.5 text-base font-semibold tabular-nums text-foreground">
+                                  {claimVideoAssessmentSummary.representative_frame_count ?? 0}
+                                </p>
+                              </div>
+
+                              <div className="rounded-lg bg-muted/15 p-3.5">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground/55">
+                                  Timeline events
+                                </p>
+                                <p className="mt-1.5 text-base font-semibold tabular-nums text-foreground">
+                                  {claimVideoAssessmentSummary.timeline_event_count ?? 0}
+                                </p>
+                              </div>
+                            </div>
+
+                            {claimVideoAssessmentSummary.total_estimated_cost_min > 0 ||
+                            claimVideoAssessmentSummary.total_estimated_cost_max > 0 ? (
+                              <div className="rounded-lg border border-border/50 bg-muted/10 p-3.5">
+                                <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground/55">
+                                  Video estimate range
+                                </p>
+                                <p className="mt-1.5 text-sm font-semibold text-foreground">
+                                  {formatClaimCurrency(
+                                    claimVideoAssessmentSummary.total_estimated_cost_min
+                                  )}{" "}
+                                  -{" "}
+                                  {formatClaimCurrency(
+                                    claimVideoAssessmentSummary.total_estimated_cost_max
+                                  )}
+                                </p>
+                                {claimVideoAssessmentSummary.summary_text ? (
+                                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                                    {claimVideoAssessmentSummary.summary_text}
+                                  </p>
+                                ) : null}
+                              </div>
+                            ) : null}
+
+                            {claimVideoAssessmentSummary.part_breakdown.length > 0 ? (
+                              <div className="overflow-hidden rounded-xl border border-border/45 bg-card/95 shadow-sm">
+                                <div className="border-b border-border/35 bg-muted/10 px-4 py-3 sm:px-5">
+                                  <p className="text-sm font-semibold text-foreground">
+                                    Video finding highlights
+                                  </p>
+                                  <p className="mt-0.5 text-xs text-muted-foreground">
+                                    Timestamped part findings grounded in the analyzed video.
+                                  </p>
+                                </div>
+                                <div className="divide-y divide-border/30">
+                                  {claimVideoAssessmentSummary.part_breakdown
+                                    .slice(0, 5)
+                                    .map((row, index) => (
+                                      <div
+                                        key={`${row.part_name}-${row.damage_type}-${index}`}
+                                        className="space-y-2 px-4 py-3 sm:px-5"
+                                      >
+                                        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                                          <p className="text-sm font-semibold text-foreground">
+                                            {row.part_name}
+                                          </p>
+                                          <p className="text-xs text-muted-foreground">
+                                            {row.observed_frame_count ?? 0} frame
+                                            {(row.observed_frame_count ?? 0) === 1 ? "" : "s"}
+                                          </p>
+                                        </div>
+                                        <p className="text-sm text-muted-foreground">
+                                          {row.damage_type || "Damage detected"} ·{" "}
+                                          {row.repair_action || "Review action pending"} · up to{" "}
+                                          {formatClaimCurrency(row.estimated_amount_max)}
+                                        </p>
+                                        {row.observed_timestamps_ms &&
+                                        row.observed_timestamps_ms.length > 0 ? (
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {row.observed_timestamps_ms.slice(0, 4).map((ts) => (
+                                              <span
+                                                key={`${row.part_name}-${ts}`}
+                                                className="rounded-full bg-secondary/90 px-2.5 py-0.5 text-xs font-medium text-foreground"
+                                              >
+                                                {formatVideoTimestamp(ts)}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </section>
+                        ) : null}
 
                         <section className="space-y-4">
                           <div>

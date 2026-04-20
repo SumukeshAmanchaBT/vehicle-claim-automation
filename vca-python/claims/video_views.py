@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from django.shortcuts import get_object_or_404
@@ -24,6 +25,7 @@ from claims.video_jobs import (
 from claims.video_claim_flow import (
     build_claim_video_damage_assessment_payload,
     latest_claim_video_job,
+    sync_video_damage_assessment_to_phase1,
 )
 from claims.video_runtime import get_video_pipeline_runtime_status
 from claims.video_serializers import (
@@ -34,6 +36,8 @@ from claims.video_serializers import (
     ClaimVideoJobSerializer,
 )
 from claims.views import _api_error_response
+
+logger = logging.getLogger(__name__)
 
 
 def _json_safe(value):
@@ -321,6 +325,18 @@ def video_damage_assessment(request, complaint_id: str):
 
     if not assets:
         if latest_result is not None:
+            if latest_result.status == ClaimVideoAnalysisResult.Status.COMPLETED:
+                try:
+                    sync_video_damage_assessment_to_phase1(
+                        claim=claim,
+                        result=latest_result,
+                        job=latest_job,
+                    )
+                except Exception:
+                    logger.exception(
+                        "video_damage_assessment: failed to project stored video assessment into phase-1 artifacts for %s",
+                        claim.complaint_id,
+                    )
             return Response(
                 _claim_video_payload(
                     request,
@@ -367,6 +383,17 @@ def video_damage_assessment(request, complaint_id: str):
         and latest_result is not None
         and latest_result.status == ClaimVideoAnalysisResult.Status.COMPLETED
     ):
+        try:
+            sync_video_damage_assessment_to_phase1(
+                claim=claim,
+                result=latest_result,
+                job=latest_job,
+            )
+        except Exception:
+            logger.exception(
+                "video_damage_assessment: failed to project completed video assessment into phase-1 artifacts for %s",
+                claim.complaint_id,
+            )
         return Response(
             _claim_video_payload(
                 request,

@@ -73,6 +73,65 @@ export interface ClaimWorkflowSnapshot {
   claim_evaluation: ClaimWorkflowStepState;
 }
 
+export interface ClaimVideoAssetSummary {
+  id: number;
+  source_path: string;
+  original_filename: string;
+  source_type: string;
+  duration_ms?: number | null;
+  frame_count?: number | null;
+  width?: number | null;
+  height?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  file_url?: string;
+}
+
+export interface ClaimVideoDamageAssessmentPart {
+  id?: number;
+  part_name: string;
+  damage_type: string;
+  severity_percent: number;
+  repair_action: string;
+  estimated_amount_min: number;
+  estimated_amount_max: number;
+  currency_code?: string;
+  observed_frame_count?: number;
+  observed_timestamps_ms?: number[];
+  video_asset_id?: number | null;
+  source_type?: string;
+  source_path?: string;
+  original_filename?: string;
+}
+
+export interface ClaimVideoDamageAssessmentSummary {
+  complaint_id: string;
+  analysis_status: string;
+  job_status?: string | null;
+  analysis_result_id?: number | null;
+  job_id?: number | null;
+  summary_text: string;
+  total_parts: number;
+  total_estimated_cost_min: number;
+  total_estimated_cost_max: number;
+  currency_code: string;
+  market_context?: {
+    country?: string;
+    city?: string;
+    currency_code?: string;
+    locale?: string;
+    market_label?: string;
+    accident_location?: string;
+  };
+  recommended_action?: string;
+  timeline_event_count?: number;
+  representative_frame_count?: number;
+  part_breakdown: ClaimVideoDamageAssessmentPart[];
+  pipeline_metadata?: Record<string, unknown>;
+  processing_started_at?: string | null;
+  processing_completed_at?: string | null;
+}
+
 /** FNOL claim from fnol_claims + fnol_damage_photos */
 export interface FnolResponse {
   id: string;
@@ -114,6 +173,10 @@ export interface FnolResponse {
   /** Backend-derived lifecycle; same values as `ClaimWorkflowState` in api.ts. */
   workflow_state?: string;
   workflow_snapshot?: ClaimWorkflowSnapshot;
+  video_asset_count?: number;
+  video_assets?: ClaimVideoAssetSummary[];
+  video_damage_assessment?: ClaimVideoDamageAssessmentSummary | null;
+  latest_video_analysis_status?: string | null;
 }
 
 export interface FraudRuleResult {
@@ -137,4 +200,3 @@ export interface ProcessClaimResponse {
   claim_amount?: number;
   fraud_rule_results?: FraudRuleResult[];
 }
-

@@ -8,6 +8,7 @@ from claims.models import (
     ClaimVideoAsset,
     ClaimVideoDamageAssessment,
     ClaimVideoProcessingJob,
+    DamagePartAssessment,
     FnolClaim,
 )
 from claims.phase1_runtime import get_claim_market_context
@@ -29,6 +30,24 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 def _round_money(value: float) -> float:
     return round(float(value or 0.0), 2)
+
+
+def _canonical_video_estimated_amount(row: dict[str, Any]) -> float:
+    min_amount = max(0.0, _safe_float(row.get("estimated_amount_min"), 0.0))
+    max_amount = max(0.0, _safe_float(row.get("estimated_amount_max"), 0.0))
+    return max(min_amount, max_amount)
+
+
+def _canonical_video_source_url(row: dict[str, Any]) -> str:
+    asset_id = _safe_int(row.get("video_asset_id"), 0)
+    source_path = str(row.get("source_path") or "").strip()
+    if asset_id and source_path:
+        return f"video_asset:{asset_id}:{source_path}"
+    if asset_id:
+        return f"video_asset:{asset_id}"
+    if source_path:
+        return f"video_asset:{source_path}"
+    return "video_asset"
 
 
 def latest_claim_video_job(claim: FnolClaim) -> ClaimVideoProcessingJob | None:
@@ -231,28 +250,107 @@ def build_claim_video_damage_assessment_payload(
     }
 
 
-def build_claim_video_overview(claim: FnolClaim) -> dict[str, Any]:
+def sync_video_damage_assessment_to_phase1(
+    *,
+    claim: FnolClaim,
+    result: ClaimVideoAnalysisResult | None = None,
+    job: ClaimVideoProcessingJob | None = None,
+) -> bool:
+    """
+    Project completed video assessment output into the canonical phase-1 tables.
+
+    This keeps the existing FNOL -> workflow_snapshot -> DA/Evaluation UI path working
+    for video-only claims without introducing a second parallel results contract.
+    """
+    effective_result = result or latest_claim_video_result(claim)
+    if (
+        effective_result is None
+        or effective_result.status != ClaimVideoAnalysisResult.Status.COMPLETED
+    ):
+        return False
+
+    # Preserve the photo flow exactly as-is; video canonical sync is only for
+    # claims whose primary evidence is video.
+    if (
+        claim.damage_photos.exclude(photo_path__isnull=True)
+        .exclude(photo_path="")
+        .exists()
+    ):
+        return False
+
+    part_breakdown = serialize_claim_video_damage_assessment_rows(
+        claim=claim,
+        result=effective_result,
+    )
+
+    DamagePartAssessment.objects.filter(complaint=claim).delete()
+    rows: list[DamagePartAssessment] = []
+    for index, row in enumerate(part_breakdown):
+        rows.append(
+            DamagePartAssessment(
+                complaint=claim,
+                part_name=str(row.get("part_name") or "").strip() or "Unknown part",
+                damage_type=str(row.get("damage_type") or "").strip(),
+                severity_percent=Decimal(
+                    str(max(0.0, min(100.0, _safe_float(row.get("severity_percent"), 0.0))))
+                ),
+                repair_action=str(row.get("repair_action") or "").strip(),
+                estimated_amount=Decimal(
+                    str(_canonical_video_estimated_amount(row))
+                ),
+                source_image_url=_canonical_video_source_url(row),
+                sort_order=index,
+            )
+        )
+
+    if rows:
+        DamagePartAssessment.objects.bulk_create(rows)
+
+    from damage_detection_llm.valuation_service import run_full_valuation
+    from claims.decisioning import sync_claim_evaluation_decision_state
+
+    run_full_valuation(claim.complaint_id, persist_sentinel=True)
+    sync_claim_evaluation_decision_state(
+        complaint_id=claim.complaint_id,
+    )
+    return True
+
+
+def build_claim_video_overview(
+    claim: FnolClaim,
+    *,
+    request=None,
+) -> dict[str, Any]:
     result = latest_claim_video_result(claim)
     job = latest_claim_video_job(claim)
-    assets = list(
-        claim.video_assets.order_by("id").values(
-            "id",
-            "source_path",
-            "original_filename",
-            "source_type",
-            "duration_ms",
-            "frame_count",
-            "width",
-            "height",
-            "created_at",
-            "updated_at",
+    asset_qs = claim.video_assets.order_by("id")
+    assets: list[dict[str, Any]] = []
+    build_file_url = None
+    if request is not None:
+        from claims.video_storage import build_claim_video_file_url
+
+        build_file_url = build_claim_video_file_url
+
+    for asset in asset_qs:
+        assets.append(
+            {
+                "id": asset.id,
+                "source_path": asset.source_path,
+                "original_filename": asset.original_filename,
+                "source_type": asset.source_type,
+                "duration_ms": asset.duration_ms,
+                "frame_count": asset.frame_count,
+                "width": asset.width,
+                "height": asset.height,
+                "created_at": asset.created_at.isoformat()
+                if asset.created_at
+                else None,
+                "updated_at": asset.updated_at.isoformat()
+                if asset.updated_at
+                else None,
+                "file_url": build_file_url(request, asset) if build_file_url else "",
+            }
         )
-    )
-    for asset in assets:
-        if asset.get("created_at"):
-            asset["created_at"] = asset["created_at"].isoformat()
-        if asset.get("updated_at"):
-            asset["updated_at"] = asset["updated_at"].isoformat()
 
     damage_assessment = build_claim_video_damage_assessment_payload(
         claim=claim,
