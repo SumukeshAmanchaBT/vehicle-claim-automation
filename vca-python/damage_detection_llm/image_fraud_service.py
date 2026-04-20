@@ -717,7 +717,12 @@ def find_duplicate_candidates(
 
     candidates = []
 
-    if not IMAGEHASH_AVAILABLE or not p_hash:
+    sha_ok = bool((sha256_hex or "").strip())
+    ph_ok = bool((p_hash or "").strip())
+    if not sha_ok and not ph_ok:
+        return candidates
+    # Without imagehash we only have byte identity; still allow exact SHA-256 matches.
+    if not IMAGEHASH_AVAILABLE and not sha_ok:
         return candidates
 
     cfg = resolve_duplicate_detection_settings(
@@ -731,12 +736,14 @@ def find_duplicate_candidates(
     require_both = cfg["require_both_non_exact"]
 
     try:
-        # Query all ImageFraudResult entries for other claims with hashes
+        from django.db.models import Q
+
+        # Include rows with either perceptual hashes or a stored file hash so
+        # EXACT_FILE_MATCH still works when imagehash is unavailable (p_hash empty).
         existing_results = ImageFraudResult.objects.exclude(
             complaint_id=complaint_id
         ).filter(
-            p_hash__isnull=False,
-            p_hash__gt="",
+            Q(p_hash__gt="") | Q(sha256_hex__gt="")
         ).select_related("complaint")
 
         for existing in existing_results:

@@ -159,6 +159,19 @@ PHASE1_CONFIGS = [
         "description": "Maximum excess/deductible amount cap. Default 500.",
         "is_active": True,
     },
+    # ── Minimum valuation for minor/no-line-item claims ────────────────────────
+    {
+        "config_key": "MINIMUM_NO_DAMAGE_GROSS_ESTIMATE",
+        "config_name": "Minimum gross estimate for minor/zero-output claims",
+        "config_value": "2000.00",
+        "config_type": "decimal",
+        "description": (
+            "Base gross estimate used when Damage Assessment produces no priced part lines "
+            "(e.g., minor scratch/dent where part detection yields 0 breakdown). "
+            "Set to a Thailand-market minimum such as 2000–5000 THB. Default 2000."
+        ),
+        "is_active": True,
+    },
     # ── Legacy claim amount fallback (used by the older damage_assessment path) ──
     {
         "config_key": "claim_base_amount",

@@ -18,7 +18,11 @@ from claims.phase1_runtime import (
     get_pricing_config_float,
     get_pricing_config_string,
 )
-from claims.workflow_state import current_damage_assessment_persistence_state
+from claims.workflow_state import (
+    current_damage_assessment_persistence_state,
+    duplicate_candidate_rows_for_claim_evaluation,
+    image_fraud_rows_for_claim_evaluation,
+)
 
 _CLAIM_TYPE_TO_SEVERITY = {
     "SIMPLE": "minor",
@@ -517,40 +521,17 @@ def _aggregate_image_risk_summary(
     )
 
 
-def _current_lifecycle_started_at(
-    latest_eval: ClaimEvaluationResponse | None,
-):
-    return getattr(latest_eval, "created_date", None) if latest_eval else None
-
-
 def _current_image_analysis_rows(
     *,
     claim: FnolClaim,
     latest_eval: ClaimEvaluationResponse | None,
 ) -> tuple[list[ClaimDuplicateCandidate], list[ImageFraudResult]]:
     """
-    Only treat image-analysis artifacts as current if they were produced after
-    the latest BRV run started.
-
-    This keeps stale image-fraud / duplicate rows from earlier runs from
-    leaking back into a fresh BRV-only claim summary.
+    Image-trust rows for the active evaluation window, with fallbacks when BRV
+    was re-run after the last media-trust POST (see ``workflow_state`` helpers).
     """
-    started_at = _current_lifecycle_started_at(latest_eval)
-    if started_at is None:
-        return [], []
-
-    duplicate_rows = list(
-        ClaimDuplicateCandidate.objects.filter(
-            complaint=claim,
-            created_at__gte=started_at,
-        ).order_by("-similarity_score", "-created_at")
-    )
-    fraud_rows = list(
-        ImageFraudResult.objects.filter(
-            complaint=claim,
-            created_at__gte=started_at,
-        ).order_by("-fraud_score", "-created_at")
-    )
+    duplicate_rows = duplicate_candidate_rows_for_claim_evaluation(claim, latest_eval)
+    fraud_rows = image_fraud_rows_for_claim_evaluation(claim, latest_eval)
     return duplicate_rows, fraud_rows
 
 

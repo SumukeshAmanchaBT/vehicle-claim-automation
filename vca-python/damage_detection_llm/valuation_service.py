@@ -212,6 +212,23 @@ def calculate_claim_valuation(
 
         # Calculate totals
         gross = calculate_parts_total(complaint_id)
+
+        # Minimum estimate for zero-output claims (e.g., small scratch / no priced parts).
+        # Default is 0 so existing behavior is unchanged unless configured.
+        minimum_no_damage_gross = (
+            get_pricing_config_decimal("MINIMUM_NO_DAMAGE_GROSS_ESTIMATE", Decimal("0.00"))
+            or Decimal("0.00")
+        )
+        if (
+            gross <= 0
+            and not breakdown
+            and minimum_no_damage_gross is not None
+            and minimum_no_damage_gross > 0
+        ):
+            gross = minimum_no_damage_gross.quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
         result["gross_estimate"] = gross
 
         if apply_excess:
@@ -305,12 +322,15 @@ def save_valuation_summary(
         return False
 
 
-def run_full_valuation(complaint_id: str) -> dict:
+def run_full_valuation(complaint_id: str, *, persist_sentinel: bool = False) -> dict:
     """
     Complete valuation pipeline: calculate and persist.
 
     Args:
         complaint_id: The claim ID
+        persist_sentinel: When True, persist a valuation snapshot even if the valuation
+            is zero-output (used after DA runs so workflow advances and UI shows the
+            configured minimum/no-damage base amount). Keep False for GET-only calls.
 
     Returns:
         Valuation dict with all amounts
@@ -319,7 +339,7 @@ def run_full_valuation(complaint_id: str) -> dict:
     valuation = calculate_claim_valuation(complaint_id, apply_excess=True)
 
     # Persist results
-    save_valuation_summary(complaint_id, valuation, persist_sentinel=False)
+    save_valuation_summary(complaint_id, valuation, persist_sentinel=persist_sentinel)
 
     # Convert Decimal to float for JSON serialization
     return {

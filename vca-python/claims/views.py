@@ -69,6 +69,7 @@ from .phase1_runtime import (
     get_claim_market_context,
     get_claim_type_settings,
     get_major_claim_threshold,
+    get_pricing_config_decimal,
 )
 from .video_claim_flow import build_claim_video_overview
 from .serializers import (
@@ -1735,6 +1736,31 @@ def _current_phase1_valuation_for_claim(
     return valuation
 
 
+def _current_phase1_valuation_artifact_for_claim(
+    fnol: FnolClaim | None,
+    latest_eval: ClaimEvaluationResponse | None,
+) -> ClaimPhase1Valuation | None:
+    """
+    Return the valuation artifact for the current BRV lifecycle even when it has
+    zero output (gross_estimate == 0 and empty breakdown).
+
+    This is used for reviewer-facing claim evaluation so "no structural damage"
+    cases still render 0-values instead of hiding financials.
+    """
+    if not fnol:
+        return None
+    valuation = ClaimPhase1Valuation.objects.filter(complaint=fnol).first()
+    if not valuation:
+        return None
+    started_at = current_lifecycle_started_at(latest_eval)
+    if started_at and (valuation.updated_at is None or valuation.updated_at < started_at):
+        return None
+    # updated_at must exist to count as a DA artifact for this lifecycle
+    if valuation.updated_at is None:
+        return None
+    return valuation
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_claim_evaluation(request, complaint_id: str):
@@ -1807,12 +1833,16 @@ def get_claim_evaluation(request, complaint_id: str):
         except (json.JSONDecodeError, TypeError):
             damages = None
 
-    # Financials are only reviewer-facing once persisted damage-assessment data exists.
+    # Financials are reviewer-facing once the current lifecycle has a DA artifact.
+    # For "no structural damage" cases the valuation can be zero-only; we still
+    # return 0-values so Claim Evaluation renders consistently across claim types.
     financials_ready = bool(
         workflow_snapshot.get("claim_evaluation", {}).get("financials_ready")
     )
     current_valuation = (
-        _current_phase1_valuation_for_claim(fnol, latest) if financials_ready else None
+        _current_phase1_valuation_artifact_for_claim(fnol, latest)
+        if financials_ready
+        else None
     )
     estimated_amount = (
         float(current_valuation.gross_estimate or 0)
@@ -2689,6 +2719,15 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
     story.append(_sp())
 
     # ----- 7. Valuation Summary -----
+    minimum_no_damage_gross = get_pricing_config_decimal(
+        "MINIMUM_NO_DAMAGE_GROSS_ESTIMATE"
+    )
+    minimum_applied = bool(
+        not part_rows
+        and minimum_no_damage_gross is not None
+        and _safe_report_float(gross_estimate) > 0
+        and abs(_safe_report_float(gross_estimate) - _safe_report_float(minimum_no_damage_gross)) < 0.01
+    )
     valuation_rows = [
         ["Currency", currency_code],
         ["Gross Estimate", f"{gross_estimate:,.2f} {currency_code}"],
@@ -2698,6 +2737,12 @@ def _build_recommendation_report_pdf(claim: FnolClaim, evaluation, fraud_result:
             "Aligned" if (part_rows and abs(part_total - gross_estimate) < 0.01) else (
                 "No part rows" if not part_rows else "Review needed"
             ),
+        ],
+        [
+            "Minimum base estimate applied",
+            f"Yes ({_safe_report_float(minimum_no_damage_gross):,.2f} {currency_code})"
+            if minimum_applied
+            else "No",
         ],
         ["Computed Excess", f"{computed_excess:,.2f} {currency_code}"],
         ["Policy Excess (FNOL)", f"{policy_excess:,.2f} {currency_code}" if claim.excess_amount is not None else "—"],

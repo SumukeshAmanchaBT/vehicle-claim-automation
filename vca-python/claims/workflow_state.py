@@ -13,12 +13,15 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Max
+from django.utils import timezone
 
 from claims.models import (
+    ClaimDuplicateCandidate,
     ClaimEvaluationResponse,
     ClaimPhase1Valuation,
     DamagePartAssessment,
     FnolClaim,
+    ImageFraudResult,
 )
 from claims.workflow_display import (
     claim_status_implies_recommendation_terminal,
@@ -31,6 +34,72 @@ def current_lifecycle_started_at(
 ):
     """Timestamp anchor for artifacts that belong to the latest BRV lifecycle."""
     return getattr(latest_eval, "created_date", None) if latest_eval else None
+
+
+def dedupe_image_fraud_rows_latest_per_photo(
+    rows: list[ImageFraudResult],
+) -> list[ImageFraudResult]:
+    """Keep the newest ORM row per photo_path for stable API / decision payloads."""
+    best: dict[str, ImageFraudResult] = {}
+    anchor = timezone.now()
+
+    def _ts(row: ImageFraudResult):
+        return row.created_at or anchor
+
+    for row in sorted(rows, key=_ts, reverse=True):
+        path = (row.photo_path or "").strip()
+        key = path or f"__no_path_{row.id}"
+        if key not in best:
+            best[key] = row
+    return list(best.values())
+
+
+def image_fraud_rows_for_claim_evaluation(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+) -> list[ImageFraudResult]:
+    """
+    Image-fraud rows scoped to the current BRV lifecycle when possible.
+
+    If Business Rule Validation is re-run after media-trust analysis, rows from the
+    prior run can fall *before* ``latest_eval.created_date`` and would otherwise
+    disappear from APIs until damage assessment is executed again. In that case we
+    fall back to the latest stored row per photo so fraud scores and labels remain
+    visible and cross-claim decisioning stays grounded.
+    """
+    started_at = current_lifecycle_started_at(latest_eval)
+    base_qs = ImageFraudResult.objects.filter(complaint=claim).order_by(
+        "-fraud_score", "-created_at"
+    )
+    if started_at is None:
+        return dedupe_image_fraud_rows_latest_per_photo(list(base_qs))
+    scoped = list(base_qs.filter(created_at__gte=started_at))
+    if scoped:
+        return scoped
+    return dedupe_image_fraud_rows_latest_per_photo(
+        list(ImageFraudResult.objects.filter(complaint=claim).order_by("-created_at"))
+    )
+
+
+def duplicate_candidate_rows_for_claim_evaluation(
+    claim: FnolClaim,
+    latest_eval: ClaimEvaluationResponse | None,
+) -> list[ClaimDuplicateCandidate]:
+    """Duplicate rows with the same BRV lifecycle + empty-window fallback as fraud rows."""
+    started_at = current_lifecycle_started_at(latest_eval)
+    base_qs = ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by(
+        "-similarity_score", "-created_at"
+    )
+    if started_at is None:
+        return list(base_qs)
+    scoped = list(base_qs.filter(created_at__gte=started_at))
+    if scoped:
+        return scoped
+    return list(
+        ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by(
+            "-similarity_score", "-created_at"
+        )
+    )
 
 
 def _decimal_gt_zero(value) -> bool:
@@ -407,6 +476,10 @@ def build_claim_workflow_snapshot(
 
     damage_assessment_completed = _damage_assessment_completed(workflow_state)
     damage_assessment_available = business_rules_passed is True
+    # DA can run and persist an artifact (valuation row timestamp) even when it produces
+    # zero billable lines (gross_estimate == 0, empty breakdown). In that case we still
+    # want evaluation screens to show 0-values instead of "not available yet".
+    has_current_da_artifact = bool(damage_state.get("has_current_da_artifact"))
     claim_evaluation_completed = bool(
         damage_assessment_completed
         and bool(damage_state["current_valuation_ready"])
@@ -437,19 +510,27 @@ def build_claim_workflow_snapshot(
             "completed": damage_assessment_completed,
             "visible": damage_assessment_completed,
             "run_allowed": damage_assessment_available,
-            "valuation_ready": damage_state["current_valuation_ready"],
+            # Consider DA valuation "ready" once a current-lifecycle valuation artifact exists,
+            # even if it contains zero-only output (no structural damage cases).
+            "valuation_ready": bool(damage_state["current_valuation_ready"]) or has_current_da_artifact,
             "part_count": damage_state["current_part_count"],
         },
         "claim_evaluation": {
             "available": bool(
                 damage_assessment_completed
-                and bool(damage_state["current_valuation_ready"])
+                and (
+                    bool(damage_state["current_valuation_ready"])
+                    or has_current_da_artifact
+                )
             ),
             "completed": claim_evaluation_completed,
             "visible": claim_evaluation_completed,
             "financials_ready": (
                 damage_assessment_completed
-                and damage_state["current_valuation_ready"]
+                and (
+                    bool(damage_state["current_valuation_ready"])
+                    or has_current_da_artifact
+                )
             ),
         },
     }
@@ -494,6 +575,7 @@ def build_claim_workflow_snapshot_for_list(
         "RECOMMENDATION_SHARED",
     )
     damage_assessment_available = business_rules_passed is True
+    has_current_da_artifact = bool(damage_state.get("has_current_da_artifact"))
     claim_evaluation_completed = bool(
         damage_assessment_completed
         and bool(damage_state["current_valuation_ready"])
@@ -513,19 +595,25 @@ def build_claim_workflow_snapshot_for_list(
             "completed": damage_assessment_completed,
             "visible": damage_assessment_completed,
             "run_allowed": damage_assessment_available,
-            "valuation_ready": damage_state["current_valuation_ready"],
+            "valuation_ready": bool(damage_state["current_valuation_ready"]) or has_current_da_artifact,
             "part_count": damage_state["current_part_count"],
         },
         "claim_evaluation": {
             "available": bool(
                 damage_assessment_completed
-                and bool(damage_state["current_valuation_ready"])
+                and (
+                    bool(damage_state["current_valuation_ready"])
+                    or has_current_da_artifact
+                )
             ),
             "completed": claim_evaluation_completed,
             "visible": claim_evaluation_completed,
             "financials_ready": (
                 damage_assessment_completed
-                and damage_state["current_valuation_ready"]
+                and (
+                    bool(damage_state["current_valuation_ready"])
+                    or has_current_da_artifact
+                )
             ),
         },
     }

@@ -22,6 +22,8 @@ from claims.models import (
 from claims.reviewer_safe import sanitize_reviewer_llm_notes
 from claims.workflow_state import (
     current_lifecycle_started_at,
+    duplicate_candidate_rows_for_claim_evaluation,
+    image_fraud_rows_for_claim_evaluation,
     valuation_row_has_meaningful_output,
 )
 
@@ -85,22 +87,16 @@ def _current_image_fraud_rows(
     claim: FnolClaim,
     latest_eval: ClaimEvaluationResponse | None,
 ):
-    qs = ImageFraudResult.objects.filter(complaint=claim).order_by("id")
-    started_at = current_lifecycle_started_at(latest_eval)
-    if started_at is not None:
-        qs = qs.filter(created_at__gte=started_at)
-    return list(qs)
+    rows = image_fraud_rows_for_claim_evaluation(claim, latest_eval)
+    return sorted(rows, key=lambda r: r.id)
 
 
 def _current_duplicate_rows(
     claim: FnolClaim,
     latest_eval: ClaimEvaluationResponse | None,
 ):
-    qs = ClaimDuplicateCandidate.objects.filter(complaint=claim).order_by("id")
-    started_at = current_lifecycle_started_at(latest_eval)
-    if started_at is not None:
-        qs = qs.filter(created_at__gte=started_at)
-    return list(qs)
+    rows = duplicate_candidate_rows_for_claim_evaluation(claim, latest_eval)
+    return sorted(rows, key=lambda r: r.id)
 
 
 def _current_phase1_valuation(

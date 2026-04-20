@@ -32,7 +32,11 @@ from claims.authenticity_classification import (
     synthesize_image_authenticity_labels,
 )
 from claims.reviewer_safe import sanitize_reviewer_llm_notes
-from claims.workflow_state import current_lifecycle_started_at
+from claims.workflow_state import (
+    current_lifecycle_started_at,
+    duplicate_candidate_rows_for_claim_evaluation,
+    image_fraud_rows_for_claim_evaluation,
+)
 from damage_detection_llm.image_fraud_service import (
     analyze_image_fraud,
     boost_fraud_score_from_labels,
@@ -141,14 +145,12 @@ def _image_fraud_result_payload(
 
 def _image_fraud_results_payload(claim: FnolClaim) -> dict:
     """Serialize persisted image-fraud rows for a claim."""
-    started_at = _current_started_at_for_claim(claim)
-    results = ImageFraudResult.objects.filter(complaint=claim)
-    if started_at is not None:
-        results = results.filter(created_at__gte=started_at)
-    results = results.order_by("-created_at")
+    latest_eval = _latest_eval_for_claim(claim)
+    rows = image_fraud_rows_for_claim_evaluation(claim, latest_eval)
+    rows = sorted(rows, key=lambda r: r.created_at or r.id, reverse=True)
     return {
         "complaint_id": claim.complaint_id,
-        "results_count": results.count(),
+        "results_count": len(rows),
         "results": [
             _image_fraud_result_payload(
                 result_id=r.id,
@@ -163,7 +165,7 @@ def _image_fraud_results_payload(claim: FnolClaim) -> dict:
                 llm_notes=r.llm_authenticity_notes,
                 created_at=r.created_at.isoformat() if r.created_at else None,
             )
-            for r in results
+            for r in rows
         ],
     }
 
@@ -421,6 +423,7 @@ def image_fraud_analysis(request, complaint_id: str):
                                     "exif_warnings": fraud_result["exif_data"].get(
                                         "warnings", []
                                     ),
+                                    "synthesized_labels": synthesized_labels,
                                 }
                             ),
                             llm_notes=reviewer_safe_reasoning,
@@ -503,14 +506,11 @@ def duplicate_candidates(request, complaint_id: str):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        started_at = _current_started_at_for_claim(claim)
-        candidates = ClaimDuplicateCandidate.objects.filter(complaint=claim)
-        if started_at is not None:
-            candidates = candidates.filter(created_at__gte=started_at)
-        candidates = candidates.order_by("-similarity_score")
+        latest_eval = _latest_eval_for_claim(claim)
+        candidate_rows = duplicate_candidate_rows_for_claim_evaluation(claim, latest_eval)
 
         out_candidates = []
-        for c in candidates:
+        for c in candidate_rows:
             sim_01, sim_pct = _normalize_duplicate_similarity(c.similarity_score)
             out_candidates.append(
                 {
@@ -657,7 +657,9 @@ def damage_assessment_detailed(request, complaint_id: str):
                     replace_scope="image",
                 )
 
-            run_full_valuation(complaint_id)
+            # Persist a valuation artifact after DA runs even for zero-output claims,
+            # so workflow/UX advances and the configured minimum base estimate applies.
+            run_full_valuation(complaint_id, persist_sentinel=True)
             sync_claim_evaluation_decision_state(complaint_id=complaint_id)
 
             return Response(
@@ -694,7 +696,8 @@ def total_value(request, complaint_id: str):
             )
 
         # Run valuation calculation
-        valuation = run_full_valuation(complaint_id)
+        # GET /total-value is read-style; do not persist a sentinel before DA executes.
+        valuation = run_full_valuation(complaint_id, persist_sentinel=False)
 
         # Also include excess from fnol_claims if set
         fnol_excess = None
