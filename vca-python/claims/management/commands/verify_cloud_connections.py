@@ -54,6 +54,8 @@ class Command(BaseCommand):
                 logging.Formatter("%(levelname)s [%(name)s] %(message)s")
             )
             log.addHandler(h)
+            # Avoid duplicate lines: root also has a console handler via LOGGING.
+            log.propagate = False
 
         if options["debug"]:
             logging.getLogger("botocore").setLevel(logging.DEBUG)

@@ -37,6 +37,7 @@ namex==0.1.0
 networkx==3.6.1
 numpy==2.4.2
 openai==2.30.0
+pymupdf
 
 # Azure Monitor integration (optional) for cloud-truth metrics enrichment.
 # Install when AZURE_OPENAI_RESOURCE_ID is set to enable Azure-side observability.
