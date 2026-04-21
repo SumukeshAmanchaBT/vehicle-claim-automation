@@ -242,11 +242,26 @@ def build_claim_video_file_url(request, asset) -> str:
         return ""
     if source_path.startswith(("http://", "https://")):
         return source_path
+
+    normalized_path = source_path.replace("\\", "/").strip()
+    if os.path.isabs(source_path):
+        try:
+            media_root = Path(settings.MEDIA_ROOT).resolve()
+            normalized_path = Path(source_path).resolve().relative_to(media_root).as_posix()
+        except Exception:
+            return ""
+
+    if normalized_path.startswith("/"):
+        normalized_path = normalized_path.lstrip("/")
+    if normalized_path.startswith("media/"):
+        normalized_path = normalized_path[6:].lstrip("/")
+    if not normalized_path:
+        return ""
+
     media_url = str(getattr(settings, "MEDIA_URL", "/media/") or "/media/")
     if not media_url.endswith("/"):
         media_url = f"{media_url}/"
-    relative = source_path.replace("\\", "/").lstrip("/")
-    return request.build_absolute_uri(f"{media_url}{relative}")
+    return request.build_absolute_uri(f"{media_url}{normalized_path}")
 
 
 def resolve_video_source_disk_path(source_path: str) -> str:

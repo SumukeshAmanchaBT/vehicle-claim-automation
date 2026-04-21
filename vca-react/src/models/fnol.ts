@@ -43,6 +43,21 @@ export interface FnolPayload {
     photos_uploaded: boolean;
     fir_uploaded: boolean;
     photos?: (string | { image?: { url?: string } })[];
+    videos_uploaded?: boolean;
+    videos?: Array<
+      | string
+      | {
+          source_path?: string;
+          original_filename?: string;
+          source_type?: string;
+        }
+    >;
+    video_assets?: Array<{
+      id?: number;
+      source_path?: string;
+      original_filename?: string;
+      source_type?: string;
+    }>;
   };
   history: {
     previous_claims_last_12_months: number;
@@ -132,6 +147,38 @@ export interface ClaimVideoDamageAssessmentSummary {
   processing_completed_at?: string | null;
 }
 
+export interface ClaimMediaProfile {
+  media_type: "none" | "image_only" | "video_only" | "mixed";
+  primary_media_type: "none" | "image" | "video";
+  damage_assessment_mode: "none" | "image" | "video";
+  damage_assessment_reason: string;
+  has_images: boolean;
+  has_videos: boolean;
+  photo_count: number;
+  video_count: number;
+  playable_video_count: number;
+}
+
+export interface ClaimEvidenceItem {
+  evidence_type: "image" | "video";
+  source_table: "fnol_damage_photos" | "claim_video_assets";
+  source_id?: number | null;
+  complaint_id: string;
+  label: string;
+  stored_path: string;
+  url?: string;
+  display_available: boolean;
+  render_status: "ready" | "linked_unavailable";
+  damage_assessment_role: "primary" | "supporting";
+  source_type?: string;
+  duration_ms?: number | null;
+  frame_count?: number | null;
+  width?: number | null;
+  height?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 /** FNOL claim from fnol_claims + fnol_damage_photos */
 export interface FnolResponse {
   id: string;
@@ -173,6 +220,8 @@ export interface FnolResponse {
   /** Backend-derived lifecycle; same values as `ClaimWorkflowState` in api.ts. */
   workflow_state?: string;
   workflow_snapshot?: ClaimWorkflowSnapshot;
+  media_profile?: ClaimMediaProfile;
+  claim_evidence?: ClaimEvidenceItem[];
   video_asset_count?: number;
   video_assets?: ClaimVideoAssetSummary[];
   video_damage_assessment?: ClaimVideoDamageAssessmentSummary | null;

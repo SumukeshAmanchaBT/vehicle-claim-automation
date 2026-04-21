@@ -11,6 +11,7 @@ from claims.models import (
     DamagePartAssessment,
     FnolClaim,
 )
+from claims.media_paths import is_video_media_path
 from claims.phase1_runtime import get_claim_market_context
 
 
@@ -271,10 +272,9 @@ def sync_video_damage_assessment_to_phase1(
 
     # Preserve the photo flow exactly as-is; video canonical sync is only for
     # claims whose primary evidence is video.
-    if (
-        claim.damage_photos.exclude(photo_path__isnull=True)
-        .exclude(photo_path="")
-        .exists()
+    if any(
+        str(photo_path or "").strip() and not is_video_media_path(photo_path or "")
+        for photo_path in claim.damage_photos.values_list("photo_path", flat=True)
     ):
         return False
 

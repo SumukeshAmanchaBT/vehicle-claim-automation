@@ -64,7 +64,7 @@ import {
   type TotalValueResponse,
   type ClaimDecisionInsight,
 } from "@/lib/api";
-import type { FraudRuleResult } from "@/models/fnol";
+import type { ClaimEvidenceItem, ClaimMediaProfile, FraudRuleResult } from "@/models/fnol";
 import type { DamageAssessmentCardSummary } from "@/models/damageAssessmentCards";
 import {
   getApiErrorDetail,
@@ -271,6 +271,94 @@ type AssessmentSnapshotState = {
   totalValueSummary: TotalValueResponse | null;
 };
 
+const VIDEO_MEDIA_EXTENSION_RE =
+  /\.(mp4|mov|avi|mkv|webm|m4v|mpeg|mpg|wmv)(?:[?#].*)?$/i;
+
+const isLikelyVideoMediaPath = (raw: string | null | undefined) =>
+  VIDEO_MEDIA_EXTENSION_RE.test((raw ?? "").trim());
+
+const isLikelyLocalFilesystemPath = (raw: string | null | undefined) => {
+  const value = (raw ?? "").trim();
+  if (!value) return false;
+  return /^[a-z]:[\\/]/i.test(value) || value.startsWith("\\\\");
+};
+
+const isResolvableClaimVideoSourcePath = (raw: string | null | undefined) => {
+  const value = (raw ?? "").trim();
+  if (!value) return false;
+  if (/^https?:\/\//i.test(value)) return true;
+  if (isLikelyLocalFilesystemPath(value)) return false;
+  if (value.startsWith("/")) return value.startsWith("/media/");
+  return true;
+};
+
+const buildFallbackClaimMediaProfile = ({
+  photoCount,
+  videoCount,
+  playableVideoCount,
+}: {
+  photoCount: number;
+  videoCount: number;
+  playableVideoCount: number;
+}): ClaimMediaProfile => {
+  const hasImages = photoCount > 0;
+  const hasVideos = videoCount > 0;
+
+  if (hasImages && hasVideos) {
+    return {
+      media_type: "mixed",
+      primary_media_type: "image",
+      damage_assessment_mode: "image",
+      damage_assessment_reason: "mixed_media_prefers_image_damage_assessment",
+      has_images: true,
+      has_videos: true,
+      photo_count: photoCount,
+      video_count: videoCount,
+      playable_video_count: playableVideoCount,
+    };
+  }
+
+  if (hasVideos) {
+    return {
+      media_type: "video_only",
+      primary_media_type: "video",
+      damage_assessment_mode: "video",
+      damage_assessment_reason: "video_assets_only",
+      has_images: false,
+      has_videos: true,
+      photo_count: photoCount,
+      video_count: videoCount,
+      playable_video_count: playableVideoCount,
+    };
+  }
+
+  if (hasImages) {
+    return {
+      media_type: "image_only",
+      primary_media_type: "image",
+      damage_assessment_mode: "image",
+      damage_assessment_reason: "image_damage_photos_present",
+      has_images: true,
+      has_videos: false,
+      photo_count: photoCount,
+      video_count: videoCount,
+      playable_video_count: playableVideoCount,
+    };
+  }
+
+  return {
+    media_type: "none",
+    primary_media_type: "none",
+    damage_assessment_mode: "none",
+    damage_assessment_reason: "no_claim_media",
+    has_images: false,
+    has_videos: false,
+    photo_count: photoCount,
+    video_count: videoCount,
+    playable_video_count: playableVideoCount,
+  };
+};
+
 const buildClaimPhotoAssets = (
   photos: Array<string | { image?: { url?: string } }> | undefined
 ): ClaimPhotoAsset[] =>
@@ -278,6 +366,7 @@ const buildClaimPhotoAssets = (
     .map((photo, index) => {
       const rawUrl =
         typeof photo === "string" ? photo : photo?.image?.url ?? "";
+      if (!rawUrl || isLikelyVideoMediaPath(rawUrl)) return null;
       const resolvedUrl = rawUrl ? resolveDamagePhotoUrl(rawUrl) : "";
       if (!resolvedUrl) return null;
 
@@ -292,14 +381,36 @@ const buildClaimPhotoAssets = (
     })
     .filter((photo): photo is ClaimPhotoAsset => Boolean(photo));
 
+const buildClaimPhotoAssetsFromEvidence = (
+  claimEvidence: ClaimEvidenceItem[] | undefined
+): ClaimPhotoAsset[] =>
+  (claimEvidence ?? [])
+    .filter((item) => item.evidence_type === "image")
+    .map((item, index) => {
+      const rawUrl = (item.url ?? "").trim();
+      if (!rawUrl || isLikelyVideoMediaPath(item.stored_path || rawUrl)) return null;
+      const resolvedUrl = resolveDamagePhotoUrl(rawUrl);
+      if (!resolvedUrl) return null;
+
+      return {
+        key: `${item.source_table}-${item.source_id ?? index}-${item.label}`,
+        label: item.label || `Photo ${index + 1}`,
+        url: resolvedUrl,
+      };
+    })
+    .filter((photo): photo is ClaimPhotoAsset => Boolean(photo));
+
 const buildClaimVideoAssets = (
   videoAssets: FnolResponse["video_assets"] | undefined
 ): ClaimVideoPlayerAsset[] =>
   (videoAssets ?? [])
     .map((asset, index) => {
-      const url = resolveClaimVideoUrl(
-        asset.file_url || asset.source_path || ""
-      );
+      const rawUrl = (asset.file_url ?? "").trim()
+        ? asset.file_url ?? ""
+        : isResolvableClaimVideoSourcePath(asset.source_path)
+          ? asset.source_path ?? ""
+          : "";
+      const url = rawUrl ? resolveClaimVideoUrl(rawUrl) : "";
       if (!url) return null;
 
       const label =
@@ -317,6 +428,30 @@ const buildClaimVideoAssets = (
         frameCount: asset.frame_count ?? null,
         width: asset.width ?? null,
         height: asset.height ?? null,
+      };
+    })
+    .filter((asset): asset is ClaimVideoPlayerAsset => Boolean(asset));
+
+const buildClaimVideoAssetsFromEvidence = (
+  claimEvidence: ClaimEvidenceItem[] | undefined
+): ClaimVideoPlayerAsset[] =>
+  (claimEvidence ?? [])
+    .filter((item) => item.evidence_type === "video")
+    .map((item, index) => {
+      const rawUrl = (item.url ?? "").trim();
+      const url = rawUrl ? resolveClaimVideoUrl(rawUrl) : "";
+      if (!url) return null;
+
+      return {
+        id: item.source_id ?? index,
+        key: `${item.source_table}-${item.source_id ?? index}-${item.label}`,
+        label: item.label || `Video ${index + 1}`,
+        url,
+        sourceType: item.source_type || "video",
+        durationMs: item.duration_ms ?? null,
+        frameCount: item.frame_count ?? null,
+        width: item.width ?? null,
+        height: item.height ?? null,
       };
     })
     .filter((asset): asset is ClaimVideoPlayerAsset => Boolean(asset));
@@ -492,18 +627,89 @@ export default function ClaimDetail() {
   const { toast } = useToast();
   const isMobile = useIsMobile();
   const activeClaimIdRef = useRef<string | null>(id ?? null);
+  const claimEvidenceItems = fnol?.claim_evidence ?? [];
+  const hasBackendClaimEvidence = claimEvidenceItems.length > 0;
+  const evidencePhotoCount = claimEvidenceItems.filter(
+    (item) => item.evidence_type === "image"
+  ).length;
+  const evidenceVideoCount = claimEvidenceItems.filter(
+    (item) => item.evidence_type === "video"
+  ).length;
   const rawPhotoEntries = fnol?.raw_response?.documents?.photos ?? fnol?.damage_photos ?? [];
-  const claimPhotoAssets = buildClaimPhotoAssets(rawPhotoEntries);
-  const claimVideoAssets = buildClaimVideoAssets(fnol?.video_assets);
+  const claimPhotoAssets = hasBackendClaimEvidence
+    ? buildClaimPhotoAssetsFromEvidence(claimEvidenceItems)
+    : buildClaimPhotoAssets(rawPhotoEntries);
+  const rawClaimVideoAssets = fnol?.video_assets ?? [];
+  const claimVideoAssets = hasBackendClaimEvidence
+    ? buildClaimVideoAssetsFromEvidence(claimEvidenceItems)
+    : buildClaimVideoAssets(fnol?.video_assets);
+  const claimLinkedVideoAssetIds = useMemo(() => {
+    const evidenceIds = claimEvidenceItems
+      .filter((item) => item.evidence_type === "video")
+      .map((item) => item.source_id)
+      .filter((assetId): assetId is number => Number.isFinite(assetId));
+    if (evidenceIds.length > 0) return evidenceIds;
+    return rawClaimVideoAssets
+      .map((asset) => asset.id)
+      .filter((assetId): assetId is number => Number.isFinite(assetId));
+  }, [claimEvidenceItems, rawClaimVideoAssets]);
   const selectedVideoAsset =
     claimVideoAssets[selectedVideoAssetIndex] ??
     claimVideoAssets[0] ??
     null;
-  const claimUsesVideoFlow =
-    claimPhotoAssets.length === 0 && claimVideoAssets.length > 0;
+  const claimMediaProfile = useMemo(
+    () =>
+      fnol?.media_profile ??
+      buildFallbackClaimMediaProfile({
+        photoCount: evidencePhotoCount || claimPhotoAssets.length,
+        videoCount:
+          fnol?.video_asset_count ??
+          (hasBackendClaimEvidence ? evidenceVideoCount : undefined) ??
+          rawClaimVideoAssets.length,
+        playableVideoCount: claimVideoAssets.length,
+      }),
+    [
+      hasBackendClaimEvidence,
+      evidencePhotoCount,
+      evidenceVideoCount,
+      claimPhotoAssets.length,
+      claimVideoAssets.length,
+      fnol?.media_profile,
+      fnol?.video_asset_count,
+      rawClaimVideoAssets.length,
+    ]
+  );
+  const claimUsesVideoFlow = claimMediaProfile.damage_assessment_mode === "video";
   const claimVideoAssessmentSummary = fnol?.video_damage_assessment ?? null;
+  const hasClaimLinkedVideos =
+    claimMediaProfile.has_videos || evidenceVideoCount > 0 || claimLinkedVideoAssetIds.length > 0;
+  const shouldRenderVideoMediaPanel = hasClaimLinkedVideos;
   const shouldRenderPhotoMediaPanel =
-    claimPhotoAssets.length > 0 || claimVideoAssets.length === 0;
+    claimMediaProfile.has_images || evidencePhotoCount > 0 || !hasClaimLinkedVideos;
+  const videoPlaybackUnavailable =
+    hasClaimLinkedVideos && claimVideoAssets.length === 0;
+  const videoPanelCount =
+    claimMediaProfile.video_count > 0
+      ? claimMediaProfile.video_count
+      : evidenceVideoCount > 0
+        ? evidenceVideoCount
+      : rawClaimVideoAssets.length;
+  const claimEvidenceSummary = useMemo(() => {
+    const photoCount = claimMediaProfile.photo_count;
+    const videoCount = claimMediaProfile.video_count;
+    if (photoCount > 0 && videoCount > 0) {
+      return `${photoCount} photo${photoCount === 1 ? "" : "s"} and ${videoCount} video${
+        videoCount === 1 ? "" : "s"
+      } are linked to this claim.`;
+    }
+    if (videoCount > 0) {
+      return `${videoCount} claim-linked video${videoCount === 1 ? "" : "s"} available for review.`;
+    }
+    if (photoCount > 0) {
+      return `${photoCount} claim photo${photoCount === 1 ? "" : "s"} available for review.`;
+    }
+    return "No claim-linked evidence is attached yet.";
+  }, [claimMediaProfile.photo_count, claimMediaProfile.video_count]);
   const activeClaimEvaluation =
     claimEvaluation?.complaint_id === id ? claimEvaluation : null;
   const hasInlineAssessmentResults =
@@ -1070,24 +1276,13 @@ export default function ClaimDetail() {
 
   const handleDamageDetection = async () => {
     if (!id || !fnol) return;
-    const rawPhotos =
-      fnol.raw_response?.documents?.photos ?? fnol.damage_photos ?? [];
-    const imageUrls = rawPhotos
-      .map((obj: string | { image?: { url?: string } }) => {
-        const url =
-          typeof obj === "string"
-            ? obj
-            : (obj as { image?: { url?: string } })?.image?.url;
-        if (!url) return null;
-        return resolveDamagePhotoUrl(url);
-      })
-      .filter(Boolean) as string[];
+    const imageUrls = claimPhotoAssets.map((asset) => asset.url);
 
     if (!claimUsesVideoFlow && imageUrls.length === 0) {
       setError("No images attached to process damage detection.");
       return;
     }
-    if (claimUsesVideoFlow && claimVideoAssets.length === 0) {
+    if (claimUsesVideoFlow && claimLinkedVideoAssetIds.length === 0) {
       setError("No videos attached to process damage detection.");
       return;
     }
@@ -1101,7 +1296,7 @@ export default function ClaimDetail() {
       if (claimUsesVideoFlow) {
         const initialVideoAssessment = await runVideoDamageAssessment({
           complaintId: id,
-          assetIds: claimVideoAssets.map((asset) => asset.id),
+          assetIds: claimLinkedVideoAssetIds,
           idempotencyKey: `claim-detail-video-da-${id}`,
         });
         const completedVideoAssessment =
@@ -1153,8 +1348,8 @@ export default function ClaimDetail() {
 
           toast({
             title: "Damage assessment complete",
-            description: `${claimVideoAssets.length} video${
-              claimVideoAssets.length === 1 ? "" : "s"
+            description: `${claimLinkedVideoAssetIds.length} video${
+              claimLinkedVideoAssetIds.length === 1 ? "" : "s"
             } · ${videoAssessment.total_parts} part line${
               videoAssessment.total_parts === 1 ? "" : "s"
             } · Range ${costRange} · ${formatVideoReviewAction(
@@ -2350,7 +2545,7 @@ export default function ClaimDetail() {
                   Claim Details
                 </TabsTrigger>
                 <TabsTrigger className="shrink-0 rounded-lg px-4 py-2" value="documents">
-                  Vehicle Images
+                  Vehicle Evidence
                 </TabsTrigger>
                 {/* Keep tab visible at terminal stages (e.g. Recommendation shared) so reviewers can
                     still open rule-by-rule results; header actions control re-run, not tab visibility */}
@@ -2459,7 +2654,8 @@ export default function ClaimDetail() {
               <TabsContent value="documents">
                 <Card className="card-elevated">
                   <CardHeader>
-                    <CardTitle className="text-base">Vehicle Images</CardTitle>
+                    <CardTitle className="text-base">Vehicle Evidence</CardTitle>
+                    <p className="text-sm text-muted-foreground">{claimEvidenceSummary}</p>
                   </CardHeader>
                   <CardContent>
                     <div className="grid gap-4 sm:grid-cols-1">
@@ -2487,25 +2683,23 @@ export default function ClaimDetail() {
                           {documents.fir_uploaded ? "Uploaded" : "Missing"}
                         </StatusBadge>
                       </div> */}
-
-
-                      {claimVideoAssets.length > 0 ? (
+                      {shouldRenderVideoMediaPanel ? (
                         <div className="rounded-lg border p-4 space-y-4">
                           <div className="flex items-center justify-between gap-3">
                             <div>
                               <span className="text-sm font-medium">Videos</span>
                               <p className="mt-1 text-xs text-muted-foreground">
-                                {claimVideoAssets.length > 0
-                                  ? `${claimVideoAssets.length} attached claim video${
-                                      claimVideoAssets.length === 1 ? "" : "s"
+                                {videoPanelCount > 0
+                                  ? `${videoPanelCount} attached claim video${
+                                      videoPanelCount === 1 ? "" : "s"
                                     }`
                                   : "No vehicle videos attached yet"}
                               </p>
                             </div>
                             <StatusBadge
-                              status={claimVideoAssets.length >= 1 ? "approved" : "pending"}
+                              status={hasClaimLinkedVideos ? "approved" : "pending"}
                             >
-                              {claimVideoAssets.length >= 1 ? "Available" : "Missing"}
+                              {hasClaimLinkedVideos ? "Available" : "Missing"}
                             </StatusBadge>
                           </div>
 
@@ -2548,6 +2742,14 @@ export default function ClaimDetail() {
                                 </span>
                               </div>
 
+                              {claimMediaProfile.media_type === "mixed" ? (
+                                <p className="text-xs text-muted-foreground">
+                                  This claim includes both photos and video. Damage Assessment
+                                  follows the image workflow while the linked video remains
+                                  available for reviewer evidence.
+                                </p>
+                              ) : null}
+
                               {claimVideoAssets.length > 1 ? (
                                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                                   {claimVideoAssets.map((asset, index) => {
@@ -2581,6 +2783,18 @@ export default function ClaimDetail() {
                                 </div>
                               ) : null}
                             </>
+                          ) : videoPlaybackUnavailable ? (
+                            <div className="space-y-2 rounded-lg border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+                              <p className="font-medium text-foreground">
+                                Linked video found, but playback is unavailable.
+                              </p>
+                              <p>
+                                This claim still has claim-linked video media and can use the
+                                video damage-assessment flow. The current asset URL is not
+                                browser-playable, so check the backend `video_assets.file_url` or
+                                stored source path.
+                              </p>
+                            </div>
                           ) : (
                             <div className="flex h-32 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-sm text-muted-foreground">
                               No vehicle videos are attached to this claim yet.

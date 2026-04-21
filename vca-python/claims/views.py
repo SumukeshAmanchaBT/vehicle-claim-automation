@@ -63,6 +63,13 @@ from .workflow_state import (
     valuation_row_has_meaningful_output,
 )
 from .decisioning import sync_claim_evaluation_decision_state
+from .media_paths import (
+    coerce_claim_video_entry,
+    coerce_fnol_photo_entry,
+    damage_photo_public_relative_url,
+    is_video_media_path,
+    normalize_stored_photo_path,
+)
 from .reviewer_safe import sanitize_reviewer_llm_notes
 
 from .phase1_runtime import (
@@ -87,6 +94,250 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _video_source_path_priority(source_path: str) -> int:
+    value = str(source_path or "").strip()
+    if not value:
+        return 0
+    if value.startswith(("http://", "https://")):
+        return 4
+    normalized = value.replace("\\", "/")
+    if os.path.isabs(value):
+        return 3
+    if "/" in normalized:
+        return 2
+    return 1
+
+
+def _claim_has_image_damage_photos(*, complaint_id: str | None = None, claim: FnolClaim | None = None) -> bool:
+    if claim is not None:
+        rows = getattr(claim, "_ordered_damage_photos", None)
+        if rows is None:
+            rows = claim.damage_photos.only("photo_path").all()
+        return any(
+            str(getattr(row, "photo_path", "") or "").strip()
+            and not is_video_media_path(getattr(row, "photo_path", "") or "")
+            for row in rows
+        )
+
+    if not complaint_id:
+        return False
+
+    photo_rows = FnolDamagePhoto.objects.filter(complaint_id=complaint_id).values_list(
+        "photo_path",
+        flat=True,
+    )
+    return any(str(path or "").strip() and not is_video_media_path(path or "") for path in photo_rows)
+
+
+def _build_claim_media_profile(
+    *,
+    normalized_photo_paths: list[str],
+    video_assets: list[dict],
+) -> dict[str, object]:
+    photo_count = len(normalized_photo_paths)
+    video_count = len(video_assets)
+    playable_video_count = sum(1 for asset in video_assets if str(asset.get("file_url") or "").strip())
+
+    has_images = photo_count > 0
+    has_videos = video_count > 0
+
+    if has_images and has_videos:
+        media_type = "mixed"
+        primary_media_type = "image"
+        damage_assessment_mode = "image"
+        damage_assessment_reason = "mixed_media_prefers_image_damage_assessment"
+    elif has_videos:
+        media_type = "video_only"
+        primary_media_type = "video"
+        damage_assessment_mode = "video"
+        damage_assessment_reason = "video_assets_only"
+    elif has_images:
+        media_type = "image_only"
+        primary_media_type = "image"
+        damage_assessment_mode = "image"
+        damage_assessment_reason = "image_damage_photos_present"
+    else:
+        media_type = "none"
+        primary_media_type = "none"
+        damage_assessment_mode = "none"
+        damage_assessment_reason = "no_claim_media"
+
+    return {
+        "media_type": media_type,
+        "primary_media_type": primary_media_type,
+        "damage_assessment_mode": damage_assessment_mode,
+        "damage_assessment_reason": damage_assessment_reason,
+        "has_images": has_images,
+        "has_videos": has_videos,
+        "photo_count": photo_count,
+        "video_count": video_count,
+        "playable_video_count": playable_video_count,
+    }
+
+
+def _build_claim_evidence_items(
+    *,
+    claim: FnolClaim,
+    normalized_photo_paths: list[str],
+    photo_urls: list[str],
+    video_assets: list[dict],
+    media_profile: dict[str, object],
+) -> list[dict[str, object]]:
+    evidence_items: list[dict[str, object]] = []
+    photo_rows = getattr(claim, "_ordered_damage_photos", None)
+    if photo_rows is None:
+        photo_rows = claim.damage_photos.only("id", "photo_path").order_by("id")
+
+    image_role = (
+        "primary"
+        if str(media_profile.get("primary_media_type") or "").strip() == "image"
+        else "supporting"
+    )
+    video_role = (
+        "primary"
+        if str(media_profile.get("primary_media_type") or "").strip() == "video"
+        else "supporting"
+    )
+    image_index = 0
+
+    for row in photo_rows:
+        stored_path = str(getattr(row, "photo_path", "") or "").strip()
+        if not stored_path or is_video_media_path(stored_path):
+            continue
+
+        normalized_path = normalize_stored_photo_path(stored_path)
+        public_url = damage_photo_public_relative_url(stored_path)
+        if not normalized_path and image_index < len(normalized_photo_paths):
+            normalized_path = str(normalized_photo_paths[image_index] or "").strip()
+        if not public_url and image_index < len(photo_urls):
+            public_url = str(photo_urls[image_index] or "").strip()
+
+        label_source = normalized_path or stored_path
+        label = os.path.basename(str(label_source).replace("\\", "/")) or f"Photo {image_index + 1}"
+        evidence_items.append(
+            {
+                "evidence_type": "image",
+                "source_table": "fnol_damage_photos",
+                "source_id": getattr(row, "id", None),
+                "complaint_id": claim.complaint_id,
+                "label": label,
+                "stored_path": normalized_path or stored_path,
+                "url": public_url,
+                "display_available": bool(public_url),
+                "render_status": "ready" if public_url else "linked_unavailable",
+                "damage_assessment_role": image_role,
+            }
+        )
+        image_index += 1
+
+    for index, asset in enumerate(video_assets):
+        source_path = str(asset.get("source_path") or "").strip()
+        original_filename = str(asset.get("original_filename") or "").strip()
+        label_source = original_filename or source_path
+        label = os.path.basename(label_source.replace("\\", "/")) or f"Video {index + 1}"
+        file_url = str(asset.get("file_url") or "").strip()
+        evidence_items.append(
+            {
+                "evidence_type": "video",
+                "source_table": "claim_video_assets",
+                "source_id": asset.get("id"),
+                "complaint_id": claim.complaint_id,
+                "label": label,
+                "stored_path": source_path,
+                "url": file_url,
+                "display_available": bool(file_url),
+                "render_status": "ready" if file_url else "linked_unavailable",
+                "damage_assessment_role": video_role,
+                "source_type": asset.get("source_type") or "",
+                "duration_ms": asset.get("duration_ms"),
+                "frame_count": asset.get("frame_count"),
+                "width": asset.get("width"),
+                "height": asset.get("height"),
+                "created_at": asset.get("created_at"),
+                "updated_at": asset.get("updated_at"),
+            }
+        )
+
+    return evidence_items
+
+
+def _upsert_claim_video_assets_from_references(
+    claim: FnolClaim,
+    entries: list[dict[str, str]],
+) -> dict[str, int]:
+    if not entries:
+        return {"created": 0, "updated": 0}
+
+    valid_source_types = {choice for choice, _label in ClaimVideoAsset.SourceType.choices}
+    existing_assets = list(claim.video_assets.order_by("id"))
+    existing_by_source = {
+        str(asset.source_path or "").strip().lower(): asset
+        for asset in existing_assets
+        if str(asset.source_path or "").strip()
+    }
+    existing_by_name = {
+        (
+            str(asset.original_filename or "").strip().lower(),
+            str(asset.source_type or "").strip().lower(),
+        ): asset
+        for asset in existing_assets
+        if str(asset.original_filename or "").strip()
+    }
+
+    created = 0
+    updated = 0
+    seen_keys: set[tuple[str, str, str]] = set()
+
+    for entry in entries:
+        source_path = str(entry.get("source_path") or "").strip()
+        original_filename = str(entry.get("original_filename") or "").strip()
+        source_type = str(entry.get("source_type") or ClaimVideoAsset.SourceType.UPLOAD).strip()
+        if source_type not in valid_source_types:
+            source_type = ClaimVideoAsset.SourceType.UPLOAD
+        if not source_path or not original_filename:
+            continue
+
+        dedupe_key = (source_path.lower(), original_filename.lower(), source_type.lower())
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+
+        asset = existing_by_source.get(source_path.lower()) or existing_by_name.get(
+            (original_filename.lower(), source_type.lower())
+        )
+
+        if asset is None:
+            ClaimVideoAsset.objects.create(
+                complaint=claim,
+                source_path=source_path,
+                original_filename=original_filename,
+                source_type=source_type,
+            )
+            created += 1
+            continue
+
+        update_fields: list[str] = []
+        if (
+            source_path
+            and _video_source_path_priority(source_path)
+            > _video_source_path_priority(asset.source_path)
+        ):
+            asset.source_path = source_path
+            update_fields.append("source_path")
+        if original_filename and not str(asset.original_filename or "").strip():
+            asset.original_filename = original_filename
+            update_fields.append("original_filename")
+        if source_type and (not str(asset.source_type or "").strip()):
+            asset.source_type = source_type
+            update_fields.append("source_type")
+        if update_fields:
+            update_fields.append("updated_at")
+            asset.save(update_fields=update_fields)
+            updated += 1
+
+    return {"created": created, "updated": updated}
 
 
 def _run_parallel(callables: list, *, max_workers: int = 4) -> list:
@@ -601,7 +852,10 @@ def _get_fraud_rule_description(rule_type: str) -> str:
         rule_type__iexact=rule_type,
         is_active=True,
     ).first()
-    return (rule.rule_description or rule_type).strip() if rule else rule_type
+    description = (rule.rule_description or rule_type).strip() if rule else rule_type
+    if rule_type.strip().lower() == "missing damage photos":
+        return "At least one valid claim evidence item (photo or video) must be attached."
+    return description
 
 
 def fraud_check(
@@ -730,7 +984,10 @@ def _policy_data_mismatch_passed(
     return True
 
 
-def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[dict] = None) -> bool:
+def _has_claim_media_evidence(
+    complaint_id: Optional[str] = None,
+    documents: Optional[dict] = None,
+) -> bool:
     """
     Check if claim media exists for BRV.
 
@@ -738,9 +995,7 @@ def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[d
     the same rule through claim_video_assets so BRV/DA can proceed without image uploads.
     """
     if complaint_id:
-        has_photos = FnolDamagePhoto.objects.filter(
-            complaint_id=complaint_id
-        ).exclude(Q(photo_path__isnull=True) | Q(photo_path="")).exists()
+        has_photos = _claim_has_image_damage_photos(complaint_id=complaint_id)
         if has_photos:
             return True
         return ClaimVideoAsset.objects.filter(
@@ -758,6 +1013,16 @@ def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[d
     if isinstance(videos, list) and len(videos) > 0:
         return True
     return False
+
+
+def _has_damage_photos(complaint_id: Optional[str] = None, documents: Optional[dict] = None) -> bool:
+    """
+    Backward-compatible wrapper for the legacy Business Rule Validation rule name.
+
+    The database rule still uses "Missing Damage Photos", but the actual check now
+    validates whether any claim-linked evidence is available.
+    """
+    return _has_claim_media_evidence(complaint_id=complaint_id, documents=documents)
 
 
 def _evaluate_single_fraud_rule(
@@ -807,7 +1072,7 @@ def _evaluate_single_fraud_rule(
         return passed, desc
 
     if rule_type == "Missing Damage Photos":
-        passed = _has_damage_photos(complaint_id=complaint_id, documents=documents)
+        passed = _has_claim_media_evidence(complaint_id=complaint_id, documents=documents)
         return passed, desc
 
     # Risk when TRUE → passed when FALSE
@@ -1053,7 +1318,7 @@ def _run_process_claim_logic(data: dict) -> dict:
             "estimated_amount": estimated_amount,
         }
 
-    if _is_fraud_rule_active("Missing Damage Photos") and not _has_damage_photos(
+    if _is_fraud_rule_active("Missing Damage Photos") and not _has_claim_media_evidence(
         complaint_id=complaint_id or None, documents=documents
     ):
         return {
@@ -1102,11 +1367,6 @@ def _build_fnol_photo_maps(
     Build both public photo URLs and normalized stored paths in one query so MySQL-backed
     list views do not re-fetch photos per claim.
     """
-    from claims.media_paths import (
-        damage_photo_public_relative_url,
-        normalize_stored_photo_path,
-    )
-
     public_urls: dict[str, list[str]] = defaultdict(list)
     normalized_paths: dict[str, list[str]] = defaultdict(list)
 
@@ -1119,7 +1379,7 @@ def _build_fnol_photo_maps(
         .values_list("complaint_id", "photo_path")
     )
     for complaint_id, path in photo_rows:
-        if not path:
+        if not path or is_video_media_path(path):
             continue
         public_url = damage_photo_public_relative_url(path)
         if public_url:
@@ -1143,11 +1403,6 @@ def _photo_maps_from_prefetched_fnol_claims(
     Build photo URL maps from Prefetch(to_attr="_ordered_damage_photos") so list_fnol
     does not run a second query against fnol_damage_photos.
     """
-    from claims.media_paths import (
-        damage_photo_public_relative_url,
-        normalize_stored_photo_path,
-    )
-
     public_urls: dict[str, list[str]] = defaultdict(list)
     normalized_paths: dict[str, list[str]] = defaultdict(list)
     for claim in claims:
@@ -1155,7 +1410,7 @@ def _photo_maps_from_prefetched_fnol_claims(
         rows = getattr(claim, "_ordered_damage_photos", None) or []
         for row in rows:
             path = getattr(row, "photo_path", None) or ""
-            if not path:
+            if not path or is_video_media_path(path):
                 continue
             public_url = damage_photo_public_relative_url(path)
             if public_url:
@@ -1310,7 +1565,10 @@ def _evaluation_records_by_complaint(
 
 
 def _fnol_claim_to_raw_response(
-    claim: FnolClaim, normalized_photo_paths: Optional[list[str]] = None
+    claim: FnolClaim,
+    normalized_photo_paths: Optional[list[str]] = None,
+    *,
+    video_assets: Optional[list[dict]] = None,
 ) -> dict:
     """Build FnolPayload-like dict from FnolClaim for process_claim compatibility."""
 
@@ -1318,8 +1576,44 @@ def _fnol_claim_to_raw_response(
     if photos is None:
         _, normalized_photo_map = _build_fnol_photo_maps([claim.complaint_id])
         photos = normalized_photo_map.get(claim.complaint_id, [])
+    if video_assets is None:
+        video_assets = list(
+            claim.video_assets.order_by("id").values(
+                "id",
+                "source_path",
+                "original_filename",
+                "source_type",
+            )
+        )
 
     incident_dt = claim.incident_date_time.isoformat() if claim.incident_date_time else None
+    documents_payload = {
+        "rc_copy_uploaded": False,
+        "dl_copy_uploaded": False,
+        "photos_uploaded": len(photos) > 0,
+        "fir_uploaded": bool(claim.fir_document_copy),
+        "photos": photos,
+    }
+    if video_assets is not None:
+        documents_payload["videos_uploaded"] = len(video_assets) > 0
+        documents_payload["videos"] = [
+            {
+                "source_path": asset.get("source_path"),
+                "original_filename": asset.get("original_filename"),
+                "source_type": asset.get("source_type"),
+            }
+            for asset in video_assets
+        ]
+        documents_payload["video_assets"] = [
+            {
+                "id": asset.get("id"),
+                "source_path": asset.get("source_path"),
+                "original_filename": asset.get("original_filename"),
+                "source_type": asset.get("source_type"),
+            }
+            for asset in video_assets
+        ]
+
     return {
         "claim_id": claim.complaint_id,
         "policy": {
@@ -1354,13 +1648,7 @@ def _fnol_claim_to_raw_response(
         "commercial_vehicle": getattr(claim, "commercial_vehicle", None),
         "flood_coverage": getattr(claim, "flood_coverage", None),
         "claimant": {"driver_name": claim.policy_holder_name or ""},
-        "documents": {
-            "rc_copy_uploaded": False,
-            "dl_copy_uploaded": False,
-            "photos_uploaded": len(photos) > 0,
-            "fir_uploaded": bool(claim.fir_document_copy),
-            "photos": photos,
-        },
+        "documents": documents_payload,
         "history": {"previous_claims_last_12_months": 0},
     }
 
@@ -1410,6 +1698,23 @@ def _fnol_claim_to_response(
         if normalized_photo_paths is None:
             normalized_photo_paths = normalized_photo_map.get(claim.complaint_id, [])
 
+    video_overview = None
+    detail_media_profile = None
+    claim_evidence = None
+    if not list_mode:
+        video_overview = build_claim_video_overview(claim, request=request)
+        detail_media_profile = _build_claim_media_profile(
+            normalized_photo_paths=normalized_photo_paths or [],
+            video_assets=video_overview.get("video_assets") or [],
+        )
+        claim_evidence = _build_claim_evidence_items(
+            claim=claim,
+            normalized_photo_paths=normalized_photo_paths or [],
+            photo_urls=photo_urls or [],
+            video_assets=video_overview.get("video_assets") or [],
+            media_profile=detail_media_profile,
+        )
+
     response = {
         "id": claim.complaint_id,
         "complaint_id": claim.complaint_id,
@@ -1437,9 +1742,11 @@ def _fnol_claim_to_response(
         "insurance_document_copy": claim.insurance_document_copy,
         "damage_photos": photo_urls,
         "raw_response": _fnol_claim_to_raw_response(
-            claim, normalized_photo_paths=normalized_photo_paths
+            claim,
+            normalized_photo_paths=normalized_photo_paths,
+            video_assets=video_overview.get("video_assets") if video_overview else None,
         ),
-            "status": effective_claim_status(claim, latest_eval),
+        "status": effective_claim_status(claim, latest_eval),
         "estimated_amount": estimated_amount,
         "claim_amount": claim_amount,
         "excess_amount": float(claim.excess_amount) if claim.excess_amount is not None else None,
@@ -1474,7 +1781,9 @@ def _fnol_claim_to_response(
             fnol=claim,
             latest_eval=latest_eval,
         )
-        response.update(build_claim_video_overview(claim, request=request))
+        response["media_profile"] = detail_media_profile
+        response["claim_evidence"] = claim_evidence or []
+        response.update(video_overview or {})
 
     return response
 
@@ -2191,17 +2500,45 @@ def save_fnol(request):
                 reset_artifact_counts,
             )
 
-    # Handle damage photos (strings or { image: { url } } objects — normalized to basename)
     documents = data.get("documents") or {}
-    photo_paths = documents.get("photos")
-    from claims.media_paths import coerce_fnol_photo_entry
+    photo_items = documents.get("photos")
+    explicit_video_items = documents.get("videos") or documents.get("video_assets")
+    default_video_source_type = (
+        ClaimVideoAsset.SourceType.DASHCAM
+        if getattr(record, "dashcam_cctv_evidence", None)
+        else ClaimVideoAsset.SourceType.UPLOAD
+    )
+
+    normalized_photo_paths: list[str] = []
+    video_entries: list[dict[str, str]] = []
+
+    if isinstance(photo_items, list):
+        for item in photo_items:
+            normalized_photo = coerce_fnol_photo_entry(item)
+            if normalized_photo:
+                normalized_photo_paths.append(normalized_photo)
+                continue
+            video_entry = coerce_claim_video_entry(
+                item,
+                default_source_type=default_video_source_type,
+            )
+            if video_entry:
+                video_entries.append(video_entry)
+
+    if isinstance(explicit_video_items, list):
+        for item in explicit_video_items:
+            video_entry = coerce_claim_video_entry(
+                item,
+                default_source_type=default_video_source_type,
+            )
+            if video_entry:
+                video_entries.append(video_entry)
 
     record.damage_photos.all().delete()
-    if isinstance(photo_paths, list):
-        for item in photo_paths:
-            normalized = coerce_fnol_photo_entry(item)
-            if normalized:
-                FnolDamagePhoto.objects.create(complaint=record, photo_path=normalized)
+    for normalized_photo_path in normalized_photo_paths:
+        FnolDamagePhoto.objects.create(complaint=record, photo_path=normalized_photo_path)
+
+    video_asset_sync = _upsert_claim_video_assets_from_references(record, video_entries)
 
     payload = {
         "message": "FNOL saved successfully",
@@ -2209,6 +2546,8 @@ def save_fnol(request):
     }
     if reset_artifact_counts:
         payload["reset_processing_artifacts"] = reset_artifact_counts
+    if any(video_asset_sync.values()):
+        payload["video_asset_sync"] = video_asset_sync
     return Response(payload, status=201)
 
 
