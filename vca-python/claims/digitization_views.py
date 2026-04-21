@@ -215,12 +215,39 @@ def _openai_extract_kv_from_text(text: str) -> tuple[dict[str, Any], str | None]
 
     prompt = (
         "You are a claims digitization assistant.\n"
-        "Extract important key-value pairs from the following claim document text.\n"
-        "Return only valid JSON object.\n\n"
-        "Preferred keys when available:\n"
-        "claim_number, policy_number, insured_name, vehicle_number, vehicle_name, "
-        "policy_type, policy_status, date_of_loss, cause_of_loss, description, claimed_amount, recommendation.\n"
-        "If a key is missing, set value as null.\n"
+        "Extract structured data from the following claim / repair invoice text.\n"
+        "Return ONLY a valid JSON object (no markdown, no code fences).\n\n"
+        "Use this schema:\n"
+        "{\n"
+        '  \"claim_number\": string|null,\n'
+        '  \"policy_number\": string|null,\n'
+        '  \"insured_name\": string|null,\n'
+        '  \"vehicle_number\": string|null,\n'
+        '  \"vehicle_name\": string|null,\n'
+        '  \"engine_number\": string|null,\n'
+        '  \"chassis_number\": string|null,\n'
+        '  \"make_model\": string|null,\n'
+        '  \"policy_type\": string|null,\n'
+        '  \"policy_status\": string|null,\n'
+        '  \"date_of_loss\": string|null,\n'
+        '  \"cause_of_loss\": string|null,\n'
+        '  \"description\": string|null,\n'
+        '  \"claimed_amount\": number|null,\n'
+        '  \"total_amount\": number|null,\n'
+        '  \"recommendation\": string|null,\n'
+        '  \"parts\": [\n'
+        "    {\n"
+        '      \"description\": string|null,\n'
+        '      \"quantity\": number|null,\n'
+        '      \"unit_price\": number|null,\n'
+        '      \"amount\": number|null\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- If a field is missing, use null.\n"
+        "- `parts` must be the spare-parts line items table (NOT labour-only summary lines). If you cannot find any, return an empty list.\n"
+        "- quantity/unit_price/amount must be numbers without currency symbols. If unknown, use null.\n"
     )
     trimmed = text[:16000]
     try:
