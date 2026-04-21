@@ -20,6 +20,7 @@ from django.db.models import Count, Max, Prefetch, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date, parse_datetime
+from django.utils import timezone
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -2490,6 +2491,28 @@ def save_fnol(request):
         complaint_id=complaint_id,
         defaults=claim_data,
     )
+
+    # fnol_claims has nullable audit fields; ensure they are populated on insert.
+    # Do NOT override created_* on subsequent updates.
+    # fnol_claims stores created_by/updated_by as varchar in legacy schema, but
+    # product requirement is to persist the authenticated user's id.
+    actor_id = getattr(getattr(request, "user", None), "id", None)
+    actor = str(actor_id) if actor_id is not None else None
+    now = timezone.now()
+    touch_fields: list[str] = []
+    if created:
+        if getattr(record, "created_date", None) in (None, ""):
+            record.created_date = now
+            touch_fields.append("created_date")
+        if getattr(record, "created_by", None) in (None, ""):
+            record.created_by = actor
+            touch_fields.append("created_by")
+    # Always update updated_* to reflect the last fetch/import.
+    record.updated_date = now
+    record.updated_by = actor
+    touch_fields.extend(["updated_date", "updated_by"])
+    if touch_fields:
+        record.save(update_fields=touch_fields)
     reset_artifact_counts = {}
     if not created and claim_data.get("re_open", 0) == 0:
         reset_artifact_counts = _clear_claim_processing_artifacts(record)
