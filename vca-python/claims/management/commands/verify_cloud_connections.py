@@ -6,6 +6,7 @@ Usage:
   python manage.py verify_cloud_connections --debug
   python manage.py verify_cloud_connections --skip-azure
   python manage.py verify_cloud_connections --skip-s3
+  python manage.py verify_cloud_connections --skip-azure-monitor
 
 Optional: S3_VERIFY_WRITE_TEST=1 in .env runs a tiny put/delete probe on the bucket.
 """
@@ -13,12 +14,14 @@ Optional: S3_VERIFY_WRITE_TEST=1 in .env runs a tiny put/delete probe on the buc
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from claim_automation.llm_observability import llm_observation_context
 
 def _mask(s: str | None, keep: int = 4) -> str:
     if not s:
@@ -30,7 +33,7 @@ def _mask(s: str | None, keep: int = 4) -> str:
 
 
 class Command(BaseCommand):
-    help = "Test Azure OpenAI and AWS S3 connectivity; logs details to stdout."
+    help = "Test Azure OpenAI, Azure Monitor, and AWS S3 connectivity; logs details to stdout."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -40,6 +43,7 @@ class Command(BaseCommand):
         )
         parser.add_argument("--skip-azure", action="store_true")
         parser.add_argument("--skip-s3", action="store_true")
+        parser.add_argument("--skip-azure-monitor", action="store_true")
 
     def handle(self, *args: Any, **options: Any):
         log = logging.getLogger("verify_cloud")
@@ -61,6 +65,7 @@ class Command(BaseCommand):
 
         azure_ok = True
         s3_ok = True
+        azure_monitor_ok = True
 
         if not options["skip_azure"]:
             azure_ok = self._check_azure(log)
@@ -72,8 +77,13 @@ class Command(BaseCommand):
         else:
             self.stdout.write("Skipping S3 (--skip-s3).\n")
 
+        if not options["skip_azure_monitor"]:
+            azure_monitor_ok = self._check_azure_monitor(log)
+        else:
+            self.stdout.write("Skipping Azure Monitor (--skip-azure-monitor).\n")
+
         self.stdout.write("")
-        if azure_ok and s3_ok:
+        if azure_ok and s3_ok and azure_monitor_ok:
             self.stdout.write(self.style.SUCCESS("Summary: all executed checks passed."))
         else:
             self.stdout.write(
@@ -129,32 +139,37 @@ class Command(BaseCommand):
             getattr(rich_target, "model", None),
         )
 
-        try:
-            log.info("Calling chat.completions.create (minimal test message)...")
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": 'Reply with exactly the word "pong" and nothing else.',
-                    }
-                ],
-                max_tokens=16,
-                temperature=0,
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            log.info("Response content: %r", text[:200])
-            usage = getattr(resp, "usage", None)
-            if usage:
-                log.info("Usage: %s", usage)
-            self.stdout.write(
-                self.style.SUCCESS(f"Azure/OpenAI LLM: OK (reply preview: {text[:80]!r})")
-            )
-            return True
-        except Exception as e:
-            log.exception("Azure/OpenAI call failed")
-            self.stdout.write(self.style.ERROR(f"Azure/OpenAI LLM: FAILED — {e}"))
-            return False
+        with llm_observation_context(
+            correlation_id="verify-cloud-connections",
+            execution_scope="management_command",
+            management_command="verify_cloud_connections",
+        ):
+            try:
+                log.info("Calling chat.completions.create (minimal test message)...")
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": 'Reply with exactly the word "pong" and nothing else.',
+                        }
+                    ],
+                    max_tokens=16,
+                    temperature=0,
+                )
+                text = (resp.choices[0].message.content or "").strip()
+                log.info("Response content: %r", text[:200])
+                usage = getattr(resp, "usage", None)
+                if usage:
+                    log.info("Usage: %s", usage)
+                self.stdout.write(
+                    self.style.SUCCESS(f"Azure/OpenAI LLM: OK (reply preview: {text[:80]!r})")
+                )
+                return True
+            except Exception as e:
+                log.exception("Azure/OpenAI call failed")
+                self.stdout.write(self.style.ERROR(f"Azure/OpenAI LLM: FAILED — {e}"))
+                return False
 
     def _check_s3(self, log: logging.Logger) -> bool:
         self.stdout.write(self.style.HTTP_INFO("--- Amazon S3 ---"))
@@ -244,3 +259,138 @@ class Command(BaseCommand):
                 return False
 
         return True
+
+    def _check_azure_monitor(self, log: logging.Logger) -> bool:
+        self.stdout.write(self.style.HTTP_INFO("--- Azure Monitor (Cloud-Truth Metrics) ---"))
+        resource_id = (getattr(settings, "AZURE_OPENAI_RESOURCE_ID", "") or "").strip()
+        enabled = (os.getenv("AZURE_MONITOR_METRICS_ENABLED", "1") or "1").strip()
+
+        log.info("AZURE_OPENAI_RESOURCE_ID=%s", resource_id or "(empty)")
+        log.info("AZURE_MONITOR_METRICS_ENABLED=%s", enabled)
+
+        if enabled.lower() in {"0", "false", "no", "off"}:
+            self.stdout.write(
+                self.style.NOTICE(
+                    "Azure Monitor: skipped — AZURE_MONITOR_METRICS_ENABLED is disabled."
+                )
+            )
+            return True
+
+        if not resource_id:
+            self.stdout.write(
+                self.style.NOTICE(
+                    "Azure Monitor: skipped — AZURE_OPENAI_RESOURCE_ID not set. "
+                    "Set it to enable cloud-truth metrics enrichment."
+                )
+            )
+            return True
+
+        # Parse resource ID
+        from claim_automation.azure_monitor_client import parse_azure_resource_id
+
+        ctx = parse_azure_resource_id(resource_id)
+        if not ctx:
+            self.stdout.write(
+                self.style.ERROR(
+                    f"Azure Monitor: FAILED — invalid AZURE_OPENAI_RESOURCE_ID format: {resource_id}"
+                )
+            )
+            return False
+
+        log.info("Subscription ID: %s", ctx.subscription_id)
+        log.info("Resource Group: %s", ctx.resource_group)
+        log.info("Resource Name: %s", ctx.resource_name)
+
+        # Check if Azure SDK is available
+        try:
+            from azure.identity import DefaultAzureCredential
+            from azure.monitor.query import MetricsQueryClient
+        except ImportError:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Azure Monitor: SDK not installed. "
+                    "Install with: pip install azure-identity azure-monitor-query"
+                )
+            )
+            return False
+
+        # Test authentication and metrics query
+        try:
+            log.info("Authenticating with DefaultAzureCredential...")
+            credential = DefaultAzureCredential()
+            client = MetricsQueryClient(credential)
+
+            log.info("Querying Azure Monitor metrics for %s...", ctx.resource_name)
+            from datetime import datetime, timedelta, timezone
+
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(minutes=5)
+
+            # Query a basic metric to verify connectivity
+            metrics_response = client.query_resource(
+                resource_uri=ctx.resource_id,
+                metric_names=["Requests"],
+                timespan=(start_time, end_time),
+                granularity=timedelta(minutes=1),
+                aggregations=["Total"],
+            )
+
+            metric_count = len(metrics_response.metrics)
+            log.info("Received %d metric(s) from Azure Monitor", metric_count)
+
+            # Display some metrics details
+            for metric in metrics_response.metrics:
+                log.info("  Metric: %s", metric.name)
+                if metric.timeseries:
+                    data_points = sum(len(ts.data) for ts in metric.timeseries)
+                    log.info("    Data points: %d", data_points)
+
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Azure Monitor: OK — retrieved {metric_count} metric(s) for {ctx.resource_name}"
+                )
+            )
+
+            # Test the observability integration
+            log.info("Testing observability integration...")
+            from claim_automation.azure_monitor_client import (
+                get_azure_metrics_snapshot,
+                get_cache_stats,
+            )
+
+            snapshot = get_azure_metrics_snapshot(
+                resource_id, time_window_minutes=5, use_cache=False
+            )
+            if snapshot:
+                metrics = snapshot.get("metrics", {})
+                log.info("  Snapshot metrics: %s", ", ".join(metrics.keys()))
+                cache_stats = get_cache_stats()
+                log.info("  Cache entries: %d", cache_stats["entries"])
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"  Observability integration: OK — {len(metrics)} metric types fetched"
+                    )
+                )
+            else:
+                self.stdout.write(
+                    self.style.WARNING("  Observability integration: No metrics returned")
+                )
+
+            return True
+
+        except Exception as e:
+            log.exception("Azure Monitor query failed")
+            self.stdout.write(
+                self.style.ERROR(
+                    f"Azure Monitor: FAILED — {type(e).__name__}: {e}\n\n"
+                    "Common causes:\n"
+                    "  1. Authentication: Ensure DefaultAzureCredential can authenticate\n"
+                    "     - Set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, or\n"
+                    "     - Use 'az login' for local dev, or\n"
+                    "     - Use managed identity in Azure\n"
+                    "  2. Permissions: Ensure the identity has 'Monitoring Reader' role on the resource\n"
+                    "  3. Resource ID: Verify AZURE_OPENAI_RESOURCE_ID is correct"
+                )
+            )
+            return False
+

@@ -12,6 +12,7 @@ from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from claim_automation.llm_observability import llm_observation_context
 from claim_automation.vca_config import cfg
 from claims.digitization_s3 import cleanup_temp_path
 from claims.models import (
@@ -770,175 +771,181 @@ def process_claimed_video_processing_job(
     if result is None:
         raise ValueError(f"Video job {job.id} has no analysis result row.")
 
-    try:
-        assets = list(job.assets.select_related("complaint").order_by("id"))
-        if not assets:
-            raise ValueError("No video assets were linked to the job.")
-
-        claim = job.complaint
-        asset_payloads: list[dict[str, Any]] = []
-        asset_count = len(assets)
-        for asset_index, asset in enumerate(assets, start=1):
-            ensure_video_asset_metadata(asset)
-            _job_progress(
-                job=job,
-                result=result,
-                stage="asset_preparation",
-                percent=((asset_index - 1) / max(1, asset_count)) * 100.0,
-                message=f"Preparing asset {asset_index} of {asset_count} for analysis.",
-                metrics={
-                    "current_asset_id": asset.id,
-                    "current_asset_index": asset_index,
-                    "asset_count": asset_count,
-                },
-            )
-
-            local_path = None
-            needs_cleanup = False
-            try:
-                local_path, needs_cleanup = claim_video_asset_local_path(asset)
-
-                def _progress(stage: str, percent: float, message: str, metrics: dict[str, Any] | None):
-                    asset_base = (asset_index - 1) / max(1, asset_count)
-                    asset_span = 1.0 / max(1, asset_count)
-                    overall_percent = (asset_base + (float(percent or 0.0) / 100.0) * asset_span) * 100.0
-                    _job_progress(
-                        job=job,
-                        result=result,
-                        stage=stage,
-                        percent=overall_percent,
-                        message=message,
-                        metrics=metrics,
-                    )
-
-                asset_result = analyze_video_file(
-                    str(local_path),
-                    complaint_id=claim.complaint_id,
-                    incident_description=claim.incident_description,
-                    flood_coverage=bool(getattr(claim, "flood_coverage", False)),
-                    source_hint=asset.source_path or asset.original_filename,
-                    progress_callback=_progress,
-                )
-                persisted_frames = _persist_frame_artifacts(
-                    claim=claim,
-                    asset=asset,
-                    job=job,
-                    frame_artifacts=asset_result["frame_artifacts"],
-                )
-                asset_result["keyframes_json"] = [
-                    {
-                        **frame_payload,
-                        "frame_row_id": persisted_frames[index].id
-                        if index < len(persisted_frames)
-                        else None,
-                    }
-                    for index, frame_payload in enumerate(asset_result["keyframes_json"])
-                ]
-                asset_payloads.append({"asset": asset, "analysis": asset_result})
-                partial_merge = _merge_asset_payloads(asset_payloads)
-                result.keyframes_json = partial_merge["keyframes_json"]
-                result.timeline_json = partial_merge["timeline_json"]
-                result.save(update_fields=["keyframes_json", "timeline_json", "updated_at"])
-            finally:
-                cleanup_temp_path(local_path, needs_cleanup)
-
-        merged = _merge_asset_payloads(asset_payloads)
-        now = timezone.now()
-        result_metrics = {
-            **_json_safe(result.metrics_json or {}),
-            **_json_safe(merged["metrics_json"]),
-        }
-        job_metrics = {
-            **_json_safe(job.metrics_json or {}),
-            **_json_safe(merged["metrics_json"]),
-            "execution_backend": "database_polling_worker",
-        }
-        with transaction.atomic():
-            result.status = ClaimVideoAnalysisResult.Status.COMPLETED
-            result.summary_text = merged["summary_text"]
-            result.analysis_context_json = merged["analysis_context_json"]
-            result.keyframes_json = merged["keyframes_json"]
-            result.timeline_json = merged["timeline_json"]
-            result.metrics_json = result_metrics
-            result.motion_summary_json = merged["motion_summary_json"]
-            result.scenario_summary_json = merged["scenario_summary_json"]
-            result.fraud_signals_json = merged["fraud_signals_json"]
-            result.decision_support_json = merged["decision_support_json"]
-            result.progress_json = {
-                "stage": "completed",
-                "percent": 100.0,
-                "message": "Video analysis completed.",
-            }
-            result.error_json = {}
-            result.processing_completed_at = now
-            result.save(
-                update_fields=[
-                    "status",
-                    "summary_text",
-                    "analysis_context_json",
-                    "keyframes_json",
-                    "timeline_json",
-                    "metrics_json",
-                    "motion_summary_json",
-                    "scenario_summary_json",
-                    "fraud_signals_json",
-                    "decision_support_json",
-                    "progress_json",
-                    "error_json",
-                    "processing_completed_at",
-                    "updated_at",
-                ]
-            )
-            persist_claim_video_damage_assessments(
-                claim=claim,
-                job=job,
-                result=result,
-                scenario_summary_json=merged["scenario_summary_json"],
-            )
-
-            job.status = ClaimVideoProcessingJob.Status.COMPLETED
-            job.progress_stage = "completed"
-            job.progress_message = "Video analysis completed."
-            job.progress_percent = 100.0
-            job.completed_at = now
-            job.next_retry_at = None
-            job.error_json = {}
-            job.locked_at = None
-            job.worker_token = ""
-            job.last_heartbeat_at = now
-            job.metrics_json = job_metrics
-            job.save(
-                update_fields=[
-                    "status",
-                    "progress_stage",
-                    "progress_message",
-                    "progress_percent",
-                    "completed_at",
-                    "next_retry_at",
-                    "error_json",
-                    "locked_at",
-                    "worker_token",
-                    "last_heartbeat_at",
-                    "metrics_json",
-                    "updated_at",
-                ]
-            )
+    with llm_observation_context(
+        correlation_id=f"video-job-{job.id}",
+        execution_scope="video_worker",
+        job_id=job.id,
+        management_command="process_video_jobs",
+    ):
         try:
-            sync_video_damage_assessment_to_phase1(
-                claim=claim,
-                result=result,
-                job=job,
-            )
-        except Exception:
-            logger.exception(
-                "Video processing job %s completed but canonical phase-1 sync failed",
-                job.id,
-            )
-        return job
-    except Exception as exc:
-        logger.exception("Video processing job %s failed", job.id)
-        _retry_or_fail_job(job=job, result=result, error=exc)
-        return job
+            assets = list(job.assets.select_related("complaint").order_by("id"))
+            if not assets:
+                raise ValueError("No video assets were linked to the job.")
+
+            claim = job.complaint
+            asset_payloads: list[dict[str, Any]] = []
+            asset_count = len(assets)
+            for asset_index, asset in enumerate(assets, start=1):
+                ensure_video_asset_metadata(asset)
+                _job_progress(
+                    job=job,
+                    result=result,
+                    stage="asset_preparation",
+                    percent=((asset_index - 1) / max(1, asset_count)) * 100.0,
+                    message=f"Preparing asset {asset_index} of {asset_count} for analysis.",
+                    metrics={
+                        "current_asset_id": asset.id,
+                        "current_asset_index": asset_index,
+                        "asset_count": asset_count,
+                    },
+                )
+
+                local_path = None
+                needs_cleanup = False
+                try:
+                    local_path, needs_cleanup = claim_video_asset_local_path(asset)
+
+                    def _progress(stage: str, percent: float, message: str, metrics: dict[str, Any] | None):
+                        asset_base = (asset_index - 1) / max(1, asset_count)
+                        asset_span = 1.0 / max(1, asset_count)
+                        overall_percent = (asset_base + (float(percent or 0.0) / 100.0) * asset_span) * 100.0
+                        _job_progress(
+                            job=job,
+                            result=result,
+                            stage=stage,
+                            percent=overall_percent,
+                            message=message,
+                            metrics=metrics,
+                        )
+
+                    asset_result = analyze_video_file(
+                        str(local_path),
+                        complaint_id=claim.complaint_id,
+                        incident_description=claim.incident_description,
+                        flood_coverage=bool(getattr(claim, "flood_coverage", False)),
+                        source_hint=asset.source_path or asset.original_filename,
+                        progress_callback=_progress,
+                    )
+                    persisted_frames = _persist_frame_artifacts(
+                        claim=claim,
+                        asset=asset,
+                        job=job,
+                        frame_artifacts=asset_result["frame_artifacts"],
+                    )
+                    asset_result["keyframes_json"] = [
+                        {
+                            **frame_payload,
+                            "frame_row_id": persisted_frames[index].id
+                            if index < len(persisted_frames)
+                            else None,
+                        }
+                        for index, frame_payload in enumerate(asset_result["keyframes_json"])
+                    ]
+                    asset_payloads.append({"asset": asset, "analysis": asset_result})
+                    partial_merge = _merge_asset_payloads(asset_payloads)
+                    result.keyframes_json = partial_merge["keyframes_json"]
+                    result.timeline_json = partial_merge["timeline_json"]
+                    result.save(update_fields=["keyframes_json", "timeline_json", "updated_at"])
+                finally:
+                    cleanup_temp_path(local_path, needs_cleanup)
+
+            merged = _merge_asset_payloads(asset_payloads)
+            now = timezone.now()
+            result_metrics = {
+                **_json_safe(result.metrics_json or {}),
+                **_json_safe(merged["metrics_json"]),
+            }
+            job_metrics = {
+                **_json_safe(job.metrics_json or {}),
+                **_json_safe(merged["metrics_json"]),
+                "execution_backend": "database_polling_worker",
+            }
+            with transaction.atomic():
+                result.status = ClaimVideoAnalysisResult.Status.COMPLETED
+                result.summary_text = merged["summary_text"]
+                result.analysis_context_json = merged["analysis_context_json"]
+                result.keyframes_json = merged["keyframes_json"]
+                result.timeline_json = merged["timeline_json"]
+                result.metrics_json = result_metrics
+                result.motion_summary_json = merged["motion_summary_json"]
+                result.scenario_summary_json = merged["scenario_summary_json"]
+                result.fraud_signals_json = merged["fraud_signals_json"]
+                result.decision_support_json = merged["decision_support_json"]
+                result.progress_json = {
+                    "stage": "completed",
+                    "percent": 100.0,
+                    "message": "Video analysis completed.",
+                }
+                result.error_json = {}
+                result.processing_completed_at = now
+                result.save(
+                    update_fields=[
+                        "status",
+                        "summary_text",
+                        "analysis_context_json",
+                        "keyframes_json",
+                        "timeline_json",
+                        "metrics_json",
+                        "motion_summary_json",
+                        "scenario_summary_json",
+                        "fraud_signals_json",
+                        "decision_support_json",
+                        "progress_json",
+                        "error_json",
+                        "processing_completed_at",
+                        "updated_at",
+                    ]
+                )
+                persist_claim_video_damage_assessments(
+                    claim=claim,
+                    job=job,
+                    result=result,
+                    scenario_summary_json=merged["scenario_summary_json"],
+                )
+
+                job.status = ClaimVideoProcessingJob.Status.COMPLETED
+                job.progress_stage = "completed"
+                job.progress_message = "Video analysis completed."
+                job.progress_percent = 100.0
+                job.completed_at = now
+                job.next_retry_at = None
+                job.error_json = {}
+                job.locked_at = None
+                job.worker_token = ""
+                job.last_heartbeat_at = now
+                job.metrics_json = job_metrics
+                job.save(
+                    update_fields=[
+                        "status",
+                        "progress_stage",
+                        "progress_message",
+                        "progress_percent",
+                        "completed_at",
+                        "next_retry_at",
+                        "error_json",
+                        "locked_at",
+                        "worker_token",
+                        "last_heartbeat_at",
+                        "metrics_json",
+                        "updated_at",
+                    ]
+                )
+            try:
+                sync_video_damage_assessment_to_phase1(
+                    claim=claim,
+                    result=result,
+                    job=job,
+                )
+            except Exception:
+                logger.exception(
+                    "Video processing job %s completed but canonical phase-1 sync failed",
+                    job.id,
+                )
+            return job
+        except Exception as exc:
+            logger.exception("Video processing job %s failed", job.id)
+            _retry_or_fail_job(job=job, result=result, error=exc)
+            return job
 
 
 def run_ready_video_jobs(*, limit: int = 1, worker_token: str) -> list[ClaimVideoProcessingJob]:

@@ -10,6 +10,11 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from claim_automation.azure_monitor_client import parse_azure_resource_id
+from claim_automation.llm_observability import (
+    endpoint_host_from_url,
+    instrument_openai_client,
+)
 from claim_automation.vca_config import cfg
 
 __all__ = [
@@ -28,6 +33,12 @@ class ChatCompletionTarget:
     profile: str
     timeout_s: int
     max_retries: int
+    endpoint_host: str | None = None
+    api_version: str | None = None
+    resource_id: str | None = None
+    subscription_id: str | None = None
+    resource_group: str | None = None
+    resource_name: str | None = None
 
 
 def _env(name: str, default: str = "") -> str:
@@ -83,12 +94,28 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
         from openai import AzureOpenAI
 
         ep = endpoint if endpoint.endswith("/") else f"{endpoint}/"
-        client = AzureOpenAI(
-            api_version=api_version,
-            azure_endpoint=ep,
-            api_key=azure_key,
-            timeout=timeout_s,
+        resource_id = _env("AZURE_OPENAI_RESOURCE_ID") or None
+        resource_ctx = parse_azure_resource_id(resource_id) if resource_id else None
+
+        client = instrument_openai_client(
+            AzureOpenAI(
+                api_version=api_version,
+                azure_endpoint=ep,
+                api_key=azure_key,
+                timeout=timeout_s,
+                max_retries=max_retries,
+            ),
+            provider="azure",
+            profile=profile,
+            request_target=deployment,
+            timeout_s=timeout_s,
             max_retries=max_retries,
+            endpoint_host=endpoint_host_from_url(ep),
+            api_version=api_version,
+            resource_id=resource_id,
+            subscription_id=resource_ctx.subscription_id if resource_ctx else None,
+            resource_group=resource_ctx.resource_group if resource_ctx else None,
+            resource_name=resource_ctx.resource_name if resource_ctx else None,
         )
         return ChatCompletionTarget(
             client=client,
@@ -97,6 +124,12 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
             profile=profile,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            endpoint_host=endpoint_host_from_url(ep),
+            api_version=api_version,
+            resource_id=resource_id,
+            subscription_id=resource_ctx.subscription_id if resource_ctx else None,
+            resource_group=resource_ctx.resource_group if resource_ctx else None,
+            resource_name=resource_ctx.resource_name if resource_ctx else None,
         )
 
     api_key = _env("OPENAI_API_KEY")
@@ -104,9 +137,16 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
         from openai import OpenAI
 
         return ChatCompletionTarget(
-            client=OpenAI(
-                api_key=api_key,
-                timeout=timeout_s,
+            client=instrument_openai_client(
+                OpenAI(
+                    api_key=api_key,
+                    timeout=timeout_s,
+                    max_retries=max_retries,
+                ),
+                provider="openai",
+                profile=profile,
+                request_target=_resolve_openai_model(profile),
+                timeout_s=timeout_s,
                 max_retries=max_retries,
             ),
             model=_resolve_openai_model(profile),
