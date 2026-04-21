@@ -1198,7 +1198,9 @@ def digitization_save_classified_local(request):
             status=status.HTTP_200_OK,
         )
 
-    target_dir = Path(r"D:\vehicle_automation_project\invoice_documents")
+    # Save under MEDIA_ROOT so Django can serve it via MEDIA_URL in dev
+    # and so `document.file.url` remains consistent.
+    target_dir = Path(settings.MEDIA_ROOT) / "invoice_documents"
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / safe_name
 
