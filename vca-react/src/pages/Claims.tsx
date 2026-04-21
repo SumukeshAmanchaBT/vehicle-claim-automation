@@ -576,7 +576,7 @@ export default function Claims() {
                 </Link>
               </Button>
               */}
-              <Button
+              {/* <Button
                 type="button"
                 variant="outline"
                 onClick={() => void handleFetchFnolData()}
@@ -584,11 +584,9 @@ export default function Claims() {
               >
                 <Plus className="mr-2 h-4 w-4" />
                 Fetch FNOL Data
-              </Button>
+              </Button> */}
               <Button
-                onClick={() =>
-                  void loadClaims({ manual: true, announceNewRecords: true })
-                }
+               onClick={() => void handleFetchFnolData()}
                 disabled={loading || refreshing || deletePending}
               >
                 {refreshing ? (

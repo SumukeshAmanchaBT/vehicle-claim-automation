@@ -1255,6 +1255,27 @@ export default function ClaimDetail() {
     }
   };
 
+  const handleGenerateFailedRecommendationReport = async () => {
+    if (!id) return;
+    setReportPdfLoading(true);
+    setError(null);
+    try {
+      const blob = await getRecommendationReportPdf(id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Motor_Claim_Failed_Recommendation_Report_${id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to generate failed recommendation report"
+      );
+    } finally {
+      setReportPdfLoading(false);
+    }
+  };
+
   const handleGenerateBrvFailedReport = async () => {
     if (!id) return;
     setBrvPdfLoading(true);
@@ -1678,13 +1699,29 @@ export default function ClaimDetail() {
 
   const hasBackendDamageAssessment = showDamageAssessmentResultsPanel;
 
-  const showGenerateRecommendationReport =
+  const evaluationDuplicateCandidateCount =
+    (decisionSummary as any)?.signals?.duplicate_candidate_count;
+  const duplicateCandidateCount =
+    typeof evaluationDuplicateCandidateCount === "number"
+      ? evaluationDuplicateCandidateCount
+      : duplicateCandidates?.candidates?.length ?? 0;
+
+  const hasFraudFindings = maxFraudScore > 50 || fraudScore > 50;
+  const hasDuplicateFindings = duplicateCandidateCount > 0;
+  const isGenuineClaimForReport = !(hasFraudFindings || hasDuplicateFindings);
+
+  const hasReportPrereqs =
     Boolean(
       businessRuleValidationState?.completed &&
         businessRuleValidationState?.passed !== false
     ) && hasBackendDamageAssessment;
 
-  const showGenerateFailedBrvReport = Boolean(businessRuleValidationState?.completed && businessRuleValidationState?.passed === false);
+  const showGenerateRecommendationReport = hasReportPrereqs && isGenuineClaimForReport;
+  const showFailedRecommendationReport = hasReportPrereqs && !isGenuineClaimForReport;
+
+  const showGenerateFailedBrvReport = Boolean(
+    businessRuleValidationState?.completed && businessRuleValidationState?.passed === false
+  );
 
   const canRunBusinessRuleValidation =
     Boolean(fnol) && !fraudDetectionLoading && showRunBrvButton;
@@ -2142,7 +2179,26 @@ export default function ClaimDetail() {
                 ) : (
                   <>
                     <FileDown className="mr-2 h-4 w-4" />
-                    Share Failed Report
+                    Share Failed BRV Report
+                  </>
+                )}
+              </Button>
+            )}
+            {showFailedRecommendationReport && (
+              <Button
+                variant="destructive"
+                onClick={handleGenerateFailedRecommendationReport}
+                disabled={reportPdfLoading}
+              >
+                {reportPdfLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <FileDown className="mr-2 h-4 w-4" />
+                    Failed Recommendation Report
                   </>
                 )}
               </Button>
