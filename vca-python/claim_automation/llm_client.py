@@ -55,8 +55,14 @@ def _env_primary_or_backup(primary: str, backup: str, default: str = "") -> str:
 
 
 def _resolve_azure_deployment(profile: str) -> str:
-    default_deployment = _env_primary_or_backup(
-        "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_BACKUP"
+    # Support both legacy AZURE_OPENAI_DEPLOYMENT and explicit chat naming.
+    default_deployment = (
+        _env_primary_or_backup(
+            "AZURE_OPENAI_CHAT_DEPLOYMENT", "AZURE_OPENAI_CHAT_DEPLOYMENT_BACKUP"
+        )
+        or _env_primary_or_backup(
+            "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_BACKUP"
+        )
     )
     mini_deployment = _env_primary_or_backup(
         "AZURE_OPENAI_MINI_DEPLOYMENT", "AZURE_OPENAI_MINI_DEPLOYMENT_BACKUP"
@@ -85,6 +91,27 @@ def _resolve_timeout(profile: str) -> int:
     if profile == "rich":
         return int(cfg.llm_rich_request_timeout_s)
     return int(cfg.llm_request_timeout_s)
+
+
+def _build_resource_id_from_parts(prefix: str = "") -> str | None:
+    sub_id = _env(f"AZURE_SUBSCRIPTION_ID{prefix}")
+    rg = _env(f"AZURE_OPENAI_RESOURCE_GROUP{prefix}")
+    name = _env(f"AZURE_OPENAI_RESOURCE_NAME{prefix}")
+    if sub_id and rg and name:
+        return (
+            f"/subscriptions/{sub_id}/resourceGroups/{rg}/"
+            f"providers/Microsoft.CognitiveServices/accounts/{name}"
+        )
+    return None
+
+
+def _resolve_resource_id() -> str | None:
+    explicit = _env_primary_or_backup(
+        "AZURE_OPENAI_RESOURCE_ID", "AZURE_OPENAI_RESOURCE_ID_BACKUP"
+    )
+    if explicit:
+        return explicit
+    return _build_resource_id_from_parts() or _build_resource_id_from_parts("_BACKUP")
 
 
 def _build_openai_platform_target(
@@ -130,9 +157,7 @@ def _build_azure_target(
     from openai import AzureOpenAI
 
     ep = endpoint if endpoint.endswith("/") else f"{endpoint}/"
-    resource_id = _env_primary_or_backup(
-        "AZURE_OPENAI_RESOURCE_ID", "AZURE_OPENAI_RESOURCE_ID_BACKUP"
-    ) or None
+    resource_id = _resolve_resource_id()
     resource_ctx = parse_azure_resource_id(resource_id) if resource_id else None
 
     client = instrument_openai_client(
