@@ -181,9 +181,9 @@ def run_pricing_agent(
     if not initial_parts:
         return None
 
-    from claim_automation.llm_client import get_chat_completion_client_and_model
+    from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
-    client, model = get_chat_completion_client_and_model()
+    client, model = get_chat_completion_client_and_model_for_task("text_pricing")
     if client is None or not model:
         logger.debug("Pricing agent: LLM not configured, skipping refined pricing.")
         return None

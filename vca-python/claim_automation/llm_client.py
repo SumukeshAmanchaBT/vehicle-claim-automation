@@ -19,8 +19,11 @@ from claim_automation.vca_config import cfg
 
 __all__ = [
     "ChatCompletionTarget",
+    "get_chat_completion_client_and_model_for_task",
     "get_chat_completion_client_and_model",
+    "get_chat_completion_target_for_task",
     "get_chat_completion_target",
+    "llm_configured_for_task",
     "llm_configured",
 ]
 
@@ -39,6 +42,34 @@ class ChatCompletionTarget:
     subscription_id: str | None = None
     resource_group: str | None = None
     resource_name: str | None = None
+    routing_reason: str | None = None
+
+
+_TASK_TO_PROFILE: dict[str, str] = {
+    # Cheap text-only workloads.
+    "text_light": "light",
+    "text_extraction": "light",
+    "text_explanation": "light",
+    "text_pricing": "light",
+    "text_adjudication": "light",
+    # High-stakes reasoning and multimodal workloads.
+    "heavy_reasoning": "rich",
+    "vision_damage_analysis": "rich",
+    "vision_authenticity": "rich",
+    "video_multimodal": "rich",
+}
+
+_TASK_TO_CATEGORY: dict[str, str] = {
+    "text_light": "text",
+    "text_extraction": "text",
+    "text_explanation": "text",
+    "text_pricing": "text",
+    "text_adjudication": "text",
+    "heavy_reasoning": "heavy",
+    "vision_damage_analysis": "heavy",
+    "vision_authenticity": "heavy",
+    "video_multimodal": "heavy",
+}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -93,6 +124,38 @@ def _resolve_timeout(profile: str) -> int:
     return int(cfg.llm_request_timeout_s)
 
 
+def _normalize_priority(value: str) -> str:
+    normalized = (value or "").strip().lower().replace("-", "_")
+    if normalized in {"azure", "azure_first"}:
+        return "azure_first"
+    if normalized in {"openai", "openai_first"}:
+        return "openai_first"
+    return "azure_first"
+
+
+def _task_env_key(task: str) -> str:
+    return task.strip().upper().replace("-", "_")
+
+
+def _resolve_task_profile(task: str) -> str:
+    key = _task_env_key(task)
+    override = _env(f"LLM_TASK_{key}_PROFILE")
+    if override in {"default", "light", "rich"}:
+        return override
+    return _TASK_TO_PROFILE.get(task, "default")
+
+
+def _resolve_task_priority(task: str) -> str:
+    key = _task_env_key(task)
+    explicit = _env(f"LLM_TASK_{key}_PRIORITY")
+    if explicit:
+        return _normalize_priority(explicit)
+    category = _TASK_TO_CATEGORY.get(task, "text")
+    if category == "heavy":
+        return _normalize_priority(_env("LLM_ROUTING_HEAVY_PRIORITY", "azure_first"))
+    return _normalize_priority(_env("LLM_ROUTING_TEXT_PRIORITY", "openai_first"))
+
+
 def _build_resource_id_from_parts(prefix: str = "") -> str | None:
     sub_id = _env(f"AZURE_SUBSCRIPTION_ID{prefix}")
     rg = _env(f"AZURE_OPENAI_RESOURCE_GROUP{prefix}")
@@ -120,6 +183,7 @@ def _build_openai_platform_target(
     profile: str,
     timeout_s: int,
     max_retries: int,
+    routing_reason: str | None,
 ) -> ChatCompletionTarget:
     from openai import OpenAI
 
@@ -141,6 +205,7 @@ def _build_openai_platform_target(
         profile=profile,
         timeout_s=timeout_s,
         max_retries=max_retries,
+        routing_reason=routing_reason,
     )
 
 
@@ -153,6 +218,7 @@ def _build_azure_target(
     api_version: str,
     timeout_s: int,
     max_retries: int,
+    routing_reason: str | None,
 ) -> ChatCompletionTarget:
     from openai import AzureOpenAI
 
@@ -193,10 +259,16 @@ def _build_azure_target(
         subscription_id=resource_ctx.subscription_id if resource_ctx else None,
         resource_group=resource_ctx.resource_group if resource_ctx else None,
         resource_name=resource_ctx.resource_name if resource_ctx else None,
+        routing_reason=routing_reason,
     )
 
 
-def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget | None:
+def get_chat_completion_target(
+    profile: str = "default",
+    *,
+    priority_override: str | None = None,
+    routing_reason: str | None = None,
+) -> ChatCompletionTarget | None:
     """
     Return the configured chat-completions target for a workload profile.
 
@@ -225,7 +297,9 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
     ) or "2024-12-01-preview"
 
     openai_key = _env("OPENAI_API_KEY") or _env("OPENAI_API_KEY_BACKUP")
-    priority = _env("LLM_PROVIDER_PRIORITY", "azure_first").lower().replace("-", "_")
+    priority = _normalize_priority(
+        priority_override or _env("LLM_PROVIDER_PRIORITY", "azure_first")
+    )
 
     azure_ready = bool(endpoint and azure_key and deployment)
 
@@ -235,6 +309,7 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
             profile=profile,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            routing_reason=routing_reason,
         )
     if azure_ready:
         return _build_azure_target(
@@ -245,6 +320,7 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
             api_version=api_version,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            routing_reason=routing_reason,
         )
     if openai_key:
         return _build_openai_platform_target(
@@ -252,9 +328,21 @@ def get_chat_completion_target(profile: str = "default") -> ChatCompletionTarget
             profile=profile,
             timeout_s=timeout_s,
             max_retries=max_retries,
+            routing_reason=routing_reason,
         )
 
     return None
+
+
+def get_chat_completion_target_for_task(task: str) -> ChatCompletionTarget | None:
+    profile = _resolve_task_profile(task)
+    priority = _resolve_task_priority(task)
+    reason = f"task={task}; profile={profile}; priority={priority}"
+    return get_chat_completion_target(
+        profile=profile,
+        priority_override=priority,
+        routing_reason=reason,
+    )
 
 
 def get_chat_completion_client_and_model(
@@ -271,5 +359,18 @@ def get_chat_completion_client_and_model(
     return target.client, target.model
 
 
+def get_chat_completion_client_and_model_for_task(
+    task: str,
+) -> tuple[Any, str] | tuple[None, None]:
+    target = get_chat_completion_target_for_task(task)
+    if target is None:
+        return None, None
+    return target.client, target.model
+
+
 def llm_configured(profile: str = "default") -> bool:
     return get_chat_completion_target(profile=profile) is not None
+
+
+def llm_configured_for_task(task: str) -> bool:
+    return get_chat_completion_target_for_task(task) is not None

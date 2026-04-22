@@ -285,9 +285,9 @@ def _analyze_damage_with_vision_llm(image_path: str) -> tuple[list[str], str] | 
     Analyze vehicle damage image using Azure OpenAI or OpenAI vision (env-configured).
     Returns (damages: list, severity: str) or None if no LLM configured or call fails.
     """
-    from claim_automation.llm_client import get_chat_completion_client_and_model
+    from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
-    client, model = get_chat_completion_client_and_model()
+    client, model = get_chat_completion_client_and_model_for_task("vision_damage_analysis")
     if client is None or not model:
         return None
     if not os.path.isfile(image_path):
@@ -902,9 +902,9 @@ def _analyze_damage_part_level(
     - repair_action: str (REPAIR, REPLACE, PAINT, NONE)
     - estimated_cost: float
     """
-    from claim_automation.llm_client import get_chat_completion_client_and_model
+    from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
-    client, model = get_chat_completion_client_and_model()
+    client, model = get_chat_completion_client_and_model_for_task("vision_damage_analysis")
     if client is None or not model:
         return None
     if not os.path.isfile(image_path):

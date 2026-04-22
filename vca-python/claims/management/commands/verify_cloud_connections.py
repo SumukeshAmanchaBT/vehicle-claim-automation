@@ -116,6 +116,7 @@ class Command(BaseCommand):
         log.info("OPENAI_RICH_MODEL=%s", openai_rich or "(empty)")
 
         from claim_automation.llm_client import (
+            get_chat_completion_target_for_task,
             get_chat_completion_client_and_model,
             get_chat_completion_target,
         )
@@ -139,6 +140,17 @@ class Command(BaseCommand):
             getattr(light_target, "model", None),
             getattr(rich_target, "provider", None),
             getattr(rich_target, "model", None),
+        )
+        text_target = get_chat_completion_target_for_task("text_explanation")
+        heavy_target = get_chat_completion_target_for_task("vision_damage_analysis")
+        log.info(
+            "Task routing text_explanation=%s/%s (%s) vision_damage_analysis=%s/%s (%s)",
+            getattr(text_target, "provider", None),
+            getattr(text_target, "model", None),
+            getattr(text_target, "routing_reason", None),
+            getattr(heavy_target, "provider", None),
+            getattr(heavy_target, "model", None),
+            getattr(heavy_target, "routing_reason", None),
         )
 
         with llm_observation_context(

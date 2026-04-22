@@ -14,7 +14,11 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-from claim_automation.llm_client import ChatCompletionTarget, get_chat_completion_target
+from claim_automation.llm_client import (
+    ChatCompletionTarget,
+    get_chat_completion_target,
+    get_chat_completion_target_for_task,
+)
 from claims.video_pipeline_config import load_video_pipeline_settings
 from claims.video_runtime import (
     build_video_provider_selection_preview,
@@ -793,7 +797,7 @@ def _llm_structured_summary(
     metadata: dict[str, Any],
     frame_analyses: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, ChatCompletionTarget | None]:
-    target = get_chat_completion_target(profile="light")
+    target = get_chat_completion_target_for_task("text_light")
     if target is None or not frame_analyses:
         return None, None
 
@@ -838,7 +842,7 @@ def _llm_multimodal_reasoning(
     frame_analyses: list[dict[str, Any]],
     base_summary: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, ChatCompletionTarget | None]:
-    target = get_chat_completion_target(profile="rich")
+    target = get_chat_completion_target_for_task("video_multimodal")
     if target is None or not frame_analyses:
         return None, None
 
@@ -914,8 +918,8 @@ def compose_video_analysis_result(
     structured_target = None
     reasoning_target = None
 
-    light_target = get_chat_completion_target(profile="light")
-    rich_target = get_chat_completion_target(profile="rich")
+    light_target = get_chat_completion_target_for_task("text_light")
+    rich_target = get_chat_completion_target_for_task("video_multimodal")
     should_run_structured_stage = (
         light_target is not None
         and (

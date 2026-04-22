@@ -298,9 +298,9 @@ def _adjudicate_authenticity_with_llm(
     This is a text-only call — no image data is transmitted.
     """
     try:
-        from claim_automation.llm_client import get_chat_completion_client_and_model
+        from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
-        client, model = get_chat_completion_client_and_model(profile="light")
+        client, model = get_chat_completion_client_and_model_for_task("text_adjudication")
         if not client:
             return None
 
@@ -393,9 +393,9 @@ def synthesize_image_authenticity_labels(
 
     # Attempt LLM adjudication for contradictory signal combos.
     try:
-        from claim_automation.llm_client import llm_configured
+        from claim_automation.llm_client import llm_configured_for_task
 
-        if llm_configured("light"):
+        if llm_configured_for_task("text_adjudication"):
             adjudicated = _adjudicate_authenticity_with_llm(
                 raw_labels=labels,
                 exif_json=exif_json,

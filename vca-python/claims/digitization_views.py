@@ -93,9 +93,9 @@ def _openai_extract_invoice_data(image_path: str) -> tuple[dict[str, Any], str |
     Extract invoice/repair parts details from an image using Azure OpenAI or OpenAI vision.
     Returns: (parsed_json, error_message)
     """
-    from claim_automation.llm_client import get_chat_completion_client_and_model
+    from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
-    client, model = get_chat_completion_client_and_model()
+    client, model = get_chat_completion_client_and_model_for_task("vision_damage_analysis")
     if client is None or not model:
         return {}, "No LLM configured (set AZURE_OPENAI_* or OPENAI_API_KEY — see .env.example)"
     if not os.path.isfile(image_path):
@@ -201,9 +201,9 @@ def _openai_extract_kv_from_text(text: str) -> tuple[dict[str, Any], str | None]
     """
     Use Azure OpenAI or OpenAI to convert document text into key-value JSON.
     """
-    from claim_automation.llm_client import get_chat_completion_client_and_model
+    from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
-    client, model = get_chat_completion_client_and_model()
+    client, model = get_chat_completion_client_and_model_for_task("text_extraction")
     if client is None or not model:
         kv = _fallback_extract_kv_from_text(text)
         kv["_warning"] = (

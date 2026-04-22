@@ -16,7 +16,10 @@ import os
 import re
 from typing import Any
 
-from claim_automation.llm_client import get_chat_completion_client_and_model, llm_configured
+from claim_automation.llm_client import (
+    get_chat_completion_client_and_model_for_task,
+    llm_configured_for_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,11 @@ MAX_RECOMMENDED_LEN = 450
 MAX_BULLET_LEN = 280
 MAX_BULLETS = 6
 MAX_GROUNDED_JSON_CHARS = 14_000
+
+
+def llm_configured() -> bool:
+    """Backward-compatible shim used by older tests and call sites."""
+    return llm_configured_for_task("text_explanation")
 
 
 def card_ai_narrative_enabled() -> bool:
@@ -370,7 +378,7 @@ def _build_user_prompt(card_key: str, grounded: dict[str, Any]) -> str:
 
 
 def _call_llm_for_narrative(card_key: str, grounded: dict[str, Any]) -> dict[str, Any] | None:
-    client, model = get_chat_completion_client_and_model()
+    client, model = get_chat_completion_client_and_model_for_task("text_explanation")
     if client is None or not model:
         return None
     try:

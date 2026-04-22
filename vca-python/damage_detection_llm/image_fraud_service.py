@@ -32,7 +32,7 @@ except ImportError:
 
 # Try to import OpenAI/Azure for LLM authenticity check
 try:
-    from claim_automation.llm_client import get_chat_completion_client_and_model
+    from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
     LLM_CLIENT_AVAILABLE = True
 except ImportError:
@@ -277,7 +277,7 @@ def llm_authenticity_analysis(image_path: str, exif_data: dict) -> dict:
         return result
 
     try:
-        client, model = get_chat_completion_client_and_model()
+        client, model = get_chat_completion_client_and_model_for_task("vision_authenticity")
         if not client:
             result["reasoning"] = "LLM client not configured"
             return result

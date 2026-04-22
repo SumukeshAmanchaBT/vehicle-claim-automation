@@ -24,7 +24,7 @@ import json
 import logging
 from typing import Any
 
-from claim_automation.llm_client import get_chat_completion_client_and_model
+from claim_automation.llm_client import get_chat_completion_client_and_model_for_task
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def enrich_parts_from_claim_context(
         logger.debug("Context enrichment: no evidence to reason from — skipping.")
         return None
 
-    client, model = get_chat_completion_client_and_model(profile="light")
+    client, model = get_chat_completion_client_and_model_for_task("heavy_reasoning")
     if client is None or not model:
         logger.debug("Context enrichment: LLM not configured — skipping.")
         return None
