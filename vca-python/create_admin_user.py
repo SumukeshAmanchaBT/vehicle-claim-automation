@@ -6,9 +6,10 @@ Run from vca-python directory with the venv active:
 What it does:
   1. Connects to the database configured in .env (MySQL if USE_SQLITE=0)
   2. Lists all existing users (id, username, email, is_active, is_staff, last_login)
-  3. Creates / resets the 'admin' user (password: Admin@1234) if it doesn't exist
+  3. Creates / resets the 'admin' user (password from VCA_ADMIN_PASSWORD, or prompted) if it doesn't exist
      or resets password if it does exist, then adds it to the 'admin' group.
 """
+import getpass
 import os
 import sys
 import django
@@ -78,7 +79,13 @@ else:
 
 # ── Create / reset 'admin' user ───────────────────────────────────
 TARGET_USERNAME = "admin"
-TARGET_PASSWORD = "Admin@1234"   # meets Django's password validators
+# Never hardcode this: set VCA_ADMIN_PASSWORD in the environment or in
+# vca-python/.env (git-ignored), or type it at the prompt.
+TARGET_PASSWORD = os.environ.get("VCA_ADMIN_PASSWORD") or getpass.getpass(
+    f"Password for '{TARGET_USERNAME}' (must meet Django's validators): "
+)
+if not TARGET_PASSWORD:
+    sys.exit("No password given: set VCA_ADMIN_PASSWORD or enter one at the prompt.")
 
 print(f"\n[Action] Ensuring user '{TARGET_USERNAME}' exists with a known-good password...")
 
@@ -114,6 +121,6 @@ except Exception as e:
 print("\n" + "=" * 60)
 print("  SUCCESS — Login credentials:")
 print(f"    Username : {TARGET_USERNAME}")
-print(f"    Password : {TARGET_PASSWORD}")
+print("    Password : (the one you supplied; not printed)")
 print("=" * 60)
 print("\nOpen http://127.0.0.1:8000 and use the credentials above.\n")
